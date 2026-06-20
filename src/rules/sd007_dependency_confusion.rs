@@ -40,7 +40,14 @@ an error under the strict profile and a warning otherwise."
         let severity = profile_severity(input.profile);
         let mut findings = Vec::new();
 
-        for url in &settings.extra_index_urls {
+        // The same extra index can be declared in more than one source
+        // (pyproject + uv.toml, or requirements + pip.conf); report each once.
+        let mut seen = std::collections::HashSet::new();
+        for url in settings
+            .extra_index_urls
+            .iter()
+            .filter(|u| seen.insert(u.as_str()))
+        {
             findings.push(finding(
                 facts,
                 severity,

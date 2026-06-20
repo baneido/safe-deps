@@ -176,15 +176,26 @@ fn requirements_files(ctx: &WorkspaceContext) -> Vec<PathBuf> {
 }
 
 /// Collects classified dependencies from a Python project directory, drawing on
-/// both `pyproject.toml` (`[project]` dependencies) and any `requirements*.txt`
-/// in the same directory, so SD006 covers pip and uv projects alike.
-fn python_dependencies(ctx: &WorkspaceContext, dir: &Path) -> Vec<Dependency> {
-    let mut out = Vec::new();
+/// both `pyproject.toml` (`[project]`/`[tool.uv]` dependencies) and any
+/// `requirements*.txt` in the same directory, so SD006 covers pip and uv
+/// projects alike. A pre-parsed `pyproject` is reused to avoid a second parse.
+/// Each dependency is anchored to the file it came from, and duplicates (the
+/// same package declared in both pyproject and an exported requirements file)
+/// are collapsed to the first occurrence.
+fn python_dependencies(
+    ctx: &WorkspaceContext,
+    dir: &Path,
+    pyproject: Option<&pyproject::Pyproject>,
+) -> Vec<Dependency> {
     let py_path = project_join(dir, "pyproject.toml");
-    if has_file_in(ctx, dir, "pyproject.toml") {
-        if let Ok(py) = pyproject::load(ctx, &py_path) {
-            out.extend(py.classified_dependencies());
-        }
+    let owned = if pyproject.is_none() && has_file_in(ctx, dir, "pyproject.toml") {
+        pyproject::load(ctx, &py_path).ok()
+    } else {
+        None
+    };
+    let mut out = Vec::new();
+    if let Some(py) = pyproject.or(owned.as_ref()) {
+        out.extend(py.classified_dependencies(&py_path));
     }
     for req in requirements_files(ctx)
         .into_iter()
@@ -196,12 +207,15 @@ fn python_dependencies(ctx: &WorkspaceContext, dir: &Path) -> Vec<Dependency> {
                 out.push(Dependency {
                     name: pyproject::pep508_name(bare),
                     source: classify_python_source(&spec),
-                    spec: spec.clone(),
+                    spec,
                     group: DependencyGroup::Production,
+                    file: req.clone(),
                 });
             }
         }
     }
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|d| seen.insert((d.name.clone(), d.spec.clone())));
     out
 }
 
@@ -273,7 +287,7 @@ fn build_uv_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFa
         lockfiles,
         configs,
         has_manifest_dependencies,
-        dependencies: python_dependencies(ctx, dir),
+        dependencies: python_dependencies(ctx, dir, py.as_ref()),
         install_settings: settings,
         covered_by_workspace_lockfile: covered_by_uv_workspace(ctx, dir),
         has_legacy_bun_lockfile: false,
@@ -346,7 +360,7 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
         lockfiles: Vec::new(),
         configs,
         has_manifest_dependencies,
-        dependencies: python_dependencies(ctx, dir),
+        dependencies: python_dependencies(ctx, dir, None),
         install_settings: settings,
         covered_by_workspace_lockfile: false,
         has_legacy_bun_lockfile: false,

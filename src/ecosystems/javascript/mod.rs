@@ -237,7 +237,7 @@ fn build_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFacts
         .is_some_and(|pj| pj.has_dependencies());
     let dependencies = package_json
         .as_ref()
-        .map(|pj| pj.dependencies())
+        .map(|pj| pj.dependencies(&pj_path))
         .unwrap_or_default();
 
     // Surface malformed structured config files (bunfig.toml, .yarnrc.yml,

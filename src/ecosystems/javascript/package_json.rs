@@ -86,10 +86,10 @@ impl PackageJson {
         PackageManagerHint::parse(raw)
     }
 
-    /// All declared dependencies, classified by source, for SD006. `peer`
-    /// dependencies are excluded: they declare a host-provided contract rather
-    /// than something this project installs.
-    pub fn dependencies(&self) -> Vec<crate::ecosystems::Dependency> {
+    /// All declared dependencies, classified by source and anchored to `file`,
+    /// for SD006. `peer` dependencies are excluded: they declare a
+    /// host-provided contract rather than something this project installs.
+    pub fn dependencies(&self, file: &std::path::Path) -> Vec<crate::ecosystems::Dependency> {
         use crate::ecosystems::source::classify_js_source;
         use crate::ecosystems::{Dependency, DependencyGroup};
         let groups = [
@@ -102,9 +102,10 @@ impl PackageJson {
             for (name, spec) in map {
                 out.push(Dependency {
                     name: name.clone(),
+                    source: classify_js_source(spec),
                     spec: spec.clone(),
                     group,
-                    source: classify_js_source(spec),
+                    file: file.to_path_buf(),
                 });
             }
         }

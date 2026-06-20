@@ -6,14 +6,14 @@
 //! and Python (PEP 508 / `requirements.txt`) use different spec grammars, so each
 //! has its own classifier feeding the same enum.
 
-/// Which dependency group a declaration belongs to. SD006 treats production
-/// dependencies more strictly than development ones.
+/// Which dependency group a declaration belongs to. SD006 treats the production
+/// closure more strictly than development dependencies. (Peer dependencies are
+/// not extracted: they declare a host-provided contract, not an install.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DependencyGroup {
     Production,
     Development,
     Optional,
-    Peer,
 }
 
 impl DependencyGroup {
@@ -22,7 +22,6 @@ impl DependencyGroup {
             DependencyGroup::Production => "production",
             DependencyGroup::Development => "development",
             DependencyGroup::Optional => "optional",
-            DependencyGroup::Peer => "peer",
         }
     }
 
@@ -58,6 +57,9 @@ pub struct Dependency {
     pub spec: String,
     pub group: DependencyGroup,
     pub source: DependencySource,
+    /// The manifest the declaration came from, so findings point at the right
+    /// file (e.g. a specific `requirements*.txt`, not the project's first one).
+    pub file: std::path::PathBuf,
 }
 
 /// Classifies a JavaScript `package.json` dependency value.
@@ -122,7 +124,7 @@ pub fn classify_python_source(spec: &str) -> DependencySource {
     if target.starts_with("git+") || target.starts_with("git://") {
         return DependencySource::Git {
             floating: !python_git_pinned(target),
-            ssh: target.contains("ssh"),
+            ssh: target.starts_with("git+ssh"),
         };
     }
     if target.starts_with("ssh://") {
@@ -173,12 +175,13 @@ fn has_pinned_committish(s: &str) -> bool {
 
 /// Whether a Python git URL is pinned via a trailing `@ref` after the scheme.
 fn python_git_pinned(url: &str) -> bool {
-    // Ignore the `@` inside `git+ssh://git@host`; the committish is the last
-    // `@`-segment after the path separator.
+    // The committish is the `@ref` after the repo path. A `@` belonging to SSH
+    // userinfo (`git+ssh://git@host/...`) sits before the path, so its trailing
+    // segment still contains `/`; a real committish never does.
     let after_scheme = url.split_once("://").map(|x| x.1).unwrap_or(url);
     match after_scheme.rsplit_once('@') {
-        Some((_, committish)) => is_pinned_ref(committish),
-        None => false,
+        Some((_, committish)) if !committish.contains('/') => is_pinned_ref(committish),
+        _ => false,
     }
 }
 
@@ -191,11 +194,18 @@ fn is_pinned_ref(committish: &str) -> bool {
     }
     // Commit SHA: 7-40 hex chars.
     let is_sha = (7..=40).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_hexdigit());
-    // Version tag: `v1.2.3` or `1.2`.
-    let v = c.strip_prefix('v').unwrap_or(c);
-    let is_version = !v.is_empty()
-        && v.bytes().next().is_some_and(|b| b.is_ascii_digit())
-        && v.bytes().all(|b| b.is_ascii_digit() || b == b'.');
+    // Version tag: `v1.2.3`, or a dotted number like `1.2.3`. A bare single
+    // number (`2`) is treated as a (movable) branch, not a tag.
+    let is_version = match c.strip_prefix('v') {
+        // `v` prefix: a release tag even without dots (`v2`).
+        Some(rest) => !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit() || b == b'.'),
+        // No `v`: require a dot so `2` stays floating but `1.2` is a tag.
+        None => {
+            c.contains('.')
+                && c.bytes().next().is_some_and(|b| b.is_ascii_digit())
+                && c.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+        }
+    };
     is_sha || is_version
 }
 
@@ -341,5 +351,55 @@ mod tests {
         assert_eq!(classify_python_source("pkg @ https://h/p.whl"), Tarball);
         assert_eq!(classify_python_source("-e ./local"), Path);
         assert_eq!(classify_python_source("pkg @ file:///abs"), Path);
+    }
+
+    #[test]
+    fn python_ssh_is_not_matched_by_substring() {
+        // A repo named "ssh-utils" over https must not be flagged as SSH.
+        assert_eq!(
+            classify_python_source("pkg @ git+https://github.com/o/ssh-utils.git"),
+            Git {
+                floating: true,
+                ssh: false
+            }
+        );
+    }
+
+    #[test]
+    fn python_ssh_userinfo_at_is_not_a_committish() {
+        // The `@` in `git@host` is userinfo, so this URL has no ref -> floating.
+        assert_eq!(
+            classify_python_source("pkg @ git+ssh://git@host/org/repo.git"),
+            Git {
+                floating: true,
+                ssh: true
+            }
+        );
+    }
+
+    #[test]
+    fn numeric_branch_is_floating_but_dotted_tag_is_pinned() {
+        // `#2` is a movable branch; `#1.2` and `#v2` are release tags.
+        assert_eq!(
+            classify_js_source("github:u/r#2"),
+            Git {
+                floating: true,
+                ssh: false
+            }
+        );
+        assert_eq!(
+            classify_js_source("github:u/r#1.2"),
+            Git {
+                floating: false,
+                ssh: false
+            }
+        );
+        assert_eq!(
+            classify_js_source("github:u/r#v2"),
+            Git {
+                floating: false,
+                ssh: false
+            }
+        );
     }
 }

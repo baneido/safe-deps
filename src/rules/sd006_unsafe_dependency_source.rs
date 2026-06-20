@@ -38,7 +38,7 @@ allow_local_path_dependencies to accept a deliberate choice."
             .iter()
             .filter_map(|dep| {
                 classify(dep, policy)
-                    .map(|(message, remediation)| finding(facts, message, remediation))
+                    .map(|(message, remediation)| finding(facts, dep, message, remediation))
             })
             .collect()
     }
@@ -84,8 +84,10 @@ fn classify(dep: &Dependency, policy: &Policy) -> Option<(String, &'static str)>
             if dep.group.is_production() && !policy.allow_local_path_dependencies {
                 Some((
                     format!(
-                        "production dependency `{}` is a local path (`{}`); consumers cannot resolve it",
-                        dep.name, dep.spec
+                        "{} dependency `{}` is a local path (`{}`); consumers cannot resolve it",
+                        dep.group.as_str(),
+                        dep.name,
+                        dep.spec
                     ),
                     "publish the package to a registry, or move it to a dev dependency.",
                 ))
@@ -96,13 +98,20 @@ fn classify(dep: &Dependency, policy: &Policy) -> Option<(String, &'static str)>
     }
 }
 
-fn finding(facts: &ProjectFacts, message: String, remediation: &'static str) -> Finding {
+fn finding(
+    facts: &ProjectFacts,
+    dep: &Dependency,
+    message: String,
+    remediation: &'static str,
+) -> Finding {
     Finding {
         rule_id: RuleId::new("SD006"),
         severity: Severity::Warning,
         confidence: Confidence::Medium,
         message,
-        location: facts.manifest.as_ref().map(|m| Location::file(&m.relative)),
+        // Anchor on the exact manifest the dependency was declared in (e.g. a
+        // specific requirements file), not just the project's primary manifest.
+        location: Some(Location::file(&dep.file)),
         project_root: facts.project.root.clone(),
         ecosystem: facts.project.ecosystem,
         package_manager: Some(facts.project.package_manager),

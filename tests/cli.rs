@@ -901,3 +901,51 @@ fn list_rules_includes_supply_chain_rules() {
         assert!(text.contains(id), "missing {id}:\n{text}");
     }
 }
+
+#[test]
+fn sd006_flags_uv_dev_dependency_source() {
+    let pyproject = "\
+[project]
+name = \"x\"
+dependencies = [\"requests>=2\"]
+[tool.uv]
+dev-dependencies = [\"internal @ git+https://h/r.git\"]
+";
+    let ws = workspace(&[("pyproject.toml", pyproject), ("uv.lock", "")]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{:?}", sd006);
+    assert!(sd006[0]["message"].as_str().unwrap().contains("internal"));
+}
+
+#[test]
+fn sd006_points_at_the_requirements_file_it_came_from() {
+    let ws = workspace(&[(
+        "requirements-dev.txt",
+        "pytest==7.0\ntooling @ git+https://h/r.git\n",
+    )]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{:?}", sd006);
+    assert_eq!(sd006[0]["location"]["file"], "requirements-dev.txt");
+}
+
+#[test]
+fn sd007_does_not_duplicate_when_index_declared_twice() {
+    // extra-index-url in both pyproject [tool.uv] and uv.toml must yield one.
+    let pyproject = "\
+[project]
+name = \"x\"
+dependencies = [\"requests>=2\"]
+[tool.uv]
+extra-index-url = [\"https://pypi.internal/simple\"]
+";
+    let ws = workspace(&[
+        ("pyproject.toml", pyproject),
+        ("uv.lock", ""),
+        (
+            "uv.toml",
+            "extra-index-url = [\"https://pypi.internal/simple\"]\n",
+        ),
+    ]);
+    let sd007 = findings_of(&check_json(&ws, &[]), "SD007");
+    assert_eq!(sd007.len(), 1, "expected dedup to one finding: {:?}", sd007);
+}

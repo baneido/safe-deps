@@ -14,27 +14,31 @@ pub struct Pyproject {
     pub dependencies: Vec<String>,
     /// Flattened `[project.optional-dependencies]` values.
     pub optional_dependencies: Vec<String>,
+    /// `[tool.uv] dev-dependencies` (array form), for SD006 source analysis.
+    pub dev_dependencies: Vec<String>,
     pub uv: UvSettings,
 }
 
 impl Pyproject {
-    /// All dependencies classified by source for SD006. PEP 508 names are
-    /// stripped to the bare distribution name for display.
-    pub fn classified_dependencies(&self) -> Vec<crate::ecosystems::Dependency> {
+    /// All dependencies classified by source for SD006, anchored to `file`.
+    /// PEP 508 names are stripped to the bare distribution name for display.
+    pub fn classified_dependencies(&self, file: &Path) -> Vec<crate::ecosystems::Dependency> {
         use crate::ecosystems::source::classify_python_source;
         use crate::ecosystems::{Dependency, DependencyGroup};
-        let mut out = Vec::new();
         let groups = [
             (&self.dependencies, DependencyGroup::Production),
             (&self.optional_dependencies, DependencyGroup::Optional),
+            (&self.dev_dependencies, DependencyGroup::Development),
         ];
+        let mut out = Vec::new();
         for (specs, group) in groups {
             for spec in specs {
                 out.push(Dependency {
                     name: pep508_name(spec),
+                    source: classify_python_source(spec),
                     spec: spec.clone(),
                     group,
-                    source: classify_python_source(spec),
+                    file: file.to_path_buf(),
                 });
             }
         }
@@ -96,13 +100,19 @@ pub fn parse(text: &str) -> Pyproject {
             optional_dependencies.extend(collect_string_array(Some(group)));
         }
     }
-    let uv_dev = value
+    let uv_dev_dependencies = value
         .get("tool")
         .and_then(|t| t.get("uv"))
-        .and_then(|u| u.get("dev-dependencies"))
+        .and_then(|u| u.get("dev-dependencies"));
+    // uv accepts either an array of PEP 508 strings or a legacy name=spec table.
+    let dev_dependencies = collect_string_array(uv_dev_dependencies);
+    let uv_dev_table = uv_dev_dependencies
         .and_then(|d| d.as_table())
         .is_some_and(|t| !t.is_empty());
-    let has_dependencies = !dependencies.is_empty() || !optional_dependencies.is_empty() || uv_dev;
+    let has_dependencies = !dependencies.is_empty()
+        || !optional_dependencies.is_empty()
+        || !dev_dependencies.is_empty()
+        || uv_dev_table;
 
     let tool_uv = value.get("tool").and_then(|t| t.get("uv"));
     let has_tool_uv = tool_uv.is_some();
@@ -114,6 +124,7 @@ pub fn parse(text: &str) -> Pyproject {
         has_dependencies,
         dependencies,
         optional_dependencies,
+        dev_dependencies,
         uv,
     }
 }
