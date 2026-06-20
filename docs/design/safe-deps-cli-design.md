@@ -294,6 +294,7 @@ safe-deps check [PATH]
   --exclude <GLOB>         Additional exclude glob
   --ecosystem <NAME>       Restrict to npm, yarn, pnpm, bun, pip, uv
   --rule <ID>              Restrict to a rule ID
+  --strict-parser-errors   Exit non-zero when supported files cannot be parsed
   --offline                Default behavior for check; explicit for clarity
   --verbose                Print detection details
   --quiet                  Only print findings summary
@@ -371,6 +372,22 @@ be limited to CI convenience, such as `SAFE_DEPS_PROFILE` and
 - Only the highest-signal findings fail by default.
 - Most compatibility and workflow gaps remain warnings or info.
 
+### Policy Declarations
+
+Some checks are intentionally heuristic. Configuration should let teams declare
+equivalent external controls so the linter does not force one workflow.
+
+```toml
+[policy]
+external_audit = true
+external_audit_reason = "Organization-wide scheduled scanner covers this repo"
+```
+
+When `external_audit = true`, SD008 should not report "audit command missing"
+solely because no package-manager audit command appears in CI. The declaration
+does not suppress explicit audit-disable signals, such as a workflow step that
+turns an audit command off.
+
 ## Suppression Model
 
 Use centralized suppressions in `safe-deps.toml`. Avoid inline suppressions in
@@ -423,7 +440,9 @@ SD001: Lockfile missing
   `npm-shrinkwrap.json`.
 - Yarn: `package.json` with Yarn evidence but no `yarn.lock`.
 - pnpm: `pnpm-lock.yaml` missing for pnpm projects.
-- Bun: `bun.lock` missing for Bun projects.
+- Bun: `bun.lock` missing for Bun 1.2+ projects. Legacy `bun.lockb` should be
+  accepted as evidence of an older Bun project and reported as a migration
+  warning, not a lockfile-missing error.
 - pip: requirements-based deploy projects without pinned/hash-controlled
   requirements should not be treated as having a conventional lockfile.
 - uv: `uv.lock` missing for uv-managed projects.
@@ -481,6 +500,8 @@ SD008: Audit missing or disabled
 - Detect whether CI contains package-manager audit commands.
 - Do not run audits during `check`.
 - Warn when a project has external dependencies and no audit path is visible.
+- Respect `[policy] external_audit = true` for teams that run audit checks in a
+  separate workflow, SaaS scanner, or organization-wide scheduled job.
 
 SD009: Dangerous install flags
 
@@ -523,6 +544,31 @@ Monorepos:
   child packages.
 - Prefer package-manager workspace declarations over directory heuristics.
 
+## Version and Capability Gates
+
+Rules must distinguish between "unsafe setting is present" and "new hardening
+setting is unavailable because the package-manager version is older." The first
+case can be a finding; the second is usually a lower-severity capability or
+migration note.
+
+Minimum gates to model in the MVP:
+
+| Package manager | Gate | Rule impact |
+| --- | --- | --- |
+| Bun | `bun.lockb` before Bun 1.2 | SD001 accepts it as legacy lockfile evidence and reports migration warning only. |
+| Yarn | Yarn v1 vs Berry | SD002 and SD004 apply different immutable/checksum settings by major generation. |
+| Yarn | zero-install evidence | SD002 requires `--immutable-cache --check-cache` only for zero-install and external PR contexts. |
+| pnpm | `strictDepBuilds` introduced in pnpm 10.3.0 | SD005 should not require it for older pnpm versions. |
+| pnpm | `dangerouslyAllowAllBuilds` introduced in pnpm 10.9.0 | SD005 only flags it when the setting exists or the version supports it. |
+| pnpm | `--update-checksums` introduced in pnpm 11.4.0 | SD004 only flags this flag when present or supported. |
+| npm | audit signatures and provenance support | SD010 and high-assurance signature checks remain profile-dependent and optional unless support is detected. |
+| uv | preview malware/audit features | Preview checks should be opt-in until the upstream feature is stable. |
+
+Version detection should use explicit project metadata first, such as
+`packageManager`, lockfile format versions, and config files. If the version is
+unknown, rules should avoid high-severity absence findings for version-gated
+capabilities.
+
 ## CI Parsing Strategy
 
 MVP priority:
@@ -545,6 +591,25 @@ Command parsing should be pragmatic:
 - Treat complex shell constructs as lower-confidence findings.
 - Do not execute shell or expand variables.
 
+## Source Locations
+
+High-quality findings need file and line locations, but source locations are
+not guaranteed by plain serde deserialization. The implementation should use a
+span-preserving parse layer where exact locations matter.
+
+Recommended approach:
+
+- Store every analyzed file as a `SourceFile` with byte-to-line mapping.
+- Parse values into typed facts with `serde` where that is sufficient.
+- Build lightweight `SpanMap` data for YAML, TOML, JSON, and requirements files
+  when rules need precise locations.
+- Mark findings as `Confidence::Medium` or attach diagnostic notes when exact
+  locations are unavailable and the tool falls back to file-level locations.
+
+This is especially important for GitHub Actions `run` blocks, package-manager
+config files, and dependency declarations that may produce actionable comments
+in SARIF.
+
 ## Output Formats
 
 Text:
@@ -552,6 +617,8 @@ Text:
 - Default for terminals.
 - Group by severity, then project, then rule.
 - Include remediation text and config suppression hint.
+- Sort deterministically by severity, confidence, normalized project path, rule
+  ID, file path, and line number.
 
 JSON:
 
@@ -593,9 +660,17 @@ Expected repositories can be large monorepos. The implementation should:
 - Cache parsed file contents in a workspace-level file store.
 - Skip generated directories by default.
 - Keep network access out of `check`.
+- Sort final findings and diagnostics deterministically even when analysis runs
+  in parallel.
 
 The target for MVP should be sub-second on small projects and a few seconds on
 large monorepos with thousands of files.
+
+Benchmark targets:
+
+- Small single-package npm repository.
+- Mixed JavaScript and Python monorepo with several workspace roots.
+- Repository with many GitHub Actions workflows and multiline shell steps.
 
 ## Recommended Dependencies
 
@@ -671,6 +746,20 @@ Additional precautions:
 - Redact tokens in URLs and environment assignments.
 - Avoid automatic network calls in `check`.
 - Keep SARIF messages concise and non-secret-bearing.
+
+### Redaction Rules
+
+Redaction must be deterministic and conservative:
+
+- Redact URL userinfo, such as `https://user:token@example.com`, as
+  `https://<redacted>@example.com`.
+- Redact query parameters whose keys contain `token`, `secret`, `key`,
+  `password`, `passwd`, `auth`, `signature`, or `credential`.
+- Redact environment assignment values when the variable name contains `TOKEN`,
+  `SECRET`, `KEY`, `PASSWORD`, `PASSWD`, `AUTH`, `SIGNATURE`, or `CREDENTIAL`.
+- Preserve the variable name and host/path context where possible so findings
+  remain actionable.
+- Apply redaction before rendering text, JSON, SARIF, or JUnit output.
 
 ## Release and Distribution
 

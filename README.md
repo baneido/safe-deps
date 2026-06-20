@@ -1,5 +1,8 @@
 # safe-deps
 
+> Status: design/docs only. There is no released CLI or installable crate yet.
+> This repository has docs-only CI, but no production `safe-deps` CI integration.
+
 `safe-deps` is a planned Rust CLI linter for package-management security best
 practices. It is intended for both developer terminals and CI/CD pipelines.
 
@@ -33,46 +36,18 @@ Future package managers and ecosystems:
 
 ## Roadmap
 
-### Phase 0: Design and Research
+The detailed roadmap lives in the
+[CLI architecture design](docs/design/safe-deps-cli-design.md#roadmap).
 
-- Security best-practice research across major package managers.
-- CLI architecture and rule model design.
-- Initial rule taxonomy for supply-chain linting.
+At a high level:
 
-### Phase 1: MVP Static Linter
+- Phase 0: design and research.
+- Phase 1: Rust static linter MVP for npm, Yarn, pnpm, Bun, pip, and uv.
+- Phase 2: CI-aware checks and SARIF output.
+- Phase 3: supply-chain hardening rules and policy profiles.
+- Phase 4: publishing checks and additional ecosystems.
+- Phase 5: explicit networked audit mode.
 
-- Rust CLI scaffold.
-- Workspace scanning and project detection.
-- `safe-deps.toml` configuration and suppression support.
-- npm, Yarn, pnpm, Bun, pip, and uv analyzers.
-- Initial rules for lockfiles, frozen installs, insecure registries, and
-  disabled integrity checks.
-- Text and JSON output.
+## License
 
-### Phase 2: CI-Aware Checks
-
-- GitHub Actions parsing.
-- CI install-command checks.
-- Audit-command detection.
-- Dangerous install flag detection.
-- SARIF output for code scanning integrations.
-
-### Phase 3: Supply-Chain Hardening
-
-- Install-time script and build allowlist checks.
-- Unsafe dependency source checks.
-- Dependency-confusion checks for multi-index and registry configurations.
-- Strict, balanced, and permissive profiles.
-
-### Phase 4: Publishing and Ecosystem Expansion
-
-- Publishing provenance checks.
-- Composer, Bundler, Cargo, Go modules, Gradle/Maven, and NuGet support.
-- JUnit output.
-- GitHub Action wrapper.
-
-### Phase 5: Optional Audit Mode
-
-- Explicit `safe-deps audit` command for networked vulnerability checks.
-- OSV or package-manager audit integration.
-- Advisory ignore metadata with required reasons and optional expiry.
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
