@@ -710,3 +710,89 @@ fn suppression_path_matches_nested_member() {
     let report = check_json(&ws, &[]);
     assert!(!rule_ids(&report).contains(&"SD001".to_string()));
 }
+
+// --- additional ecosystems + JUnit (Phase 4) ---------------------------------
+
+#[test]
+fn cargo_crate_missing_lock_is_flagged() {
+    let ws = workspace(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n",
+        ),
+        ("src/main.rs", "fn main() {}\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    let ids = rule_ids(&report);
+    assert!(ids.contains(&"SD001".to_string()), "ids: {ids:?}");
+    let sd001 = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["rule_id"] == "SD001")
+        .unwrap();
+    assert_eq!(sd001["package_manager"], "cargo");
+    assert_eq!(sd001["ecosystem"], "rust");
+    assert_eq!(sd001["severity"], "error");
+}
+
+#[test]
+fn cargo_crate_with_lock_is_clean() {
+    let ws = workspace(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n",
+        ),
+        ("src/main.rs", "fn main() {}\n"),
+        ("Cargo.lock", "version = 3\n"),
+    ]);
+    assert!(!rule_ids(&check_json(&ws, &[])).contains(&"SD001".to_string()));
+}
+
+#[test]
+fn go_module_missing_sum_is_flagged() {
+    let ws = workspace(&[(
+        "go.mod",
+        "module example.com/m\n\ngo 1.21\n\nrequire github.com/x/y v1.0.0\n",
+    )]);
+    let report = check_json(&ws, &[]);
+    let sd001 = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["rule_id"] == "SD001");
+    let sd001 = sd001.expect("SD001 for go module");
+    assert_eq!(sd001["package_manager"], "go");
+    assert_eq!(sd001["ecosystem"], "go");
+}
+
+#[test]
+fn go_module_with_sum_is_clean() {
+    let ws = workspace(&[
+        (
+            "go.mod",
+            "module m\ngo 1.21\nrequire github.com/x/y v1.0.0\n",
+        ),
+        ("go.sum", "github.com/x/y v1.0.0 h1:abc=\n"),
+    ]);
+    assert!(!rule_ids(&check_json(&ws, &[])).contains(&"SD001".to_string()));
+}
+
+#[test]
+fn junit_output_is_well_formed() {
+    let ws = workspace(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n",
+        ),
+        ("src/main.rs", "fn main() {}\n"),
+    ]);
+    let out = run(&ws, &["check", ".", "--format", "junit"]);
+    let xml = stdout(&out);
+    assert!(xml.starts_with("<?xml version=\"1.0\""), "{xml}");
+    assert!(xml.contains("<testsuites name=\"safe-deps\""));
+    assert!(xml.contains("<testcase"));
+    assert!(xml.contains("type=\"SD001\""));
+    // Errors present → process exits 1 by default.
+    assert_eq!(code(&out), 1);
+}

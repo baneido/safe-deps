@@ -43,7 +43,9 @@ covers member packages."
             PackageManager::Npm
             | PackageManager::Yarn
             | PackageManager::Pnpm
-            | PackageManager::Uv => {
+            | PackageManager::Uv
+            | PackageManager::Cargo
+            | PackageManager::Go => {
                 if !facts.lockfiles.is_empty() {
                     return Vec::new();
                 }
@@ -116,6 +118,8 @@ fn expected_lockfile_name(pm: PackageManager) -> &'static str {
         PackageManager::Pnpm => "pnpm-lock.yaml",
         PackageManager::Bun => "bun.lock",
         PackageManager::Uv => "uv.lock",
+        PackageManager::Cargo => "Cargo.lock",
+        PackageManager::Go => "go.sum",
         PackageManager::Pip => "lockfile",
     }
 }

@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::filesystem::WorkspaceContext;
 
+pub mod cargo;
+pub mod go;
 pub mod javascript;
 pub mod python;
 
@@ -58,6 +60,8 @@ pub fn syntax_diagnostic(
 pub enum Ecosystem {
     JavaScript,
     Python,
+    Rust,
+    Go,
 }
 
 impl Ecosystem {
@@ -65,6 +69,8 @@ impl Ecosystem {
         match self {
             Ecosystem::JavaScript => "javascript",
             Ecosystem::Python => "python",
+            Ecosystem::Rust => "rust",
+            Ecosystem::Go => "go",
         }
     }
 }
@@ -85,6 +91,8 @@ pub enum PackageManager {
     Bun,
     Pip,
     Uv,
+    Cargo,
+    Go,
 }
 
 impl PackageManager {
@@ -96,6 +104,8 @@ impl PackageManager {
             PackageManager::Bun => "bun",
             PackageManager::Pip => "pip",
             PackageManager::Uv => "uv",
+            PackageManager::Cargo => "cargo",
+            PackageManager::Go => "go",
         }
     }
 
@@ -106,6 +116,8 @@ impl PackageManager {
             | PackageManager::Pnpm
             | PackageManager::Bun => Ecosystem::JavaScript,
             PackageManager::Pip | PackageManager::Uv => Ecosystem::Python,
+            PackageManager::Cargo => Ecosystem::Rust,
+            PackageManager::Go => Ecosystem::Go,
         }
     }
 }
@@ -223,6 +235,8 @@ pub fn analyzers() -> Vec<Box<dyn Analyzer>> {
     vec![
         Box::new(javascript::JavaScriptAnalyzer),
         Box::new(python::PythonAnalyzer),
+        Box::new(cargo::CargoAnalyzer),
+        Box::new(go::GoAnalyzer),
     ]
 }
 
@@ -249,6 +263,8 @@ fn ecosystem_analyzer_name(ecosystem: Ecosystem) -> &'static str {
     match ecosystem {
         Ecosystem::JavaScript => "javascript",
         Ecosystem::Python => "python",
+        Ecosystem::Rust => "rust",
+        Ecosystem::Go => "go",
     }
 }
 
