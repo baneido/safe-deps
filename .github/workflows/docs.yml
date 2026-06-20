@@ -29,12 +29,16 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
+          cache: npm
+
+      - name: Install docs tooling
+        run: npm ci --ignore-scripts --no-audit --fund=false
 
       - name: Lint Markdown
-        run: npm exec --yes --package markdownlint-cli2@0.17.2 -- markdownlint-cli2 "**/*.md"
+        run: npm run lint:markdown
 
       - name: Spell check Markdown
-        run: npm exec --yes --package cspell@8.17.5 -- cspell --config .cspell.json "**/*.md"
+        run: npm run lint:spelling
 
       - name: Check Markdown links
         uses: lycheeverse/lychee-action@8646ba30535128ac92d33dfc9133794bfdd9b411 # v2
@@ -44,4 +48,5 @@ jobs:
             --accept 200,206,429
             --exclude-loopback
             --exclude-private
-            './**/*.md'
+            './*.md'
+            './docs/**/*.md'
