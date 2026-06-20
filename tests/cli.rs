@@ -496,3 +496,217 @@ fn missing_path_is_usage_or_internal_error() {
     let out = run(&ws, &["check", "does-not-exist"]);
     assert_ne!(code(&out), 0);
 }
+
+// --- review regressions ------------------------------------------------------
+
+#[test]
+fn package_manager_field_drives_detection_without_lockfile() {
+    // Only the camelCase `packageManager` field identifies the manager; SD001
+    // must name yarn.lock, not package-lock.json.
+    let ws = workspace(&[(
+        "package.json",
+        r#"{ "name": "a", "packageManager": "yarn@4.1.0", "dependencies": { "lodash": "^4" } }"#,
+    )]);
+    let report = check_json(&ws, &[]);
+    let sd001 = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["rule_id"] == "SD001")
+        .expect("SD001 expected");
+    assert_eq!(sd001["package_manager"], "yarn");
+    assert!(sd001["message"].as_str().unwrap().contains("yarn.lock"));
+}
+
+#[test]
+fn pip_equals_joined_insecure_index_is_flagged() {
+    let ws = workspace(&[(
+        "requirements.txt",
+        "--index-url=http://pypi.internal/simple\nrequests==2.31.0\n",
+    )]);
+    let report = check_json(&ws, &[]);
+    assert!(rule_ids(&report).contains(&"SD003".to_string()));
+}
+
+#[test]
+fn rule_filter_normalizes_short_and_lowercase_ids() {
+    let ws = workspace(&[("package.json", NPM_DEPS), (".npmrc", "strict-ssl=false\n")]);
+    let report = check_json(&ws, &["--rule", "sd3"]);
+    let ids = rule_ids(&report);
+    assert!(!ids.is_empty(), "lowercase short id dropped all findings");
+    assert!(ids.iter().all(|id| id == "SD003"), "ids: {ids:?}");
+}
+
+#[test]
+fn partial_hash_pinning_still_reports_sd004() {
+    // One requirement hashed, one not -> integrity is not actually enforced.
+    let ws = workspace(&[(
+        "requirements.txt",
+        "requests==2.31.0 --hash=sha256:aaa\nflask==3.0.0\n",
+    )]);
+    let report = check_json(&ws, &[]);
+    assert!(rule_ids(&report).contains(&"SD004".to_string()));
+}
+
+#[test]
+fn fully_hash_pinned_requirements_suppress_sd004() {
+    let ws = workspace(&[(
+        "requirements.txt",
+        "requests==2.31.0 --hash=sha256:aaa\nflask==3.0.0 --hash=sha256:bbb\n",
+    )]);
+    let report = check_json(&ws, &[]);
+    assert!(!rule_ids(&report).contains(&"SD004".to_string()));
+}
+
+#[test]
+fn uppercase_http_scheme_is_flagged() {
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        (".npmrc", "registry=HTTP://registry.internal/\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    assert!(rule_ids(&report).contains(&"SD003".to_string()));
+}
+
+#[test]
+fn malformed_structured_config_emits_diagnostic_and_strict_exits_four() {
+    let ws = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "a", "packageManager": "bun@1.2.0", "dependencies": { "x": "^1" } }"#,
+        ),
+        ("bunfig.toml", "this is = not valid = toml\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    let diags = report["diagnostics"].as_array().unwrap();
+    assert!(diags
+        .iter()
+        .any(|d| d["message"].as_str().unwrap().contains("bunfig.toml")));
+    let strict = run(&ws, &["check", ".", "--strict-parser-errors"]);
+    assert_eq!(code(&strict), 4);
+}
+
+#[test]
+fn uv_workspace_member_covered_by_root_lock() {
+    let ws = workspace(&[
+        (
+            "pyproject.toml",
+            "[project]\nname = \"root\"\nversion = \"0\"\n[tool.uv.workspace]\nmembers = [\"pkgs/*\"]\n",
+        ),
+        ("uv.lock", "version = 1\n"),
+        (
+            "pkgs/a/pyproject.toml",
+            "[project]\nname = \"a\"\nversion = \"0\"\ndependencies = [\"requests\"]\n[tool.uv]\npackage = true\n",
+        ),
+    ]);
+    let report = check_json(&ws, &[]);
+    assert!(
+        !rule_ids(&report).contains(&"SD001".to_string()),
+        "unexpected SD001: {:?}",
+        rule_ids(&report)
+    );
+}
+
+#[test]
+fn uv_member_without_workspace_declaration_still_flags_sd001() {
+    // Guards the test above: drop the workspace declaration and SD001 returns,
+    // proving the coverage logic is what suppresses it.
+    let ws = workspace(&[
+        ("pyproject.toml", "[project]\nname = \"root\"\nversion = \"0\"\n"),
+        ("uv.lock", "version = 1\n"),
+        (
+            "pkgs/a/pyproject.toml",
+            "[project]\nname = \"a\"\nversion = \"0\"\ndependencies = [\"requests\"]\n[tool.uv]\npackage = true\n",
+        ),
+    ]);
+    let report = check_json(&ws, &[]);
+    assert!(rule_ids(&report).contains(&"SD001".to_string()));
+}
+
+#[test]
+fn malformed_expires_is_config_error() {
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        (
+            "safe-deps.toml",
+            "[[suppressions]]\nrule = \"SD001\"\npath = \"package.json\"\nreason = \"r\"\nexpires = \"soon\"\n",
+        ),
+    ]);
+    let out = run(&ws, &["check", "."]);
+    assert_eq!(code(&out), 2);
+}
+
+#[test]
+fn far_future_suppression_is_active() {
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        (
+            "safe-deps.toml",
+            "[[suppressions]]\nrule = \"SD001\"\npath = \"package.json\"\nreason = \"r\"\nexpires = \"2999-01-01\"\n",
+        ),
+    ]);
+    let report = check_json(&ws, &[]);
+    assert!(!rule_ids(&report).contains(&"SD001".to_string()));
+}
+
+#[test]
+fn json_findings_are_severity_ordered() {
+    let ws = workspace(&[("package.json", NPM_DEPS), (".npmrc", "strict-ssl=false\n")]);
+    let report = check_json(&ws, &[]);
+    let severities: Vec<&str> = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["severity"].as_str().unwrap())
+        .collect();
+    // Errors must come before warnings; a string sort would invert this.
+    let first_warning = severities.iter().position(|s| *s == "warning");
+    let last_error = severities.iter().rposition(|s| *s == "error");
+    if let (Some(w), Some(e)) = (first_warning, last_error) {
+        assert!(e < w, "error after warning: {severities:?}");
+    }
+}
+
+#[test]
+fn npmrc_finding_carries_line_and_line_suppression_matches() {
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        (".npmrc", "registry=https://ok/\nstrict-ssl=false\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    let sd003 = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["rule_id"] == "SD003")
+        .unwrap();
+    assert_eq!(sd003["location"]["line"], 2);
+
+    // A line-scoped suppression now matches that exact line.
+    write(
+        ws.path(),
+        "safe-deps.toml",
+        "[[suppressions]]\nrule = \"SD003\"\npath = \".npmrc\"\nreason = \"r\"\nline = 2\n",
+    );
+    let suppressed = check_json(&ws, &[]);
+    assert!(!rule_ids(&suppressed).contains(&"SD003".to_string()));
+    let diags = suppressed["diagnostics"].as_array().unwrap();
+    assert!(!diags
+        .iter()
+        .any(|d| d["message"].as_str().unwrap().contains("unused")));
+}
+
+#[test]
+fn suppression_path_matches_nested_member() {
+    let ws = workspace(&[(
+        "packages/app/package.json",
+        r#"{ "name": "app", "dependencies": { "x": "^1" } }"#,
+    )]);
+    write(
+        ws.path(),
+        "safe-deps.toml",
+        "[[suppressions]]\nrule = \"SD001\"\npath = \"packages/app/package.json\"\nreason = \"r\"\n",
+    );
+    let report = check_json(&ws, &[]);
+    assert!(!rule_ids(&report).contains(&"SD001".to_string()));
+}

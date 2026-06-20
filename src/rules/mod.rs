@@ -203,12 +203,17 @@ struct ParsedSuppression {
 impl ParsedSuppression {
     fn new(idx: usize, supp: &Suppression) -> Option<Self> {
         let glob = Glob::new(&supp.path).ok()?;
+        let today = today_ymd();
         let expired = supp.expires.as_ref().and_then(|expires| {
-            if expires.as_str() < today_string().as_str() {
-                Some(expires.clone())
-            } else {
-                None
-            }
+            // A suppression is expired on or after its expiry date. Compare
+            // parsed dates, not strings, so `2026-6-1` and boundary dates work.
+            // A malformed date is treated as expired rather than granting an
+            // indefinite suppression (config::validate rejects it earlier).
+            let is_expired = match crate::config::parse_iso_date(expires) {
+                Some(date) => date <= today,
+                None => true,
+            };
+            is_expired.then(|| expires.clone())
         });
         let _ = idx;
         Some(Self {
@@ -249,11 +254,6 @@ impl ParsedSuppression {
         }
         true
     }
-}
-
-fn today_string() -> String {
-    let (y, m, d) = today_ymd();
-    format!("{y:04}-{m:02}-{d:02}")
 }
 
 fn today_ymd() -> (i64, u32, u32) {

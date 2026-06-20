@@ -11,8 +11,12 @@ use crate::ecosystems::EcoError;
 #[derive(Debug, Clone, Default)]
 pub struct NpmrcSettings {
     pub strict_ssl: Option<bool>,
+    /// 1-based line of the `strict-ssl` assignment, for precise locations.
+    pub strict_ssl_line: Option<u32>,
     pub registry: Option<String>,
     pub package_lock_enabled: Option<bool>,
+    /// 1-based line of the `package-lock` assignment, for precise locations.
+    pub package_lock_line: Option<u32>,
     /// Any registry URLs (scoped or default) that use plaintext HTTP.
     pub http_registries: Vec<String>,
 }
@@ -30,7 +34,8 @@ pub fn load(
 
 pub fn parse(text: &str) -> NpmrcSettings {
     let mut settings = NpmrcSettings::default();
-    for raw in text.lines() {
+    for (idx, raw) in text.lines().enumerate() {
+        let line_no = (idx + 1) as u32;
         let line = raw.trim();
         if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
             continue;
@@ -42,15 +47,21 @@ pub fn parse(text: &str) -> NpmrcSettings {
         let key = key.trim();
         let value = value.trim().trim_matches('"');
         match key {
-            "strict-ssl" => settings.strict_ssl = parse_bool(value),
-            "package-lock" => settings.package_lock_enabled = parse_bool(value),
+            "strict-ssl" => {
+                settings.strict_ssl = parse_bool(value);
+                settings.strict_ssl_line = Some(line_no);
+            }
+            "package-lock" => {
+                settings.package_lock_enabled = parse_bool(value);
+                settings.package_lock_line = Some(line_no);
+            }
             "registry" => {
                 settings.registry = Some(value.to_string());
-                if value.starts_with("http://") {
+                if crate::ecosystems::is_http_url(value) {
                     settings.http_registries.push(value.to_string());
                 }
             }
-            _ if key.ends_with(":registry") && value.starts_with("http://") => {
+            _ if key.ends_with(":registry") && crate::ecosystems::is_http_url(value) => {
                 settings.http_registries.push(value.to_string());
             }
             _ => {}
@@ -112,5 +123,19 @@ mod tests {
     fn strips_surrounding_quotes() {
         let s = parse("registry=\"http://q.example.com/\"\n");
         assert_eq!(s.registry.as_deref(), Some("http://q.example.com/"));
+    }
+
+    #[test]
+    fn flags_uppercase_http_scheme() {
+        // URL schemes are case-insensitive; `HTTP://` is still plaintext.
+        let s = parse("registry=HTTP://registry.internal/\n");
+        assert_eq!(s.http_registries, vec!["HTTP://registry.internal/"]);
+    }
+
+    #[test]
+    fn tracks_setting_line_numbers() {
+        let s = parse("registry=https://ok/\nstrict-ssl=false\npackage-lock=false\n");
+        assert_eq!(s.strict_ssl_line, Some(2));
+        assert_eq!(s.package_lock_line, Some(3));
     }
 }

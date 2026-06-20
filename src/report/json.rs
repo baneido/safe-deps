@@ -68,19 +68,12 @@ struct JsonSummary {
 
 impl JsonReport {
     fn from_report(report: &Report) -> Self {
-        let mut findings: Vec<JsonFinding> = report.findings.iter().map(json_finding).collect();
-        findings.sort_by(|a, b| {
-            b.severity
-                .cmp(&a.severity)
-                .then_with(|| a.rule_id.cmp(&b.rule_id))
-                .then_with(|| a.project_root.cmp(&b.project_root))
-                .then_with(|| {
-                    a.location
-                        .as_ref()
-                        .map(|l| l.file.clone())
-                        .cmp(&b.location.as_ref().map(|l| l.file.clone()))
-                })
-        });
+        // Use the canonical ordering so JSON and text agree on a stable order.
+        // Sorting JsonFinding by its severity *string* would put "warning"
+        // ahead of "error"; sort the typed findings instead.
+        let mut sorted = report.findings.clone();
+        crate::report::sort_findings(&mut sorted);
+        let findings: Vec<JsonFinding> = sorted.iter().map(json_finding).collect();
         let diagnostics: Vec<JsonDiagnostic> =
             report.diagnostics.iter().map(json_diagnostic).collect();
         let (errors, warnings, info) = count_severities(&report.findings);

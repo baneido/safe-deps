@@ -38,7 +38,7 @@ allow-insecure-host. Local test exceptions should be scoped narrowly."
                         input,
                         "strict-ssl=false disables TLS verification for the registry.",
                         Some("set strict-ssl=true (the default) or remove the override."),
-                        config_loc(facts, ".npmrc"),
+                        config_loc_at(facts, ".npmrc", settings.strict_ssl_line),
                     ));
                 }
                 for url in &settings.http_registries {
@@ -78,7 +78,7 @@ allow-insecure-host. Local test exceptions should be scoped narrowly."
                     .index_urls
                     .iter()
                     .chain(settings.extra_index_urls.iter())
-                    .filter(|u| u.starts_with("http://"))
+                    .filter(|u| crate::ecosystems::is_http_url(u))
                 {
                     findings.push(finding(
                         input,
@@ -103,7 +103,7 @@ allow-insecure-host. Local test exceptions should be scoped narrowly."
                     .index_urls
                     .iter()
                     .chain(settings.extra_index_urls.iter())
-                    .filter(|u| u.starts_with("http://"))
+                    .filter(|u| crate::ecosystems::is_http_url(u))
                 {
                     findings.push(finding(
                         input,
@@ -148,4 +148,18 @@ fn config_loc(facts: &crate::ecosystems::ProjectFacts, basename: &str) -> Option
         .find(|c| c.relative.file_name().and_then(|n| n.to_str()) == Some(basename))
         .map(|c| Location::file(&c.relative))
         .or_else(|| facts.manifest.as_ref().map(|m| Location::file(&m.relative)))
+}
+
+/// Like [`config_loc`] but attaches a 1-based line when one is known, so that
+/// line-scoped suppressions and precise output can target the exact setting.
+fn config_loc_at(
+    facts: &crate::ecosystems::ProjectFacts,
+    basename: &str,
+    line: Option<u32>,
+) -> Option<Location> {
+    let mut loc = config_loc(facts, basename)?;
+    if let Some(line) = line {
+        loc.line = Some(line);
+    }
+    Some(loc)
 }

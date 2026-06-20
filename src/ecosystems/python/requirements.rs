@@ -14,10 +14,13 @@ pub struct RequirementsSettings {
     pub trusted_hosts: Vec<String>,
     pub index_urls: Vec<String>,
     pub extra_index_urls: Vec<String>,
-    /// Whether any requirement line carried `--hash=` metadata.
+    /// True only when every requirement is hash-pinned, mirroring pip's
+    /// `--require-hashes` rule that rejects any unpinned requirement.
     pub has_hash_pins: bool,
     /// Count of requirement lines (excluding options, comments, blanks).
     pub requirement_count: usize,
+    /// Count of requirement lines that carry at least one `--hash=` pin.
+    pub hashed_requirement_count: usize,
 }
 
 pub fn load(
@@ -33,8 +36,10 @@ pub fn load(
 
 pub fn parse(text: &str) -> RequirementsSettings {
     let mut settings = RequirementsSettings::default();
-    for raw in text.lines() {
-        let line = strip_inline_comment(raw).trim();
+    // pip joins lines ending in `\` into one logical requirement, so hashes on
+    // continuation lines belong to the requirement above them.
+    for logical in logical_lines(text) {
+        let line = logical.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -43,14 +48,46 @@ pub fn parse(text: &str) -> RequirementsSettings {
             continue;
         }
         settings.requirement_count += 1;
-        if line.contains("--hash=") {
-            settings.has_hash_pins = true;
+        if line_has_hash(line) {
+            settings.hashed_requirement_count += 1;
         }
     }
-    if settings.has_hash_pins {
+    // Integrity is only enforced when the explicit flag is present or every
+    // requirement is hash-pinned. A single hashed requirement is not enough.
+    if settings.requirement_count > 0
+        && settings.hashed_requirement_count == settings.requirement_count
+    {
+        settings.has_hash_pins = true;
         settings.require_hashes = true;
     }
     settings
+}
+
+/// Joins physical lines into logical lines, honoring trailing `\` continuations
+/// and stripping inline comments first.
+fn logical_lines(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for raw in text.lines() {
+        let stripped = strip_inline_comment(raw);
+        if let Some(prefix) = stripped.trim_end().strip_suffix('\\') {
+            current.push_str(prefix);
+            current.push(' ');
+        } else {
+            current.push_str(stripped);
+            out.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.trim().is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// Whether a requirement's logical line carries a `--hash` pin in any form.
+fn line_has_hash(line: &str) -> bool {
+    line.split_whitespace()
+        .any(|t| t == "--hash" || t.starts_with("--hash="))
 }
 
 fn strip_inline_comment(line: &str) -> &str {
@@ -84,39 +121,45 @@ fn parse_option_line(line: &str, settings: &mut RequirementsSettings) {
     let tokens: Vec<&str> = line.split_whitespace().collect();
     let mut i = 0;
     while i < tokens.len() {
-        let token = tokens[i];
-        match token {
+        // Options accept both `--flag value` and `--flag=value`.
+        let (flag, inline) = match tokens[i].split_once('=') {
+            Some((f, v)) => (f, Some(v)),
+            None => (tokens[i], None),
+        };
+        match flag {
             "--require-hashes" => settings.require_hashes = true,
             "--trusted-host" => {
-                if let Some(host) = tokens.get(i + 1) {
-                    settings.trusted_hosts.push(host.to_string());
-                    i += 1;
+                if let Some(host) = take_value(inline, &tokens, &mut i) {
+                    settings.trusted_hosts.push(host);
                 }
             }
             "--index-url" | "-i" => {
-                if let Some(url) = tokens.get(i + 1) {
-                    settings.index_urls.push(url.to_string());
-                    i += 1;
+                if let Some(url) = take_value(inline, &tokens, &mut i) {
+                    settings.index_urls.push(url);
                 }
             }
             "--extra-index-url" => {
-                if let Some(url) = tokens.get(i + 1) {
-                    settings.extra_index_urls.push(url.to_string());
-                    i += 1;
+                if let Some(url) = take_value(inline, &tokens, &mut i) {
+                    settings.extra_index_urls.push(url);
                 }
             }
-            "--hash" => {
-                settings.has_hash_pins = true;
-            }
-            _ => {
-                if let Some(rest) = token.strip_prefix("--hash=") {
-                    let _ = rest;
-                    settings.has_hash_pins = true;
-                }
-            }
+            _ => {}
         }
         i += 1;
     }
+}
+
+/// Resolves an option value from either the inline `=value` or the next token,
+/// advancing the cursor when the next token is consumed.
+fn take_value(inline: Option<&str>, tokens: &[&str], i: &mut usize) -> Option<String> {
+    if let Some(value) = inline {
+        return Some(value.to_string());
+    }
+    if let Some(value) = tokens.get(*i + 1) {
+        *i += 1;
+        return Some(value.to_string());
+    }
+    None
 }
 
 #[cfg(test)]
@@ -161,5 +204,42 @@ mod tests {
     fn skips_blank_and_comment_lines() {
         let s = parse("\n# a comment\nrequests==2.31.0\n");
         assert_eq!(s.requirement_count, 1);
+    }
+
+    #[test]
+    fn parses_equals_joined_options() {
+        // Regression: `--flag=value` was dropped because parsing assumed the
+        // value was the next whitespace-separated token.
+        let s = parse(
+            "--index-url=http://pypi.internal/simple\n--trusted-host=pypi.internal\n--extra-index-url=https://extra/simple\nrequests==2.31.0\n",
+        );
+        assert_eq!(s.index_urls, vec!["http://pypi.internal/simple"]);
+        assert_eq!(s.trusted_hosts, vec!["pypi.internal"]);
+        assert_eq!(s.extra_index_urls, vec!["https://extra/simple"]);
+    }
+
+    #[test]
+    fn partial_hash_pinning_is_not_treated_as_enforced() {
+        // Regression: a single `--hash` used to mark the whole file as pinned.
+        let s = parse("requests==2.31.0 --hash=sha256:aaa\nflask==3.0.0\n");
+        assert_eq!(s.requirement_count, 2);
+        assert_eq!(s.hashed_requirement_count, 1);
+        assert!(!s.has_hash_pins);
+        assert!(!s.require_hashes);
+    }
+
+    #[test]
+    fn all_requirements_hashed_is_enforced() {
+        let s = parse("requests==2.31.0 --hash=sha256:aaa\nflask==3.0.0 --hash=sha256:bbb\n");
+        assert!(s.has_hash_pins);
+        assert!(s.require_hashes);
+    }
+
+    #[test]
+    fn hash_on_continuation_line_counts_for_requirement() {
+        let s = parse("requests==2.31.0 \\\n    --hash=sha256:aaa\n");
+        assert_eq!(s.requirement_count, 1);
+        assert_eq!(s.hashed_requirement_count, 1);
+        assert!(s.require_hashes);
     }
 }

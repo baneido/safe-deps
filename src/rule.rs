@@ -138,12 +138,15 @@ pub struct Finding {
 
 impl Finding {
     /// A normalized path key used for deterministic sorting and suppression
-    /// matching, relative to the workspace root.
+    /// matching, relative to the workspace root. Path separators are normalized
+    /// to `/` so suppression globs (always written with `/`) match on Windows,
+    /// where `to_string_lossy` would otherwise yield backslashes.
     pub fn location_path_string(&self) -> String {
-        match &self.location {
-            Some(loc) => loc.file.to_string_lossy().to_string(),
-            None => self.project_root.to_string_lossy().to_string(),
-        }
+        let raw = match &self.location {
+            Some(loc) => loc.file.to_string_lossy(),
+            None => self.project_root.to_string_lossy(),
+        };
+        raw.replace(std::path::MAIN_SEPARATOR, "/")
     }
 }
 
@@ -241,5 +244,28 @@ mod tests {
     fn package_manager_maps_to_ecosystem() {
         assert_eq!(PackageManager::Npm.ecosystem(), Ecosystem::JavaScript);
         assert_eq!(PackageManager::Uv.ecosystem(), Ecosystem::Python);
+    }
+
+    #[test]
+    fn location_path_string_normalizes_separators() {
+        // Built component-by-component so the path uses the OS separator; the
+        // key must still use `/` so suppression globs match on Windows.
+        let mut file = PathBuf::new();
+        file.push("pkg");
+        file.push("package.json");
+        let finding = Finding {
+            rule_id: RuleId::new("SD001"),
+            severity: Severity::Warning,
+            confidence: Confidence::High,
+            message: String::new(),
+            location: Some(Location::file(file)),
+            project_root: PathBuf::from("pkg"),
+            ecosystem: Ecosystem::JavaScript,
+            package_manager: Some(PackageManager::Npm),
+            remediation: None,
+        };
+        let key = finding.location_path_string();
+        assert!(!key.contains('\\'));
+        assert_eq!(key, "pkg/package.json");
     }
 }

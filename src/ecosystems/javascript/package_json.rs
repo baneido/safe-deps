@@ -12,7 +12,7 @@ use crate::ecosystems::EcoError;
 pub struct PackageJson {
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "packageManager")]
     pub package_manager: Option<String>,
     #[serde(default)]
     pub private: Option<bool>,
@@ -164,5 +164,14 @@ mod tests {
     fn missing_workspaces_is_empty() {
         let pj = parse(r#"{"name":"x"}"#);
         assert!(pj.workspaces.is_empty());
+    }
+
+    #[test]
+    fn reads_camel_case_package_manager_field() {
+        // Regression: the real key is camelCase `packageManager`; without the
+        // alias it was always None and detection fell back to npm.
+        let pj = parse(r#"{"name":"x","packageManager":"yarn@4.1.0"}"#);
+        let hint = pj.package_manager_hint().unwrap();
+        assert_eq!(hint.manager, crate::ecosystems::PackageManager::Yarn);
     }
 }

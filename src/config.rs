@@ -141,8 +141,34 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 "suppression requires both `rule` and `path`".to_string(),
             ));
         }
+        if let Some(expires) = &supp.expires {
+            if parse_iso_date(expires).is_none() {
+                return Err(ConfigError::Invalid(format!(
+                    "suppression for rule {} has invalid expires '{}' (expected YYYY-MM-DD)",
+                    supp.rule, expires
+                )));
+            }
+        }
     }
     Ok(())
+}
+
+/// Parses a `YYYY-MM-DD` date into a `(year, month, day)` tuple suitable for
+/// ordered comparison. Components may be non-zero-padded (`2026-6-1`). Returns
+/// `None` for malformed input so callers can reject it rather than silently
+/// treating a typo as "never expires".
+pub fn parse_iso_date(s: &str) -> Option<(i64, u32, u32)> {
+    let mut parts = s.trim().split('-');
+    let year = parts.next()?.parse::<i64>().ok()?;
+    let month = parts.next()?.parse::<u32>().ok()?;
+    let day = parts.next()?.parse::<u32>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some((year, month, day))
 }
 
 /// Loads config from a file path.
@@ -308,5 +334,37 @@ expires = "2030-01-01"
         assert_eq!(config.rules["SD001"].level, Some(Severity::Warning));
         assert_eq!(config.suppressions.len(), 1);
         assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn parses_iso_dates_including_non_padded() {
+        assert_eq!(parse_iso_date("2026-06-21"), Some((2026, 6, 21)));
+        assert_eq!(parse_iso_date("2026-6-1"), Some((2026, 6, 1)));
+        assert!(parse_iso_date("soon").is_none());
+        assert!(parse_iso_date("2026-13-01").is_none());
+        assert!(parse_iso_date("2026-06").is_none());
+        assert!(parse_iso_date("2026-06-21-01").is_none());
+    }
+
+    #[test]
+    fn iso_dates_order_chronologically_not_lexically() {
+        // "2026-6-21" must sort after "2026-06-01", which a string compare
+        // (where '6' > '0') would get wrong.
+        assert!(parse_iso_date("2026-6-21") > parse_iso_date("2026-06-01"));
+    }
+
+    #[test]
+    fn validate_rejects_malformed_expires() {
+        let mut config = Config::default();
+        config.suppressions.push(Suppression {
+            rule: "SD001".to_string(),
+            path: "package.json".to_string(),
+            reason: "r".to_string(),
+            expires: Some("soon".to_string()),
+            line: None,
+            package_manager: None,
+            ecosystem: None,
+        });
+        assert!(validate(&config).is_err());
     }
 }

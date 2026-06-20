@@ -157,8 +157,11 @@ fn run_check(args: CheckArgs) -> Result<u8, CliError> {
         result.findings.retain(|f| f.package_manager == Some(pm));
     }
     if !args.rules.is_empty() {
+        // Normalize so `--rule sd3` and `--rule SD003` both match, mirroring
+        // `explain`. Without this, a lowercase or short id silently drops every
+        // finding and the run exits 0.
         let allowed: std::collections::HashSet<String> =
-            args.rules.iter().map(|s| s.to_string()).collect();
+            args.rules.iter().map(|s| normalize_rule_id(s).0).collect();
         result
             .findings
             .retain(|f| allowed.contains(f.rule_id.as_str()));

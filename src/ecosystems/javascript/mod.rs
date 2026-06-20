@@ -233,6 +233,14 @@ fn build_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFacts
         false
     };
 
+    // Surface malformed structured config files (bunfig.toml, .yarnrc.yml,
+    // pnpm-workspace.yaml) so they are not silently ignored.
+    for config in &configs {
+        if let Some(diag) = crate::ecosystems::syntax_diagnostic(ctx, &config.relative) {
+            parse_diagnostics.push(diag);
+        }
+    }
+
     let install_settings = build_install_settings(ctx, dir, project.package_manager);
 
     let covered_by_workspace_lockfile = covered_by_workspace(ctx, dir, project.package_manager);
@@ -287,8 +295,10 @@ fn build_install_settings(
             let npmrc_path = project_join(dir, ".npmrc");
             if let Ok(npmrc) = npm::load(ctx, &npmrc_path) {
                 settings.strict_ssl = npmrc.strict_ssl;
+                settings.strict_ssl_line = npmrc.strict_ssl_line;
                 settings.registry = npmrc.registry;
                 settings.package_lock_enabled = npmrc.package_lock_enabled;
+                settings.package_lock_line = npmrc.package_lock_line;
                 settings.http_registries = npmrc.http_registries;
             }
         }

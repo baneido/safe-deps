@@ -38,7 +38,7 @@ deployment requirements that lack --require-hashes."
                         input,
                         "package-lock=false disables npm lockfile generation.",
                         Some("remove package-lock=false so npm records integrity metadata."),
-                        config_loc(facts, ".npmrc"),
+                        config_loc_at(facts, ".npmrc", settings.package_lock_line),
                         Severity::Error,
                         Confidence::High,
                     ));
@@ -131,4 +131,17 @@ fn config_loc(facts: &crate::ecosystems::ProjectFacts, basename: &str) -> Option
         .find(|c| c.relative.file_name().and_then(|n| n.to_str()) == Some(basename))
         .map(|c| Location::file(&c.relative))
         .or_else(|| facts.manifest.as_ref().map(|m| Location::file(&m.relative)))
+}
+
+/// Like [`config_loc`] but attaches a 1-based line when one is known.
+fn config_loc_at(
+    facts: &crate::ecosystems::ProjectFacts,
+    basename: &str,
+    line: Option<u32>,
+) -> Option<Location> {
+    let mut loc = config_loc(facts, basename)?;
+    if let Some(line) = line {
+        loc.line = Some(line);
+    }
+    Some(loc)
 }

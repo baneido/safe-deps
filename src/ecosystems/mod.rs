@@ -12,6 +12,46 @@ use crate::filesystem::WorkspaceContext;
 pub mod javascript;
 pub mod python;
 
+/// Whether a URL uses the plaintext `http` scheme. URL schemes are
+/// case-insensitive (RFC 3986), so `HTTP://` is treated the same as `http://`.
+/// `https` is never matched.
+pub fn is_http_url(url: &str) -> bool {
+    let trimmed = url.trim_start();
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("http://")
+}
+
+/// Validates the syntax of a structured manifest/config file and returns a
+/// warning diagnostic when it cannot be parsed. The format is chosen by
+/// extension (TOML/JSON/YAML); line-based files such as `.npmrc` and `pip.conf`
+/// have no recognized extension and are skipped. Analysis continues either way;
+/// under `--strict-parser-errors` these diagnostics escalate the run to exit 4.
+pub fn syntax_diagnostic(
+    ctx: &WorkspaceContext,
+    relative: &std::path::Path,
+) -> Option<crate::diagnostics::Diagnostic> {
+    let text = crate::filesystem::read_text(ctx, relative).ok()?;
+    let ext = relative
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let parses = match ext.as_str() {
+        "toml" => toml::from_str::<toml::Value>(&text).is_ok(),
+        "json" => serde_json::from_str::<serde_json::Value>(&text).is_ok(),
+        "yml" | "yaml" => serde_yaml::from_str::<serde_yaml::Value>(&text).is_ok(),
+        _ => return None,
+    };
+    if parses {
+        None
+    } else {
+        Some(crate::diagnostics::Diagnostic::warn_at(
+            format!("could not parse {}", relative.display()),
+            relative.to_path_buf(),
+        ))
+    }
+}
+
 /// Supported ecosystems for the MVP.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -123,8 +163,12 @@ pub enum YarnGeneration {
 pub struct InstallSettings {
     // npm and pnpm (.npmrc)
     pub strict_ssl: Option<bool>,
+    /// 1-based line of `strict-ssl` in `.npmrc`, when known.
+    pub strict_ssl_line: Option<u32>,
     pub registry: Option<String>,
     pub package_lock_enabled: Option<bool>,
+    /// 1-based line of `package-lock` in `.npmrc`, when known.
+    pub package_lock_line: Option<u32>,
     /// Any registry URLs (default or scoped) using plaintext HTTP.
     pub http_registries: Vec<String>,
 
@@ -221,4 +265,18 @@ pub enum EcoError {
     Parse { path: PathBuf, message: String },
     #[error("no analyzer registered for ecosystem {0}")]
     UnknownEcosystem(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_scheme_detection_is_case_insensitive() {
+        assert!(is_http_url("http://example.com"));
+        assert!(is_http_url("HTTP://example.com"));
+        assert!(is_http_url("  Http://example.com"));
+        assert!(!is_http_url("https://example.com"));
+        assert!(!is_http_url("HTTPS://example.com"));
+    }
 }

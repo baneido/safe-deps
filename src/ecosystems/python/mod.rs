@@ -96,6 +96,46 @@ fn has_file_in(ctx: &WorkspaceContext, dir: &Path, name: &str) -> bool {
     ctx.files.iter().any(|f| f.relative == target)
 }
 
+fn is_proper_ancestor(ancestor: &Path, descendant: &Path) -> bool {
+    if ancestor == Path::new(".") {
+        return descendant != Path::new(".");
+    }
+    descendant.starts_with(ancestor) && descendant != ancestor
+}
+
+/// A uv member project is covered when a proper-ancestor uv project declares a
+/// `[tool.uv.workspace]` and holds the shared `uv.lock`. This mirrors the JS
+/// monorepo behavior so members do not get a false SD001.
+fn covered_by_uv_workspace(ctx: &WorkspaceContext, dir: &Path) -> bool {
+    if dir == Path::new(".") {
+        return false;
+    }
+    for py in files_named(ctx, "pyproject.toml") {
+        let root_dir = project_dir(&py);
+        if !is_proper_ancestor(&root_dir, dir) {
+            continue;
+        }
+        if has_file_in(ctx, &root_dir, "uv.lock") && declares_uv_workspace(ctx, &py) {
+            return true;
+        }
+    }
+    false
+}
+
+fn declares_uv_workspace(ctx: &WorkspaceContext, pyproject_path: &Path) -> bool {
+    let Ok(text) = crate::filesystem::read_text(ctx, pyproject_path) else {
+        return false;
+    };
+    let Ok(value) = toml::from_str::<toml::Value>(&text) else {
+        return false;
+    };
+    value
+        .get("tool")
+        .and_then(|t| t.get("uv"))
+        .and_then(|u| u.get("workspace"))
+        .is_some()
+}
+
 /// Returns a warning diagnostic when a `pyproject.toml` exists in `dir` but is
 /// not valid TOML. Detection treats a malformed `pyproject.toml` as pip, so the
 /// check must run regardless of the resolved package manager.
@@ -161,7 +201,12 @@ fn build_uv_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFa
         });
     }
 
-    let parse_diagnostics: Vec<_> = pyproject_parse_diagnostic(ctx, dir).into_iter().collect();
+    let mut parse_diagnostics: Vec<_> = pyproject_parse_diagnostic(ctx, dir).into_iter().collect();
+    for config in &configs {
+        if let Some(diag) = crate::ecosystems::syntax_diagnostic(ctx, &config.relative) {
+            parse_diagnostics.push(diag);
+        }
+    }
 
     let py = pyproject::load(ctx, &py_path).ok();
     let has_manifest_dependencies = py.as_ref().is_some_and(|p| p.has_dependencies);
@@ -198,7 +243,7 @@ fn build_uv_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFa
         configs,
         has_manifest_dependencies,
         install_settings: settings,
-        covered_by_workspace_lockfile: false,
+        covered_by_workspace_lockfile: covered_by_uv_workspace(ctx, dir),
         has_legacy_bun_lockfile: false,
         parse_diagnostics,
     })
