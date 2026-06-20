@@ -46,7 +46,7 @@ npm run lint:spelling   # add new technical terms to .cspell.json "words"
 The pipeline is layered, mirroring `docs/design/safe-deps-cli-design.md`. Each stage
 hands typed data to the next; `cli::run_check` wires them together:
 
-```
+```text
 scan (filesystem.rs)          → WorkspaceContext (file list, no content)
 detect_all (ecosystems)       → Vec<Project>   (root + package_manager + kind)
 facts_for (ecosystems)        → ProjectFacts    (parsers; NO policy decisions)
