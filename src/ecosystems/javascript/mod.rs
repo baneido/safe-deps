@@ -1,0 +1,341 @@
+//! JavaScript ecosystem analyzer: detects npm/Yarn/pnpm/Bun projects and
+//! extracts normalized facts from manifests, lockfiles, and config files.
+
+use std::path::{Path, PathBuf};
+
+use crate::ecosystems::{
+    EcoError, Ecosystem, FileFact, InstallSettings, PackageManager, Project, ProjectFacts,
+    ProjectKind,
+};
+use crate::filesystem::{files_named, project_join, WorkspaceContext};
+
+pub mod bun;
+pub mod npm;
+pub mod package_json;
+pub mod pnpm;
+pub mod yarn;
+
+pub struct JavaScriptAnalyzer;
+
+impl crate::ecosystems::Analyzer for JavaScriptAnalyzer {
+    fn name(&self) -> &'static str {
+        "javascript"
+    }
+
+    fn detect(&self, ctx: &WorkspaceContext) -> Vec<Project> {
+        let package_jsons = files_named(ctx, "package.json");
+        let mut projects = Vec::new();
+        for pj in &package_jsons {
+            let dir = project_dir(pj);
+            let manager = detect_package_manager(ctx, &dir, pj);
+            projects.push(Project {
+                root: dir,
+                ecosystem: Ecosystem::JavaScript,
+                package_manager: manager,
+                kind: ProjectKind::Unknown,
+            });
+        }
+        projects
+    }
+
+    fn facts(&self, project: &Project, ctx: &WorkspaceContext) -> Result<ProjectFacts, EcoError> {
+        build_facts(ctx, project)
+    }
+}
+
+fn project_dir(package_json_path: &Path) -> PathBuf {
+    package_json_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Determines the package manager for a directory containing `package.json`.
+fn detect_package_manager(
+    ctx: &WorkspaceContext,
+    dir: &Path,
+    package_json_path: &Path,
+) -> PackageManager {
+    if let Ok(pj) = package_json::load(ctx, package_json_path) {
+        if let Some(hint) = pj.package_manager_hint() {
+            return hint.manager;
+        }
+    }
+
+    if has_file_in(ctx, dir, "pnpm-lock.yaml") {
+        return PackageManager::Pnpm;
+    }
+    if has_file_in(ctx, dir, "yarn.lock") {
+        return PackageManager::Yarn;
+    }
+    if has_file_in(ctx, dir, "package-lock.json") || has_file_in(ctx, dir, "npm-shrinkwrap.json") {
+        return PackageManager::Npm;
+    }
+    if has_file_in(ctx, dir, "bun.lock") || has_file_in(ctx, dir, "bun.lockb") {
+        return PackageManager::Bun;
+    }
+
+    if has_file_in(ctx, dir, ".yarnrc.yml") || has_file_in(ctx, dir, ".yarnrc") {
+        return PackageManager::Yarn;
+    }
+    if has_file_in(ctx, dir, "pnpm-workspace.yaml") {
+        return PackageManager::Pnpm;
+    }
+    if has_file_in(ctx, dir, "bunfig.toml") {
+        return PackageManager::Bun;
+    }
+
+    // Inherit from the nearest ancestor workspace root, if any.
+    if let Some(inherited) = inherit_from_workspace_root(ctx, dir) {
+        return inherited;
+    }
+
+    PackageManager::Npm
+}
+
+fn has_file_in(ctx: &WorkspaceContext, dir: &Path, name: &str) -> bool {
+    let target = project_join(dir, name);
+    ctx.files.iter().any(|f| f.relative == target)
+}
+
+/// Finds the nearest ancestor workspace root and returns its package manager.
+fn inherit_from_workspace_root(ctx: &WorkspaceContext, dir: &Path) -> Option<PackageManager> {
+    let package_jsons = files_named(ctx, "package.json");
+    let mut best: Option<(usize, PackageManager)> = None;
+    for pj in &package_jsons {
+        let root_dir = project_dir(pj);
+        if !is_proper_ancestor(&root_dir, dir) {
+            continue;
+        }
+        if !is_workspace_root(ctx, &root_dir, pj) {
+            continue;
+        }
+        let pm = detect_package_manager_skip_inherit(ctx, &root_dir, pj);
+        let depth = root_dir.components().count();
+        match &best {
+            None => best = Some((depth, pm)),
+            Some((best_depth, _)) if depth > *best_depth => best = Some((depth, pm)),
+            _ => {}
+        }
+    }
+    best.map(|(_, pm)| pm)
+}
+
+fn detect_package_manager_skip_inherit(
+    ctx: &WorkspaceContext,
+    dir: &Path,
+    package_json_path: &Path,
+) -> PackageManager {
+    if let Ok(pj) = package_json::load(ctx, package_json_path) {
+        if let Some(hint) = pj.package_manager_hint() {
+            return hint.manager;
+        }
+    }
+    if has_file_in(ctx, dir, "pnpm-lock.yaml") {
+        return PackageManager::Pnpm;
+    }
+    if has_file_in(ctx, dir, "yarn.lock") {
+        return PackageManager::Yarn;
+    }
+    if has_file_in(ctx, dir, "package-lock.json") || has_file_in(ctx, dir, "npm-shrinkwrap.json") {
+        return PackageManager::Npm;
+    }
+    if has_file_in(ctx, dir, "bun.lock") || has_file_in(ctx, dir, "bun.lockb") {
+        return PackageManager::Bun;
+    }
+    if has_file_in(ctx, dir, ".yarnrc.yml") || has_file_in(ctx, dir, ".yarnrc") {
+        return PackageManager::Yarn;
+    }
+    if has_file_in(ctx, dir, "pnpm-workspace.yaml") {
+        return PackageManager::Pnpm;
+    }
+    if has_file_in(ctx, dir, "bunfig.toml") {
+        return PackageManager::Bun;
+    }
+    PackageManager::Npm
+}
+
+fn is_workspace_root(ctx: &WorkspaceContext, dir: &Path, package_json_path: &Path) -> bool {
+    if has_file_in(ctx, dir, "pnpm-workspace.yaml") {
+        return true;
+    }
+    if let Ok(pj) = package_json::load(ctx, package_json_path) {
+        if !pj.workspaces.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_proper_ancestor(ancestor: &Path, descendant: &Path) -> bool {
+    if ancestor == Path::new(".") {
+        return descendant != Path::new(".");
+    }
+    descendant.starts_with(ancestor) && descendant != ancestor
+}
+
+/// Returns whether a lockfile for `manager` exists in `dir`.
+fn lockfile_in_dir(ctx: &WorkspaceContext, dir: &Path, manager: PackageManager) -> Vec<PathBuf> {
+    let names: &[&str] = match manager {
+        PackageManager::Npm => &["package-lock.json", "npm-shrinkwrap.json"],
+        PackageManager::Yarn => &["yarn.lock"],
+        PackageManager::Pnpm => &["pnpm-lock.yaml"],
+        PackageManager::Bun => &["bun.lock"],
+        PackageManager::Pip | PackageManager::Uv => &[],
+    };
+    names
+        .iter()
+        .filter_map(|name| {
+            let path = project_join(dir, name);
+            if ctx.files.iter().any(|f| f.relative == path) {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Builds `ProjectFacts` for a JavaScript project.
+fn build_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFacts, EcoError> {
+    let dir = &project.root;
+    let pj_path = project_join(dir, "package.json");
+
+    let manifest = if ctx.files.iter().any(|f| f.relative == pj_path) {
+        Some(FileFact {
+            relative: pj_path.clone(),
+        })
+    } else {
+        None
+    };
+
+    let lockfiles: Vec<FileFact> = lockfile_in_dir(ctx, dir, project.package_manager)
+        .into_iter()
+        .map(|p| FileFact { relative: p })
+        .collect();
+
+    let configs = collect_configs(ctx, dir, project.package_manager);
+
+    let mut parse_diagnostics = Vec::new();
+    let has_manifest_dependencies = if manifest.is_some() {
+        match package_json::load(ctx, &pj_path) {
+            Ok(pj) => pj.has_dependencies(),
+            Err(err) => {
+                parse_diagnostics.push(crate::diagnostics::Diagnostic::warn_at(
+                    err.to_string(),
+                    pj_path.clone(),
+                ));
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    let install_settings = build_install_settings(ctx, dir, project.package_manager);
+
+    let covered_by_workspace_lockfile = covered_by_workspace(ctx, dir, project.package_manager);
+
+    let has_legacy_bun_lockfile = project.package_manager == PackageManager::Bun
+        && bun::has_bun_lockb(ctx, dir)
+        && !bun::has_bun_lock(ctx, dir);
+
+    Ok(ProjectFacts {
+        project: project.clone(),
+        manifest,
+        lockfiles,
+        configs,
+        has_manifest_dependencies,
+        install_settings,
+        covered_by_workspace_lockfile,
+        has_legacy_bun_lockfile,
+        parse_diagnostics,
+    })
+}
+
+fn collect_configs(ctx: &WorkspaceContext, dir: &Path, manager: PackageManager) -> Vec<FileFact> {
+    let candidates: &[&str] = match manager {
+        PackageManager::Npm => &[".npmrc"],
+        PackageManager::Pnpm => &[".npmrc", "pnpm-workspace.yaml"],
+        PackageManager::Yarn => &[".yarnrc.yml", ".yarnrc"],
+        PackageManager::Bun => &["bunfig.toml", ".npmrc"],
+        PackageManager::Pip | PackageManager::Uv => &[],
+    };
+    candidates
+        .iter()
+        .filter_map(|name| {
+            let path = project_join(dir, name);
+            if ctx.files.iter().any(|f| f.relative == path) {
+                Some(FileFact { relative: path })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn build_install_settings(
+    ctx: &WorkspaceContext,
+    dir: &Path,
+    manager: PackageManager,
+) -> InstallSettings {
+    let mut settings = InstallSettings::default();
+
+    match manager {
+        PackageManager::Npm | PackageManager::Pnpm => {
+            let npmrc_path = project_join(dir, ".npmrc");
+            if let Ok(npmrc) = npm::load(ctx, &npmrc_path) {
+                settings.strict_ssl = npmrc.strict_ssl;
+                settings.registry = npmrc.registry;
+                settings.package_lock_enabled = npmrc.package_lock_enabled;
+                settings.http_registries = npmrc.http_registries;
+            }
+        }
+        PackageManager::Yarn => {
+            let yarnrc_yml = project_join(dir, ".yarnrc.yml");
+            let has_yml = has_file_in(ctx, dir, ".yarnrc.yml");
+            let has_v1 = has_file_in(ctx, dir, ".yarnrc");
+            if has_yml {
+                if let Ok(yarnrc) = yarn::load_yarnrc_yml(ctx, &yarnrc_yml) {
+                    settings.checksum_behavior = yarnrc.checksum_behavior;
+                    settings.unsafe_http_whitelist = yarnrc.unsafe_http_whitelist;
+                }
+            }
+            settings.yarn_generation = Some(yarn::detect_generation(ctx, dir, has_yml, has_v1));
+        }
+        PackageManager::Bun => {
+            let bunfig = project_join(dir, "bunfig.toml");
+            if has_file_in(ctx, dir, "bunfig.toml") {
+                if let Ok(bunfig_settings) = bun::load_bunfig(ctx, &bunfig) {
+                    settings.trusted_dependencies = bunfig_settings.trusted_dependencies;
+                }
+            }
+        }
+        PackageManager::Pip | PackageManager::Uv => {}
+    }
+
+    settings
+}
+
+/// A project is covered when a proper-ancestor workspace root declares
+/// workspaces and holds a lockfile for the same package manager.
+fn covered_by_workspace(ctx: &WorkspaceContext, dir: &Path, manager: PackageManager) -> bool {
+    if dir == Path::new(".") {
+        return false;
+    }
+    let package_jsons = files_named(ctx, "package.json");
+    for pj in &package_jsons {
+        let root_dir = project_dir(pj);
+        if !is_proper_ancestor(&root_dir, dir) {
+            continue;
+        }
+        if !is_workspace_root(ctx, &root_dir, pj) {
+            continue;
+        }
+        if !lockfile_in_dir(ctx, &root_dir, manager).is_empty() {
+            return true;
+        }
+    }
+    false
+}
