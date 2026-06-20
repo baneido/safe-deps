@@ -117,6 +117,6 @@ unless the user configures `application_roots`/`library_roots`. See `sd001_sever
 
 ## Rule status
 
-SD001–SD004 are implemented. SD005–SD010 are specified in
-`docs/design/safe-deps-cli-design.md` (the rule taxonomy and roadmap) but not yet
+SD001, SD003, and SD004 are implemented. SD002 is registered but inactive until CI command extraction lands (Phase 2).
+SD005–SD010 are specified in `docs/design/safe-deps-cli-design.md` (the rule taxonomy and roadmap) but not yet
 built. `docs/security-best-practices.md` is the research backing the rule IDs.
