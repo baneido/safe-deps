@@ -1,0 +1,51 @@
+{
+  "version": "0.2",
+  "language": "en",
+  "ignorePaths": [
+    "LICENSE"
+  ],
+  "ignoreRegExpList": [
+    "/```[\\s\\S]*?```/g",
+    "/`[^`]+`/g",
+    "/https?:\\/\\/\\S+/g"
+  ],
+  "words": [
+    "allowlist",
+    "allowlists",
+    "allowlisting",
+    "autofix",
+    "Bun",
+    "bunfig",
+    "Bundler",
+    "Cargo",
+    "cspell",
+    "deps",
+    "Gradle",
+    "globset",
+    "insta",
+    "lockfile",
+    "lockfiles",
+    "lychee",
+    "markdownlint",
+    "miette",
+    "monorepo",
+    "monorepos",
+    "mypy",
+    "NuGet",
+    "OSV",
+    "pnpm",
+    "postinstalls",
+    "pytest",
+    "PyPI",
+    "pyproject",
+    "reqs",
+    "SARIF",
+    "serde",
+    "SemVer",
+    "sublicense",
+    "thiserror",
+    "uv",
+    "venv",
+    "Yarn"
+  ]
+}
