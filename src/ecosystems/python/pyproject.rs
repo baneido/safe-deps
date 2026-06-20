@@ -10,7 +10,47 @@ pub struct Pyproject {
     pub has_tool_uv: bool,
     pub project_name: Option<String>,
     pub has_dependencies: bool,
+    /// `[project] dependencies` (PEP 508 strings), for SD006 source analysis.
+    pub dependencies: Vec<String>,
+    /// Flattened `[project.optional-dependencies]` values.
+    pub optional_dependencies: Vec<String>,
     pub uv: UvSettings,
+}
+
+impl Pyproject {
+    /// All dependencies classified by source for SD006. PEP 508 names are
+    /// stripped to the bare distribution name for display.
+    pub fn classified_dependencies(&self) -> Vec<crate::ecosystems::Dependency> {
+        use crate::ecosystems::source::classify_python_source;
+        use crate::ecosystems::{Dependency, DependencyGroup};
+        let mut out = Vec::new();
+        let groups = [
+            (&self.dependencies, DependencyGroup::Production),
+            (&self.optional_dependencies, DependencyGroup::Optional),
+        ];
+        for (specs, group) in groups {
+            for spec in specs {
+                out.push(Dependency {
+                    name: pep508_name(spec),
+                    spec: spec.clone(),
+                    group,
+                    source: classify_python_source(spec),
+                });
+            }
+        }
+        out
+    }
+}
+
+/// Extracts the distribution name from a PEP 508 requirement string.
+pub fn pep508_name(spec: &str) -> String {
+    let s = spec.trim();
+    let end = s
+        .find(|c: char| {
+            c.is_whitespace() || matches!(c, '=' | '<' | '>' | '~' | '!' | '@' | '[' | '(')
+        })
+        .unwrap_or(s.len());
+    s[..end].to_string()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -44,18 +84,25 @@ pub fn parse(text: &str) -> Pyproject {
         .and_then(|n| n.as_str())
         .map(|s| s.to_string());
 
-    let project_deps = value
+    let dependencies =
+        collect_string_array(value.get("project").and_then(|p| p.get("dependencies")));
+    let mut optional_dependencies = Vec::new();
+    if let Some(table) = value
         .get("project")
-        .and_then(|p| p.get("dependencies"))
-        .and_then(|d| d.as_array())
-        .is_some_and(|a| !a.is_empty());
+        .and_then(|p| p.get("optional-dependencies"))
+        .and_then(|d| d.as_table())
+    {
+        for group in table.values() {
+            optional_dependencies.extend(collect_string_array(Some(group)));
+        }
+    }
     let uv_dev = value
         .get("tool")
         .and_then(|t| t.get("uv"))
         .and_then(|u| u.get("dev-dependencies"))
         .and_then(|d| d.as_table())
         .is_some_and(|t| !t.is_empty());
-    let has_dependencies = project_deps || uv_dev;
+    let has_dependencies = !dependencies.is_empty() || !optional_dependencies.is_empty() || uv_dev;
 
     let tool_uv = value.get("tool").and_then(|t| t.get("uv"));
     let has_tool_uv = tool_uv.is_some();
@@ -65,8 +112,22 @@ pub fn parse(text: &str) -> Pyproject {
         has_tool_uv,
         project_name,
         has_dependencies,
+        dependencies,
+        optional_dependencies,
         uv,
     }
+}
+
+/// Collects a TOML array of strings, ignoring non-string entries.
+fn collect_string_array(value: Option<&toml::Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn extract_uv_settings(tool_uv: &toml::Value) -> UvSettings {

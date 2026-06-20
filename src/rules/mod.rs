@@ -21,6 +21,9 @@ pub mod sd001_lockfile_missing;
 pub mod sd002_non_frozen_ci_install;
 pub mod sd003_insecure_registry;
 pub mod sd004_integrity_disabled;
+pub mod sd005_install_script_bypass;
+pub mod sd006_unsafe_dependency_source;
+pub mod sd007_dependency_confusion;
 
 /// Returns all built-in rules.
 pub fn all_rules() -> Vec<Box<dyn Rule>> {
@@ -29,6 +32,9 @@ pub fn all_rules() -> Vec<Box<dyn Rule>> {
         Box::new(sd002_non_frozen_ci_install::Sd002),
         Box::new(sd003_insecure_registry::Sd003),
         Box::new(sd004_integrity_disabled::Sd004),
+        Box::new(sd005_install_script_bypass::Sd005),
+        Box::new(sd006_unsafe_dependency_source::Sd006),
+        Box::new(sd007_dependency_confusion::Sd007),
     ]
 }
 

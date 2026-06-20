@@ -8,6 +8,8 @@ use crate::ecosystems::EcoError;
 #[derive(Debug, Clone, Default)]
 pub struct PnpmWorkspace {
     pub packages: Vec<String>,
+    /// `dangerouslyAllowAllBuilds: true` runs every dependency build script.
+    pub dangerously_allow_all_builds: Option<bool>,
 }
 
 pub fn load_workspace(
@@ -35,5 +37,31 @@ pub fn parse(text: &str) -> PnpmWorkspace {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    PnpmWorkspace { packages }
+    let dangerously_allow_all_builds = value
+        .get(serde_yaml::Value::String(
+            "dangerouslyAllowAllBuilds".to_string(),
+        ))
+        .and_then(|v| v.as_bool());
+    PnpmWorkspace {
+        packages,
+        dangerously_allow_all_builds,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_dangerously_allow_all_builds() {
+        let w = parse("packages:\n  - 'pkgs/*'\ndangerouslyAllowAllBuilds: true\n");
+        assert_eq!(w.dangerously_allow_all_builds, Some(true));
+        assert_eq!(w.packages, vec!["pkgs/*"]);
+    }
+
+    #[test]
+    fn absent_flag_is_none() {
+        let w = parse("packages:\n  - 'pkgs/*'\n");
+        assert_eq!(w.dangerously_allow_all_builds, None);
+    }
 }

@@ -21,6 +21,9 @@ pub struct RequirementsSettings {
     pub requirement_count: usize,
     /// Count of requirement lines that carry at least one `--hash=` pin.
     pub hashed_requirement_count: usize,
+    /// Raw requirement specs (and `-e`/`--editable` targets) for SD006 source
+    /// classification.
+    pub specs: Vec<String>,
 }
 
 pub fn load(
@@ -48,6 +51,8 @@ pub fn parse(text: &str) -> RequirementsSettings {
             continue;
         }
         settings.requirement_count += 1;
+        // Capture the requirement up to the first `--hash`/option for SD006.
+        settings.specs.push(requirement_spec(line));
         if line_has_hash(line) {
             settings.hashed_requirement_count += 1;
         }
@@ -82,6 +87,15 @@ fn logical_lines(text: &str) -> Vec<String> {
         out.push(current);
     }
     out
+}
+
+/// The requirement portion of a line, excluding any trailing options such as
+/// `--hash=…`. Tokens are re-joined with single spaces.
+fn requirement_spec(line: &str) -> String {
+    line.split_whitespace()
+        .take_while(|tok| !tok.starts_with("--"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Whether a requirement's logical line carries a `--hash` pin in any form.
@@ -141,6 +155,13 @@ fn parse_option_line(line: &str, settings: &mut RequirementsSettings) {
             "--extra-index-url" => {
                 if let Some(url) = take_value(inline, &tokens, &mut i) {
                     settings.extra_index_urls.push(url);
+                }
+            }
+            "-e" | "--editable" => {
+                // Editable installs are typically local paths or VCS refs;
+                // record them for SD006 (they cannot be hash-pinned).
+                if let Some(target) = take_value(inline, &tokens, &mut i) {
+                    settings.specs.push(format!("-e {target}"));
                 }
             }
             _ => {}

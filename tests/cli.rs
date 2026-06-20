@@ -710,3 +710,194 @@ fn suppression_path_matches_nested_member() {
     let report = check_json(&ws, &[]);
     assert!(!rule_ids(&report).contains(&"SD001".to_string()));
 }
+
+// --- supply-chain hardening rules (Phase 3) ----------------------------------
+
+const NPM_LOCK_OK: &str = r#"{ "lockfileVersion": 3 }"#;
+
+fn findings_of(report: &Value, rule: &str) -> Vec<Value> {
+    report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule_id"] == rule)
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn sd006_flags_unsafe_js_sources_but_not_registry() {
+    let pkg = r#"{
+      "name": "demo",
+      "dependencies": {
+        "floating": "github:user/repo#main",
+        "tarball": "https://example.com/x.tgz",
+        "localpath": "file:../local",
+        "registry": "^1.2.3"
+      }
+    }"#;
+    let ws = workspace(&[("package.json", pkg), ("package-lock.json", NPM_LOCK_OK)]);
+    let report = check_json(&ws, &[]);
+    let sd006 = findings_of(&report, "SD006");
+    assert_eq!(sd006.len(), 3, "expected 3 SD006: {report}");
+    let msgs: String = sd006
+        .iter()
+        .map(|f| f["message"].as_str().unwrap())
+        .collect();
+    assert!(msgs.contains("floating"));
+    assert!(msgs.contains("tarball"));
+    assert!(msgs.contains("localpath"));
+    assert!(!msgs.contains("registry"));
+}
+
+#[test]
+fn sd006_pinned_git_sha_is_safe() {
+    let pkg = r#"{ "name": "d", "dependencies": {
+        "pinned": "github:user/repo#3a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b" } }"#;
+    let ws = workspace(&[("package.json", pkg), ("package-lock.json", NPM_LOCK_OK)]);
+    let report = check_json(&ws, &[]);
+    assert!(findings_of(&report, "SD006").is_empty(), "{report}");
+}
+
+#[test]
+fn sd006_dev_path_is_allowed_but_prod_path_flagged() {
+    let pkg = r#"{ "name": "d",
+        "dependencies": { "prod": "file:../prod" },
+        "devDependencies": { "dev": "file:../dev" } }"#;
+    let ws = workspace(&[("package.json", pkg), ("package-lock.json", NPM_LOCK_OK)]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1);
+    assert!(sd006[0]["message"].as_str().unwrap().contains("prod"));
+}
+
+#[test]
+fn sd006_policy_opts_out_of_git_and_path() {
+    let pkg = r#"{ "name": "d", "dependencies": {
+        "g": "github:u/r#main", "p": "file:../p" } }"#;
+    let ws = workspace(&[
+        ("package.json", pkg),
+        ("package-lock.json", NPM_LOCK_OK),
+        (
+            "safe-deps.toml",
+            "[policy]\nallow_git_dependencies = true\nallow_local_path_dependencies = true\n",
+        ),
+    ]);
+    assert!(findings_of(&check_json(&ws, &[]), "SD006").is_empty());
+}
+
+#[test]
+fn sd006_flags_python_git_dependency() {
+    let pyproject = "\
+[project]
+name = \"x\"
+dependencies = [\"requests>=2\", \"internal @ git+https://h/r.git\"]
+";
+    let ws = workspace(&[("pyproject.toml", pyproject), ("uv.lock", "")]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{:?}", sd006);
+    assert!(sd006[0]["message"].as_str().unwrap().contains("internal"));
+}
+
+#[test]
+fn sd005_flags_pnpm_dangerously_allow_all_builds() {
+    let ws = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "d", "dependencies": { "a": "^1" } }"#,
+        ),
+        ("pnpm-lock.yaml", ""),
+        (
+            "pnpm-workspace.yaml",
+            "packages:\n  - 'pkgs/*'\ndangerouslyAllowAllBuilds: true\n",
+        ),
+    ]);
+    let sd005 = findings_of(&check_json(&ws, &[]), "SD005");
+    assert_eq!(sd005.len(), 1, "{:?}", sd005);
+    assert_eq!(sd005[0]["severity"], "error");
+    assert_eq!(sd005[0]["location"]["file"], "pnpm-workspace.yaml");
+}
+
+#[test]
+fn sd005_pnpm_without_flag_is_clean() {
+    let ws = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "d", "dependencies": { "a": "^1" } }"#,
+        ),
+        ("pnpm-lock.yaml", ""),
+        ("pnpm-workspace.yaml", "packages:\n  - 'pkgs/*'\n"),
+    ]);
+    assert!(findings_of(&check_json(&ws, &[]), "SD005").is_empty());
+}
+
+#[test]
+fn sd005_bun_trusted_wildcard_flagged_named_is_safe() {
+    let wildcard = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "d", "dependencies": { "a": "^1" } }"#,
+        ),
+        ("bun.lock", ""),
+        ("bunfig.toml", "[install]\ntrustedDependencies = [\"*\"]\n"),
+    ]);
+    assert_eq!(findings_of(&check_json(&wildcard, &[]), "SD005").len(), 1);
+
+    let named = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "d", "dependencies": { "a": "^1" } }"#,
+        ),
+        ("bun.lock", ""),
+        (
+            "bunfig.toml",
+            "[install]\ntrustedDependencies = [\"esbuild\"]\n",
+        ),
+    ]);
+    assert!(findings_of(&check_json(&named, &[]), "SD005").is_empty());
+}
+
+#[test]
+fn sd007_uv_index_config_is_profile_gated() {
+    let pyproject = "\
+[project]
+name = \"x\"
+dependencies = [\"requests>=2\"]
+[tool.uv]
+extra-index-url = [\"https://pypi.internal/simple\"]
+index-strategy = \"unsafe-best-match\"
+";
+    let ws = workspace(&[("pyproject.toml", pyproject), ("uv.lock", "")]);
+    let sd007 = findings_of(&check_json(&ws, &[]), "SD007");
+    assert_eq!(sd007.len(), 2, "{:?}", sd007);
+    assert!(sd007.iter().all(|f| f["severity"] == "warning"));
+    // Strict profile escalates to error and fails the run.
+    let out = run(&ws, &["check", ".", "--profile", "strict"]);
+    assert_eq!(code(&out), 1);
+    let strict = check_json(&ws, &["--profile", "strict"]);
+    assert!(findings_of(&strict, "SD007")
+        .iter()
+        .all(|f| f["severity"] == "error"));
+}
+
+#[test]
+fn sd007_pip_extra_index_url_in_requirements() {
+    let ws = workspace(&[(
+        "requirements.txt",
+        "requests==2.0 --hash=sha256:abc\n--extra-index-url https://pypi.internal/simple\n",
+    )]);
+    let sd007 = findings_of(&check_json(&ws, &[]), "SD007");
+    assert_eq!(sd007.len(), 1, "{:?}", sd007);
+    assert!(sd007[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("extra index"));
+}
+
+#[test]
+fn list_rules_includes_supply_chain_rules() {
+    let ws = workspace(&[]);
+    let text = stdout(&run(&ws, &["list-rules"]));
+    for id in ["SD005", "SD006", "SD007"] {
+        assert!(text.contains(id), "missing {id}:\n{text}");
+    }
+}

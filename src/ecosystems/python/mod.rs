@@ -4,9 +4,10 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::ecosystems::source::classify_python_source;
 use crate::ecosystems::{
-    EcoError, Ecosystem, FileFact, InstallSettings, PackageManager, Project, ProjectFacts,
-    ProjectKind,
+    Dependency, DependencyGroup, EcoError, Ecosystem, FileFact, InstallSettings, PackageManager,
+    Project, ProjectFacts, ProjectKind,
 };
 use crate::filesystem::{files_named, project_join, WorkspaceContext};
 
@@ -174,6 +175,36 @@ fn requirements_files(ctx: &WorkspaceContext) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Collects classified dependencies from a Python project directory, drawing on
+/// both `pyproject.toml` (`[project]` dependencies) and any `requirements*.txt`
+/// in the same directory, so SD006 covers pip and uv projects alike.
+fn python_dependencies(ctx: &WorkspaceContext, dir: &Path) -> Vec<Dependency> {
+    let mut out = Vec::new();
+    let py_path = project_join(dir, "pyproject.toml");
+    if has_file_in(ctx, dir, "pyproject.toml") {
+        if let Ok(py) = pyproject::load(ctx, &py_path) {
+            out.extend(py.classified_dependencies());
+        }
+    }
+    for req in requirements_files(ctx)
+        .into_iter()
+        .filter(|p| project_dir(p) == *dir)
+    {
+        if let Ok(r) = requirements::load(ctx, &req) {
+            for spec in r.specs {
+                let bare = spec.strip_prefix("-e ").unwrap_or(&spec).trim();
+                out.push(Dependency {
+                    name: pyproject::pep508_name(bare),
+                    source: classify_python_source(&spec),
+                    spec: spec.clone(),
+                    group: DependencyGroup::Production,
+                });
+            }
+        }
+    }
+    out
+}
+
 fn build_uv_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFacts, EcoError> {
     let dir = &project.root;
     let py_path = project_join(dir, "pyproject.toml");
@@ -242,6 +273,7 @@ fn build_uv_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFa
         lockfiles,
         configs,
         has_manifest_dependencies,
+        dependencies: python_dependencies(ctx, dir),
         install_settings: settings,
         covered_by_workspace_lockfile: covered_by_uv_workspace(ctx, dir),
         has_legacy_bun_lockfile: false,
@@ -314,6 +346,7 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
         lockfiles: Vec::new(),
         configs,
         has_manifest_dependencies,
+        dependencies: python_dependencies(ctx, dir),
         install_settings: settings,
         covered_by_workspace_lockfile: false,
         has_legacy_bun_lockfile: false,
