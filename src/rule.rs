@@ -190,7 +190,7 @@ pub struct Policy {
     pub external_audit_reason: Option<String>,
 }
 
-/// Input handed to each rule during evaluation.
+/// Input handed to a project-scoped rule, once per detected project.
 pub struct RuleInput<'a> {
     pub facts: &'a ProjectFacts,
     pub ci: &'a CiFacts,
@@ -198,14 +198,43 @@ pub struct RuleInput<'a> {
     pub policy: &'a Policy,
 }
 
+/// Input handed to a workspace-scoped rule exactly once per run. CI-derived
+/// rules (e.g. SD002, SD009) use this so a single unsafe CI command produces one
+/// finding regardless of how many projects the workspace contains.
+pub struct WorkspaceInput<'a> {
+    pub projects: &'a [ProjectFacts],
+    pub ci: &'a CiFacts,
+    pub profile: Profile,
+    pub policy: &'a Policy,
+}
+
 /// A rule evaluates normalized facts and emits findings.
+///
+/// Most rules are project-scoped and implement [`Rule::evaluate`], which runs
+/// once per detected project. Rules whose facts are workspace-global (CI
+/// commands that are not tied to a single project) instead set
+/// [`Rule::is_workspace_rule`] and implement [`Rule::evaluate_workspace`], which
+/// the engine calls exactly once.
 pub trait Rule: Send + Sync {
     fn id(&self) -> RuleId;
-    fn evaluate(&self, input: &RuleInput) -> Vec<Finding>;
     /// One-line summary used by `explain` and `list-rules`.
     fn summary(&self) -> &'static str;
     /// Longer explanation used by `explain`.
     fn explanation(&self) -> &'static str;
+    /// Project-scoped evaluation, called once per detected project.
+    fn evaluate(&self, _input: &RuleInput) -> Vec<Finding> {
+        Vec::new()
+    }
+    /// Workspace-scoped evaluation, called once when [`Rule::is_workspace_rule`]
+    /// returns true.
+    fn evaluate_workspace(&self, _input: &WorkspaceInput) -> Vec<Finding> {
+        Vec::new()
+    }
+    /// Whether this rule is workspace-scoped (evaluated once via
+    /// [`Rule::evaluate_workspace`]) rather than per project.
+    fn is_workspace_rule(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

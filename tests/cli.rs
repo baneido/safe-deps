@@ -710,3 +710,171 @@ fn suppression_path_matches_nested_member() {
     let report = check_json(&ws, &[]);
     assert!(!rule_ids(&report).contains(&"SD001".to_string()));
 }
+
+// --- CI-aware rules (Phase 2) ------------------------------------------------
+
+const NPM_LOCK: &str = r#"{ "lockfileVersion": 3 }"#;
+
+fn findings_for(report: &Value, rule: &str) -> Vec<Value> {
+    report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule_id"] == rule)
+        .cloned()
+        .collect()
+}
+
+const WORKFLOW_NPM_INSTALL: &str = "\
+name: ci
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm install
+";
+
+#[test]
+fn ci_npm_install_flags_sd002_with_workflow_location() {
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        ("package-lock.json", NPM_LOCK),
+        (".github/workflows/ci.yml", WORKFLOW_NPM_INSTALL),
+    ]);
+    let report = check_json(&ws, &[]);
+    let sd002 = findings_for(&report, "SD002");
+    assert_eq!(sd002.len(), 1, "expected one SD002: {report}");
+    assert_eq!(sd002[0]["location"]["file"], ".github/workflows/ci.yml");
+    assert_eq!(sd002[0]["location"]["line"], 8);
+    assert_eq!(sd002[0]["severity"], "error");
+    // An SD002 error should fail the run by default.
+    let out = run(&ws, &["check", "."]);
+    assert_eq!(code(&out), 1);
+}
+
+#[test]
+fn ci_npm_ci_is_frozen_and_clears_sd002() {
+    let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "npm ci");
+    let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);
+    write(ws.path(), ".github/workflows/ci.yml", &workflow);
+    let report = check_json(&ws, &[]);
+    assert!(findings_for(&report, "SD002").is_empty(), "{report}");
+}
+
+#[test]
+fn ci_dangerous_force_flag_reports_sd009() {
+    // `npm ci --force` is frozen (no SD002) but --force is a dangerous bypass.
+    let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "npm ci --force");
+    let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);
+    write(ws.path(), ".github/workflows/ci.yml", &workflow);
+    let report = check_json(&ws, &[]);
+    assert!(findings_for(&report, "SD002").is_empty(), "{report}");
+    let sd009 = findings_for(&report, "SD009");
+    assert_eq!(sd009.len(), 1, "expected one SD009: {report}");
+    assert_eq!(sd009[0]["location"]["file"], ".github/workflows/ci.yml");
+    assert!(sd009[0]["message"].as_str().unwrap().contains("--force"));
+}
+
+#[test]
+fn ci_install_without_audit_reports_sd008() {
+    let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "npm ci");
+    let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);
+    write(ws.path(), ".github/workflows/ci.yml", &workflow);
+    let report = check_json(&ws, &[]);
+    let sd008 = findings_for(&report, "SD008");
+    assert_eq!(sd008.len(), 1, "expected SD008: {report}");
+    assert_eq!(sd008[0]["severity"], "warning");
+    // Warnings do not fail the run by default.
+    let out = run(&ws, &["check", "."]);
+    assert_eq!(code(&out), 0);
+}
+
+#[test]
+fn ci_audit_command_clears_sd008() {
+    let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "npm ci && npm audit");
+    let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);
+    write(ws.path(), ".github/workflows/ci.yml", &workflow);
+    let report = check_json(&ws, &[]);
+    assert!(findings_for(&report, "SD008").is_empty(), "{report}");
+}
+
+#[test]
+fn external_audit_policy_opts_out_of_sd008() {
+    let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "npm ci");
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        ("package-lock.json", NPM_LOCK),
+        ("safe-deps.toml", "[policy]\nexternal_audit = true\n"),
+    ]);
+    write(ws.path(), ".github/workflows/ci.yml", &workflow);
+    let report = check_json(&ws, &[]);
+    assert!(findings_for(&report, "SD008").is_empty(), "{report}");
+}
+
+#[test]
+fn sarif_output_is_valid_and_maps_results() {
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        ("package-lock.json", NPM_LOCK),
+        (".github/workflows/ci.yml", WORKFLOW_NPM_INSTALL),
+    ]);
+    let out = run(&ws, &["check", ".", "--format", "sarif"]);
+    let sarif: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("invalid SARIF: {e}\n{}", stdout(&out)));
+    assert_eq!(sarif["version"], "2.1.0");
+    assert!(sarif["$schema"].is_string());
+    let run0 = &sarif["runs"][0];
+    assert_eq!(run0["tool"]["driver"]["name"], "safe-deps");
+    assert!(run0["tool"]["driver"]["rules"].as_array().unwrap().len() >= 6);
+    let result = run0["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["ruleId"] == "SD002")
+        .expect("SD002 result present");
+    assert_eq!(result["level"], "error");
+    let idx = result["ruleIndex"].as_u64().unwrap() as usize;
+    assert_eq!(run0["tool"]["driver"]["rules"][idx]["id"], "SD002");
+    assert_eq!(
+        result["locations"][0]["physicalLocation"]["region"]["startLine"],
+        8
+    );
+}
+
+#[test]
+fn monorepo_unsafe_install_reports_sd002_once() {
+    // A single unsafe CI command must not be duplicated per project.
+    let pkg = |name: &str| format!(r#"{{ "name": "{name}", "dependencies": {{ "x": "^1" }} }}"#);
+    let ws = workspace(&[
+        ("package.json", r#"{ "name": "root", "private": true }"#),
+        ("pnpm-lock.yaml", "lockfileVersion: '9.0'\n"),
+        ("packages/a/package.json", &pkg("a")),
+        ("packages/b/package.json", &pkg("b")),
+        ("pnpm-workspace.yaml", "packages:\n  - 'packages/*'\n"),
+    ]);
+    write(
+        ws.path(),
+        ".github/workflows/ci.yml",
+        "name: ci\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          pnpm install\n          pnpm audit\n",
+    );
+    let report = check_json(&ws, &[]);
+    let sd002 = findings_for(&report, "SD002");
+    assert_eq!(
+        sd002.len(),
+        1,
+        "SD002 should fire once for one command: {report}"
+    );
+    assert_eq!(sd002[0]["package_manager"], "pnpm");
+}
+
+#[test]
+fn list_rules_includes_ci_aware_rules() {
+    let ws = workspace(&[]);
+    let out = run(&ws, &["list-rules"]);
+    let text = stdout(&out);
+    for id in ["SD002", "SD008", "SD009"] {
+        assert!(text.contains(id), "missing {id}:\n{text}");
+    }
+}
