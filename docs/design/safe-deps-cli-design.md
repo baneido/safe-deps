@@ -60,15 +60,15 @@ CLI
      -> text / json / sarif / junit
 ```
 
-The system should be deliberately layered:
+The system is layered:
 
 1. Scanning discovers files and candidate project roots.
 2. Fact extraction parses manifests, lockfiles, configs, and CI files.
 3. Rules evaluate normalized facts and emit findings.
 4. Reporters render findings without re-running rule logic.
 
-Parsers should not directly decide policy. They should produce facts; rules
-should turn facts into findings based on profile and configuration.
+Parsers produce facts. Rules turn facts into findings based on profile and
+configuration.
 
 ## Core Data Model
 
@@ -134,10 +134,9 @@ pub enum Confidence {
 }
 ```
 
-`confidence` is important. Some checks are precise, such as
-`strict-ssl=false`; others are heuristic, such as "audit command not found in
-CI". CI exit decisions should be severity-based, while display ordering should
-consider severity and confidence.
+Checks vary in precision. `strict-ssl=false` is exact; "audit command not found
+in CI" is heuristic. CI exit decisions should be severity-based, while display
+ordering should consider severity and confidence.
 
 ## Internal Interfaces
 

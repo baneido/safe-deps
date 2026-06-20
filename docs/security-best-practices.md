@@ -108,9 +108,9 @@ Detect:
 Guidance:
 
 - Default-deny script execution is strongest where available.
-- When packages genuinely need build scripts, require a narrow allowlist and
-  keep it in version control.
-- Treat dependency build-script changes as a high-signal review event.
+- When packages need build scripts, require a narrow allowlist and keep it in
+  version control.
+- Flag changes to a dependency's build scripts for review.
 
 ### Registry and Index Safety
 
@@ -242,8 +242,8 @@ Recommended checks:
 
 Risk-specific notes:
 
-- Yarn v1 and Yarn Berry have materially different configuration models. The
-  linter should detect the version before applying Yarn-specific rules.
+- Yarn v1 and Yarn Berry have different configuration models. The linter should
+  detect the version before applying Yarn-specific rules.
 
 ### pnpm
 
@@ -394,8 +394,8 @@ Recommended checks:
 
 Risk-specific notes:
 
-- Composer plugins execute PHP code during Composer operations. Plugin
-  allowlisting is a high-value linter target.
+- Composer plugins execute PHP code during Composer operations. Flag plugins
+  that run without an explicit allowlist.
 
 ### Bundler
 
