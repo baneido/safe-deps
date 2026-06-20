@@ -31,7 +31,7 @@ cargo run -- list-rules
 ```
 
 There is **no Rust CI workflow** — only `docs.yml` (markdown lint, spell check,
-link check, zizmor). Run `cargo test` / `cargo clippy` locally before committing.
+link check, `zizmor`). Run `cargo test` / `cargo clippy` locally before committing.
 
 Docs/markdown changes must pass the docs CI:
 
