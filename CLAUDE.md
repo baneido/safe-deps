@@ -11,7 +11,7 @@ calls — `safe-deps check` is deterministic and offline by design.
 
 Note: `README.md` still says "design/docs only, no released CLI." That status line
 is **stale** — the Phase 1 MVP (scanner, npm/Yarn/pnpm/Bun/pip/uv detection, rules
-SD001–SD004, text/JSON output) is implemented and lives under `src/`. Trust the code
+SD001 + SD003–SD004, text/JSON output) is implemented and lives under `src/`. (SD002 is registered but CI-backed and inactive in Phase 1.) Trust the code
 over the README status banner.
 
 ## Commands
