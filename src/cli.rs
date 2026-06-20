@@ -79,7 +79,7 @@ pub struct CheckArgs {
     #[arg(long = "exclude")]
     pub excludes: Vec<String>,
 
-    /// Restrict to a package manager: npm, yarn, pnpm, bun, pip, uv.
+    /// Restrict to a package manager: npm, yarn, pnpm, bun, pip, uv, cargo, go.
     #[arg(long)]
     pub ecosystem: Option<String>,
 
@@ -300,6 +300,8 @@ fn ecosystem_filter(name: Option<&str>) -> Result<Option<PackageManager>, CliErr
         "bun" => PackageManager::Bun,
         "pip" => PackageManager::Pip,
         "uv" => PackageManager::Uv,
+        "cargo" => PackageManager::Cargo,
+        "go" => PackageManager::Go,
         other => return Err(CliError::usage(format!("unknown ecosystem '{other}'"))),
     };
     Ok(Some(pm))
@@ -410,7 +412,15 @@ mod tests {
             Some(PackageManager::Pnpm)
         );
         assert_eq!(ecosystem_filter(None).unwrap(), None);
-        assert!(ecosystem_filter(Some("cargo")).is_err());
+        assert_eq!(
+            ecosystem_filter(Some("cargo")).unwrap(),
+            Some(PackageManager::Cargo)
+        );
+        assert_eq!(
+            ecosystem_filter(Some("go")).unwrap(),
+            Some(PackageManager::Go)
+        );
+        assert!(ecosystem_filter(Some("composer")).is_err());
     }
 
     #[test]

@@ -7,11 +7,11 @@
 //! library is not inferable from `go.mod` alone, so modules stay `Unknown`
 //! (warning) unless the user configures roots.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::ecosystems::{
-    Analyzer, EcoError, Ecosystem, FileFact, InstallSettings, PackageManager, Project,
-    ProjectFacts, ProjectKind,
+    contains_file, is_proper_ancestor, manifest_dir, Analyzer, EcoError, Ecosystem, FileFact,
+    InstallSettings, PackageManager, Project, ProjectFacts, ProjectKind,
 };
 use crate::filesystem::{files_named, project_join, read_text, WorkspaceContext};
 
@@ -26,7 +26,7 @@ impl Analyzer for GoAnalyzer {
         files_named(ctx, "go.mod")
             .iter()
             .map(|manifest| Project {
-                root: project_dir(manifest),
+                root: manifest_dir(manifest),
                 ecosystem: Ecosystem::Go,
                 package_manager: PackageManager::Go,
                 kind: ProjectKind::Unknown,
@@ -37,7 +37,7 @@ impl Analyzer for GoAnalyzer {
     fn facts(&self, project: &Project, ctx: &WorkspaceContext) -> Result<ProjectFacts, EcoError> {
         let dir = &project.root;
         let mod_path = project_join(dir, "go.mod");
-        let manifest = has_file(ctx, &mod_path).then(|| FileFact {
+        let manifest = contains_file(ctx, &mod_path).then(|| FileFact {
             relative: mod_path.clone(),
         });
 
@@ -46,7 +46,7 @@ impl Analyzer for GoAnalyzer {
             .unwrap_or(false);
 
         let sum_path = project_join(dir, "go.sum");
-        let lockfiles = if has_file(ctx, &sum_path) {
+        let lockfiles = if contains_file(ctx, &sum_path) {
             vec![FileFact { relative: sum_path }]
         } else {
             Vec::new()
@@ -59,13 +59,29 @@ impl Analyzer for GoAnalyzer {
             configs: Vec::new(),
             has_manifest_dependencies,
             install_settings: InstallSettings::default(),
-            // Each Go module keeps its own go.sum; there is no workspace-shared
-            // integrity file to inherit.
-            covered_by_workspace_lockfile: false,
+            // A module usually keeps its own go.sum, but a Go workspace
+            // (`go.work` + `go.work.sum`) provides a shared integrity file.
+            covered_by_workspace_lockfile: covered_by_go_work(ctx, dir),
             has_legacy_bun_lockfile: false,
             parse_diagnostics: Vec::new(),
         })
     }
+}
+
+/// Whether a proper-ancestor `go.work` workspace holds a `go.work.sum` covering
+/// this module's checksums.
+fn covered_by_go_work(ctx: &WorkspaceContext, dir: &Path) -> bool {
+    if dir == Path::new(".") {
+        return false;
+    }
+    for work in files_named(ctx, "go.work") {
+        let root = manifest_dir(&work);
+        if is_proper_ancestor(&root, dir) && contains_file(ctx, &project_join(&root, "go.work.sum"))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Counts required modules in a `go.mod`, across both the block form
@@ -87,6 +103,15 @@ fn parse_requires(text: &str) -> usize {
             continue;
         }
         if let Some(rest) = line.strip_prefix("require") {
+            // Require a keyword boundary so a module path like `require-utils…`
+            // is not mistaken for the `require` directive.
+            let boundary = match rest.chars().next() {
+                Some(c) => c.is_whitespace() || c == '(',
+                None => true,
+            };
+            if !boundary {
+                continue;
+            }
             let rest = rest.trim_start();
             if rest.starts_with('(') {
                 in_block = true;
@@ -105,18 +130,6 @@ fn strip_comment(line: &str) -> &str {
         Some(idx) => &line[..idx],
         None => line,
     }
-}
-
-fn project_dir(manifest: &Path) -> PathBuf {
-    manifest
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-fn has_file(ctx: &WorkspaceContext, relative: &Path) -> bool {
-    ctx.files.iter().any(|f| f.relative == relative)
 }
 
 #[cfg(test)]
@@ -154,6 +167,9 @@ mod tests {
         assert_eq!(parse_requires(single), 1);
         let none = "module m\n\ngo 1.21\n";
         assert_eq!(parse_requires(none), 0);
+        // A module path beginning with "require" is not the require directive.
+        let tricky = "module m\nrequire-utils.example/x v1.0.0 is not a directive\n";
+        assert_eq!(parse_requires(tricky), 0);
     }
 
     #[test]

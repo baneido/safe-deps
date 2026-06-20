@@ -6,11 +6,11 @@
 //! conservatively from `[[bin]]`/`[lib]` so SD001 severity matches the existing
 //! application/library model without any new user-facing concepts.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::ecosystems::{
-    Analyzer, EcoError, Ecosystem, FileFact, InstallSettings, PackageManager, Project,
-    ProjectFacts, ProjectKind,
+    contains_file, is_proper_ancestor, manifest_dir, Analyzer, EcoError, Ecosystem, FileFact,
+    InstallSettings, PackageManager, Project, ProjectFacts, ProjectKind,
 };
 use crate::filesystem::{files_named, project_join, read_text, WorkspaceContext};
 
@@ -25,7 +25,7 @@ impl Analyzer for CargoAnalyzer {
         files_named(ctx, "Cargo.toml")
             .iter()
             .filter_map(|manifest| {
-                let dir = project_dir(manifest);
+                let dir = manifest_dir(manifest);
                 let parsed = read_manifest(ctx, manifest);
                 // A pure `[workspace]` root with no `[package]` is not itself a
                 // crate; its members are detected on their own.
@@ -45,7 +45,7 @@ impl Analyzer for CargoAnalyzer {
     fn facts(&self, project: &Project, ctx: &WorkspaceContext) -> Result<ProjectFacts, EcoError> {
         let dir = &project.root;
         let manifest_path = project_join(dir, "Cargo.toml");
-        let manifest = has_file(ctx, &manifest_path).then(|| FileFact {
+        let manifest = contains_file(ctx, &manifest_path).then(|| FileFact {
             relative: manifest_path.clone(),
         });
 
@@ -62,7 +62,7 @@ impl Analyzer for CargoAnalyzer {
         };
 
         let lock_path = project_join(dir, "Cargo.lock");
-        let lockfiles = if has_file(ctx, &lock_path) {
+        let lockfiles = if contains_file(ctx, &lock_path) {
             vec![FileFact {
                 relative: lock_path,
             }]
@@ -115,72 +115,84 @@ fn try_read_manifest(ctx: &WorkspaceContext, relative: &Path) -> Result<CargoMan
 
     let has_package = value.get("package").is_some();
     let is_workspace = value.get("workspace").is_some();
-    let has_dependencies = ["dependencies", "dev-dependencies", "build-dependencies"]
-        .iter()
-        .any(|k| {
-            value
-                .get(k)
-                .and_then(|d| d.as_table())
-                .is_some_and(|t| !t.is_empty())
-        });
 
     Ok(CargoManifest {
         has_package,
         is_workspace,
-        has_dependencies,
+        has_dependencies: declares_dependencies(&value),
         kind: infer_kind(ctx, dir, &value),
     })
 }
 
-/// Infers application vs library from explicit targets, then source layout.
+/// Whether the manifest declares any dependencies, including target-specific
+/// ones (`[target.'cfg(...)'.dependencies]`), which cross-platform crates use.
+fn declares_dependencies(value: &toml::Value) -> bool {
+    const KEYS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
+    let non_empty = |v: &toml::Value, k: &str| {
+        v.get(k)
+            .and_then(|d| d.as_table())
+            .is_some_and(|t| !t.is_empty())
+    };
+    if KEYS.iter().any(|k| non_empty(value, k)) {
+        return true;
+    }
+    // `[target.<triple-or-cfg>.dependencies]` lives under the `target` table.
+    value
+        .get("target")
+        .and_then(|t| t.as_table())
+        .is_some_and(|targets| {
+            targets
+                .values()
+                .any(|t| KEYS.iter().any(|k| non_empty(t, k)))
+        })
+}
+
+/// Infers application vs library conservatively. A crate with a library target
+/// is treated as a library even if it also ships a binary, so SD001 does not
+/// escalate a lib-with-a-CLI to an application error.
 fn infer_kind(ctx: &WorkspaceContext, dir: &Path, value: &toml::Value) -> ProjectKind {
-    let has_bin_target = value.get("bin").and_then(|b| b.as_array()).is_some();
-    let has_lib_target = value.get("lib").is_some();
-    if has_bin_target || has_file(ctx, &project_join(dir, "src/main.rs")) {
-        ProjectKind::Application
-    } else if has_lib_target || has_file(ctx, &project_join(dir, "src/lib.rs")) {
+    let has_lib =
+        value.get("lib").is_some() || contains_file(ctx, &project_join(dir, "src/lib.rs"));
+    let has_bin =
+        value.get("bin").is_some() || contains_file(ctx, &project_join(dir, "src/main.rs"));
+    if has_lib {
         ProjectKind::Library
+    } else if has_bin {
+        ProjectKind::Application
     } else {
         ProjectKind::Unknown
     }
 }
 
 /// A crate is covered when a proper-ancestor `[workspace]` root holds a
-/// `Cargo.lock`, mirroring the JS/Python monorepo coverage rule.
+/// `Cargo.lock`, mirroring the JS/Python monorepo coverage rule. The ancestor
+/// check is a cheap `workspace`-key probe to avoid re-parsing every manifest
+/// fully for each member.
 fn covered_by_workspace(ctx: &WorkspaceContext, dir: &Path) -> bool {
     if dir == Path::new(".") {
         return false;
     }
     for manifest in files_named(ctx, "Cargo.toml") {
-        let root = project_dir(&manifest);
+        let root = manifest_dir(&manifest);
         if !is_proper_ancestor(&root, dir) {
             continue;
         }
-        let parsed = read_manifest(ctx, &manifest);
-        if parsed.is_workspace && has_file(ctx, &project_join(&root, "Cargo.lock")) {
+        if is_workspace_manifest(ctx, &manifest)
+            && contains_file(ctx, &project_join(&root, "Cargo.lock"))
+        {
             return true;
         }
     }
     false
 }
 
-fn project_dir(manifest: &Path) -> PathBuf {
-    manifest
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-fn has_file(ctx: &WorkspaceContext, relative: &Path) -> bool {
-    ctx.files.iter().any(|f| f.relative == relative)
-}
-
-fn is_proper_ancestor(ancestor: &Path, descendant: &Path) -> bool {
-    if ancestor == Path::new(".") {
-        return descendant != Path::new(".");
-    }
-    descendant.starts_with(ancestor) && descendant != ancestor
+/// Cheap check for a `[workspace]` table without inferring kind or scanning the
+/// filesystem.
+fn is_workspace_manifest(ctx: &WorkspaceContext, manifest: &Path) -> bool {
+    read_text(ctx, manifest)
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+        .is_some_and(|v| v.get("workspace").is_some())
 }
 
 #[cfg(test)]
@@ -188,6 +200,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::filesystem::{scan, ScanOptions};
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     fn ws(files: &[(&str, &str)]) -> TempDir {
@@ -225,6 +238,32 @@ mod tests {
         assert_eq!(facts[0].project.kind, ProjectKind::Application);
         assert!(facts[0].has_manifest_dependencies);
         assert!(facts[0].lockfiles.is_empty());
+    }
+
+    #[test]
+    fn lib_with_a_bin_stays_library() {
+        // A library that also ships a CLI must not escalate to Application.
+        let dir = ws(&[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"l\"\n[dependencies]\nx = \"1\"\n",
+            ),
+            ("src/lib.rs", "\n"),
+            ("src/main.rs", "fn main() {}\n"),
+        ]);
+        assert_eq!(facts_for(&dir)[0].project.kind, ProjectKind::Library);
+    }
+
+    #[test]
+    fn target_specific_dependencies_count() {
+        let dir = ws(&[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"app\"\n[target.'cfg(windows)'.dependencies]\nwinapi = \"0.3\"\n",
+            ),
+            ("src/main.rs", "fn main() {}\n"),
+        ]);
+        assert!(facts_for(&dir)[0].has_manifest_dependencies);
     }
 
     #[test]

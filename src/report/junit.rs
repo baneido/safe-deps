@@ -29,8 +29,8 @@ impl Reporter for JunitReporter {
         out.push_str(&format!(
             "  <testsuite name=\"safe-deps\" tests=\"{total}\" failures=\"{failures}\" errors=\"{errors}\" skipped=\"{skipped}\">\n"
         ));
-        for finding in &sorted {
-            out.push_str(&testcase(finding));
+        for (index, finding) in sorted.iter().enumerate() {
+            out.push_str(&testcase(finding, index));
         }
         out.push_str("  </testsuite>\n");
         out.push_str("</testsuites>\n");
@@ -38,8 +38,10 @@ impl Reporter for JunitReporter {
     }
 }
 
-fn testcase(f: &Finding) -> String {
-    let name = escape(&format!("{}: {}", f.rule_id, f.message));
+fn testcase(f: &Finding, index: usize) -> String {
+    // Include a stable index so two findings with an identical rule+message+path
+    // remain distinct testcases (dashboards key on classname+name).
+    let name = escape(&format!("[{index}] {}: {}", f.rule_id, f.message));
     let classname = escape(&classname(f));
     let detail = escape(&detail(f));
     let body = match f.severity {
@@ -87,7 +89,10 @@ fn count(findings: &[Finding], severity: Severity) -> usize {
 }
 
 /// Escapes the five XML predefined entities so messages and paths are safe in
-/// both attribute and text positions.
+/// both attribute and text positions. Control characters that are invalid in
+/// XML 1.0 (everything below 0x20 except tab/newline/carriage-return) are
+/// dropped, since a stray byte parsed from a manifest would otherwise produce a
+/// report no dashboard can ingest.
 fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -97,6 +102,8 @@ fn escape(s: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
+            '\t' | '\n' | '\r' => out.push(c),
+            c if (c as u32) < 0x20 => {}
             _ => out.push(c),
         }
     }
@@ -158,6 +165,18 @@ mod tests {
         let xml = String::from_utf8(JunitReporter.format(&report).unwrap()).unwrap();
         assert!(xml.contains("&lt;a&gt; &amp; &quot;b&quot;"));
         assert!(!xml.contains("<a>"));
+    }
+
+    #[test]
+    fn drops_invalid_xml_control_characters() {
+        let report = report_with(vec![finding(
+            "SD003",
+            Severity::Error,
+            "host\u{0001}name uses http",
+        )]);
+        let xml = String::from_utf8(JunitReporter.format(&report).unwrap()).unwrap();
+        assert!(!xml.contains('\u{0001}'));
+        assert!(xml.contains("hostname uses http"));
     }
 
     #[test]
