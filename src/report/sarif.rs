@@ -68,8 +68,8 @@ struct SarifRuleDescriptor {
 struct SarifResult {
     #[serde(rename = "ruleId")]
     rule_id: String,
-    #[serde(rename = "ruleIndex")]
-    rule_index: usize,
+    #[serde(rename = "ruleIndex", skip_serializing_if = "Option::is_none")]
+    rule_index: Option<usize>,
     level: &'static str,
     message: SarifText,
     locations: Vec<SarifLocation>,
@@ -137,9 +137,12 @@ impl SarifLog {
 
         let mut sorted = report.findings.clone();
         crate::report::sort_findings(&mut sorted);
+        // `ruleIndex` is optional in SARIF; omit it rather than guess when a
+        // finding's rule is somehow absent from the registry, so a result is
+        // never silently attributed to the wrong descriptor.
         let results = sorted
             .iter()
-            .map(|f| sarif_result(f, index_of(f.rule_id.as_str()).unwrap_or(0)))
+            .map(|f| sarif_result(f, index_of(f.rule_id.as_str())))
             .collect();
 
         SarifLog {
@@ -160,7 +163,7 @@ impl SarifLog {
     }
 }
 
-fn sarif_result(f: &Finding, rule_index: usize) -> SarifResult {
+fn sarif_result(f: &Finding, rule_index: Option<usize>) -> SarifResult {
     let uri = f.location_path_string();
     let region = f
         .location

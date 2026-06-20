@@ -57,11 +57,13 @@ struct Hit {
 }
 
 fn classify(tokens: &[String], profile: Profile) -> Option<Hit> {
-    let program = command::program(tokens)?;
-    let sub = command::subcommand(tokens);
-    match program {
-        "npm" => match sub {
-            Some("install") | Some("i") | Some("add") if !is_global(tokens) => Some(Hit {
+    let inv = command::invocation(tokens)?;
+    let sub = inv.sub.as_deref();
+    match inv.pm {
+        PackageManager::Npm => match sub {
+            // `npm add` rewrites the manifest/lockfile, so `npm ci` is not a
+            // substitute; only the resolving install forms are flagged here.
+            Some("install") | Some("i") if !is_global(tokens) => Some(Hit {
                 pm: PackageManager::Npm,
                 severity: Severity::Error,
                 confidence: Confidence::High,
@@ -70,8 +72,8 @@ fn classify(tokens: &[String], profile: Profile) -> Option<Hit> {
             }),
             _ => None,
         },
-        "yarn" => match sub {
-            // Bare `yarn` is equivalent to `yarn install`.
+        // Bare `yarn` is equivalent to `yarn install`.
+        PackageManager::Yarn => match sub {
             None | Some("install") => {
                 if command::has_any_flag(
                     tokens,
@@ -91,7 +93,7 @@ fn classify(tokens: &[String], profile: Profile) -> Option<Hit> {
             }
             _ => None,
         },
-        "pnpm" => match sub {
+        PackageManager::Pnpm => match sub {
             Some("install") | Some("i") => {
                 if command::has_flag(tokens, "--frozen-lockfile") {
                     None
@@ -108,7 +110,7 @@ fn classify(tokens: &[String], profile: Profile) -> Option<Hit> {
             }
             _ => None,
         },
-        "bun" => match sub {
+        PackageManager::Bun => match sub {
             Some("install") | Some("i") => {
                 if command::has_flag(tokens, "--frozen-lockfile") {
                     None
@@ -124,7 +126,7 @@ fn classify(tokens: &[String], profile: Profile) -> Option<Hit> {
             }
             _ => None,
         },
-        "uv" => match sub {
+        PackageManager::Uv => match sub {
             Some("sync") => {
                 if command::has_any_flag(tokens, &["--locked", "--frozen"]) {
                     None
@@ -140,22 +142,15 @@ fn classify(tokens: &[String], profile: Profile) -> Option<Hit> {
             }
             _ => None,
         },
-        "pip" | "pip3" => classify_pip(tokens, profile),
-        // `python -m pip install ...`
-        "python" | "python3" if is_python_pip(tokens) => classify_pip(tokens, profile),
-        _ => None,
+        // pip, pip3, `python -m pip`, and `uv pip` all normalize to pip here.
+        PackageManager::Pip => classify_pip(tokens, profile, sub),
     }
 }
 
-fn classify_pip(tokens: &[String], profile: Profile) -> Option<Hit> {
+fn classify_pip(tokens: &[String], profile: Profile, sub: Option<&str>) -> Option<Hit> {
     // Only flag hash-less requirement installs, and only in the strict profile,
     // matching the design's "strict deploy profiles" scope.
-    if profile != Profile::Strict {
-        return None;
-    }
-    let installs_requirements = tokens.windows(2).any(|w| w[0] == "install")
-        && command::has_any_flag(tokens, &["-r", "--requirement"]);
-    if !installs_requirements {
+    if profile != Profile::Strict || sub != Some("install") || !installs_requirements(tokens) {
         return None;
     }
     if command::has_flag(tokens, "--require-hashes") {
@@ -170,18 +165,16 @@ fn classify_pip(tokens: &[String], profile: Profile) -> Option<Hit> {
     })
 }
 
-fn is_global(tokens: &[String]) -> bool {
-    command::has_any_flag(tokens, &["-g", "--global", "--location=global"])
+/// Whether a pip install references a requirements file, handling both the
+/// separated (`-r req.txt`, `--requirement req.txt`) and attached (`-rreq.txt`)
+/// forms.
+fn installs_requirements(tokens: &[String]) -> bool {
+    command::has_any_flag(tokens, &["-r", "--requirement"])
+        || tokens.iter().any(|t| t.starts_with("-r") && t.len() > 2)
 }
 
-fn is_python_pip(tokens: &[String]) -> bool {
-    let mut iter = tokens.iter();
-    while let Some(t) = iter.next() {
-        if t == "-m" {
-            return iter.next().map(|m| m == "pip").unwrap_or(false);
-        }
-    }
-    false
+fn is_global(tokens: &[String]) -> bool {
+    command::has_any_flag(tokens, &["-g", "--global", "--location=global"])
 }
 
 fn make_finding(cmd: &CiCommand, hit: Hit) -> Finding {
@@ -211,10 +204,12 @@ mod tests {
     }
 
     #[test]
-    fn flags_npm_install_but_not_npm_ci() {
+    fn flags_npm_install_but_not_npm_ci_or_add() {
         assert!(one("npm install", Profile::Balanced).is_some());
         assert!(one("npm i", Profile::Balanced).is_some());
         assert!(one("npm ci", Profile::Balanced).is_none());
+        // `npm add` is not a non-frozen reinstall; `npm ci` is no substitute.
+        assert!(one("npm add left-pad", Profile::Balanced).is_none());
     }
 
     #[test]
@@ -251,5 +246,11 @@ mod tests {
         )
         .is_none());
         assert!(one("python -m pip install -r requirements.txt", Profile::Strict).is_some());
+        // `uv pip install` is uv's pip interface and is checked like pip.
+        assert!(one("uv pip install -r requirements.txt", Profile::Strict).is_some());
+        // Attached `-rFILE` form is also recognized.
+        assert!(one("pip install -rrequirements.txt", Profile::Strict).is_some());
+        // A non-install pip subcommand is not flagged.
+        assert!(one("pip download -r requirements.txt", Profile::Strict).is_none());
     }
 }

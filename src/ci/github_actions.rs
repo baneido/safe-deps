@@ -103,15 +103,22 @@ fn extract_run_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
     commands
 }
 
-/// If `line` is a `run:` mapping key, returns `(indent, value_after_colon)`,
-/// where `indent` is the leading-space count of the whole line. Handles an
-/// optional `- ` sequence marker (`- run: …`).
+/// If `line` is a `run:` mapping key, returns `(key_column, value_after_colon)`,
+/// where `key_column` is the column at which the `run` key begins. Handles an
+/// optional `- ` sequence marker (`- run: …`); for that form the key column is
+/// the column of `run`, not of the `-`, so sibling step keys (which align with
+/// `run`) are correctly treated as outside the block scalar.
 fn run_key_value(line: &str) -> Option<(usize, &str)> {
     let indent = leading_spaces(line);
-    let mut rest = &line[indent..];
-    // Allow a sequence marker introducing the mapping (`- run: …`).
+    let after_indent = &line[indent..];
+    let mut key_column = indent;
+    let mut rest = after_indent;
+    // Allow a sequence marker introducing the mapping (`- run: …`). The key
+    // column advances past `- ` and any extra spaces before the key.
     if let Some(stripped) = rest.strip_prefix("- ") {
-        rest = stripped.trim_start();
+        let trimmed = stripped.trim_start();
+        key_column += rest.len() - trimmed.len();
+        rest = trimmed;
     }
     let value = rest.strip_prefix("run:")?;
     // The next char after `run` must be `:` (handled) and then space or EOL,
@@ -119,13 +126,19 @@ fn run_key_value(line: &str) -> Option<(usize, &str)> {
     if !(value.is_empty() || value.starts_with([' ', '\t'])) {
         return None;
     }
-    Some((indent, value.trim_start()))
+    Some((key_column, value.trim_start()))
 }
 
 /// Whether a scalar value introduces a YAML block scalar (`|` or `>` with
-/// optional chomping/indentation indicators such as `|-`, `>2`).
+/// optional chomping/indentation indicators such as `|-`, `>2`). A trailing
+/// comment (`| # note`) is permitted and ignored.
 fn is_block_scalar_indicator(value: &str) -> bool {
     let v = value.trim();
+    // A YAML comment requires whitespace before `#`; strip it before checking.
+    let v = match v.find(" #") {
+        Some(idx) => v[..idx].trim_end(),
+        None => v,
+    };
     let mut chars = v.chars();
     match chars.next() {
         Some('|') | Some('>') => {
@@ -268,6 +281,24 @@ env:\n  NODE_ENV: production\njobs:\n  build:\n    env:\n      NPM_TOKEN: abcdef
         assert_eq!(token.value, "<redacted>");
         let node_env = env.iter().find(|e| e.name == "NODE_ENV").unwrap();
         assert_eq!(node_env.value, "production");
+    }
+
+    #[test]
+    fn sibling_keys_after_run_block_are_not_slurped() {
+        // The `run` block is the step's first key (`- run: |`); the following
+        // `env:` sibling and its entries must not be parsed as commands.
+        let text = "steps:\n  - run: |\n      npm install\n    env:\n      FOO: bar\n";
+        let cmds = extract_run_commands(&PathBuf::from("w.yml"), text);
+        assert_eq!(cmds.len(), 1, "got: {cmds:?}");
+        assert_eq!(cmds[0].command, "npm install");
+    }
+
+    #[test]
+    fn block_scalar_with_trailing_comment_is_a_block() {
+        let text = "steps:\n  - run: | # install deps\n      npm install\n";
+        let cmds = extract_run_commands(&PathBuf::from("w.yml"), text);
+        assert_eq!(cmds.len(), 1, "got: {cmds:?}");
+        assert_eq!(cmds[0].command, "npm install");
     }
 
     #[test]

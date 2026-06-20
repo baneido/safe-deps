@@ -39,12 +39,17 @@ problems. Remove them or scope them to a documented exception."
         let mut findings = Vec::new();
         for cmd in &input.ci.commands {
             for segment in command::segments(&cmd.command) {
-                let Some(pm) = package_manager(&segment) else {
+                let Some(inv) = command::invocation(&segment) else {
                     continue;
                 };
+                // These flags are install bypasses; only gate-relevant install
+                // commands count (so `npm cache clean --force` is not flagged).
+                if !command::is_install(&inv) {
+                    continue;
+                }
                 for spec in DANGEROUS_FLAGS {
-                    if spec.applies_to(pm) && command::has_flag(&segment, spec.flag) {
-                        findings.push(make_finding(cmd, pm, spec));
+                    if spec.applies_to(inv.pm) && command::has_flag(&segment, spec.flag) {
+                        findings.push(make_finding(cmd, inv.pm, spec));
                     }
                 }
             }
@@ -108,29 +113,6 @@ const DANGEROUS_FLAGS: &[FlagSpec] = &[
     },
 ];
 
-fn package_manager(tokens: &[String]) -> Option<PackageManager> {
-    match command::program(tokens)? {
-        "npm" => Some(Npm),
-        "yarn" => Some(Yarn),
-        "pnpm" => Some(Pnpm),
-        "bun" => Some(Bun),
-        "pip" | "pip3" => Some(Pip),
-        "uv" => Some(Uv),
-        "python" | "python3" if is_python_pip(tokens) => Some(Pip),
-        _ => None,
-    }
-}
-
-fn is_python_pip(tokens: &[String]) -> bool {
-    let mut iter = tokens.iter();
-    while let Some(t) = iter.next() {
-        if t == "-m" {
-            return iter.next().map(|m| m == "pip").unwrap_or(false);
-        }
-    }
-    false
-}
-
 fn make_finding(cmd: &CiCommand, pm: PackageManager, spec: &FlagSpec) -> Finding {
     Finding {
         rule_id: RuleId::new("SD009"),
@@ -155,11 +137,15 @@ mod tests {
     fn flags(cmd: &str) -> Vec<(&'static str, PackageManager)> {
         let mut out = Vec::new();
         for segment in command::segments(cmd) {
-            if let Some(pm) = package_manager(&segment) {
-                for spec in DANGEROUS_FLAGS {
-                    if spec.applies_to(pm) && command::has_flag(&segment, spec.flag) {
-                        out.push((spec.flag, pm));
-                    }
+            let Some(inv) = command::invocation(&segment) else {
+                continue;
+            };
+            if !command::is_install(&inv) {
+                continue;
+            }
+            for spec in DANGEROUS_FLAGS {
+                if spec.applies_to(inv.pm) && command::has_flag(&segment, spec.flag) {
+                    out.push((spec.flag, inv.pm));
                 }
             }
         }
@@ -170,12 +156,17 @@ mod tests {
     fn flags_force_for_package_managers() {
         assert_eq!(flags("npm install --force"), vec![("--force", Npm)]);
         assert_eq!(flags("pnpm install --force"), vec![("--force", Pnpm)]);
+        // `npm ci --force` is still an install bypass.
+        assert_eq!(flags("npm ci --force"), vec![("--force", Npm)]);
     }
 
     #[test]
     fn does_not_flag_force_for_unrelated_programs() {
         assert!(flags("git push --force").is_empty());
         assert!(flags("rm --force node_modules").is_empty());
+        // Non-install package-manager commands are not install bypasses.
+        assert!(flags("npm cache clean --force").is_empty());
+        assert!(flags("pnpm dlx create-app --force").is_empty());
     }
 
     #[test]

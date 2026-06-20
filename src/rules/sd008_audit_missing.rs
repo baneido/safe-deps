@@ -8,7 +8,7 @@
 
 use crate::ci::command::{self};
 use crate::ci::CiFacts;
-use crate::ecosystems::{Ecosystem, PackageManager};
+use crate::ecosystems::Ecosystem;
 use crate::rule::{Confidence, Finding, Location, Rule, RuleId, RuleInput, Severity};
 
 pub struct Sd008;
@@ -66,8 +66,8 @@ schedule, declare [policy] external_audit = true to acknowledge that control."
 /// Whether any CI command installs dependencies for `ecosystem`.
 fn ci_installs_ecosystem(ci: &CiFacts, ecosystem: Ecosystem) -> bool {
     ci_any_segment(ci, |tokens| {
-        matches!(program_manager(tokens), Some(pm) if pm.ecosystem() == ecosystem)
-            && installs(tokens)
+        matches!(command::invocation(tokens), Some(inv)
+            if inv.pm.ecosystem() == ecosystem && command::is_install(&inv))
     })
 }
 
@@ -83,41 +83,13 @@ fn ci_any_segment(ci: &CiFacts, mut predicate: impl FnMut(&[String]) -> bool) ->
         .any(|segment| predicate(&segment))
 }
 
-fn program_manager(tokens: &[String]) -> Option<PackageManager> {
-    match command::program(tokens)? {
-        "npm" => Some(PackageManager::Npm),
-        "yarn" => Some(PackageManager::Yarn),
-        "pnpm" => Some(PackageManager::Pnpm),
-        "bun" => Some(PackageManager::Bun),
-        "pip" | "pip3" => Some(PackageManager::Pip),
-        "uv" => Some(PackageManager::Uv),
-        _ => None,
-    }
-}
-
-fn installs(tokens: &[String]) -> bool {
-    let Some(pm) = program_manager(tokens) else {
-        return false;
-    };
-    let sub = command::subcommand(tokens);
-    match pm {
-        PackageManager::Npm => matches!(sub, Some("install") | Some("ci") | Some("i")),
-        PackageManager::Yarn => matches!(sub, None | Some("install")),
-        PackageManager::Pnpm | PackageManager::Bun => {
-            matches!(sub, Some("install") | Some("i") | Some("ci"))
-        }
-        PackageManager::Pip => matches!(sub, Some("install")),
-        PackageManager::Uv => matches!(sub, Some("sync") | Some("install")),
-    }
-}
-
 fn is_audit(tokens: &[String], ecosystem: Ecosystem) -> bool {
     let Some(program) = command::program(tokens) else {
         return false;
     };
     match ecosystem {
         Ecosystem::JavaScript => {
-            matches!(program, "npm" | "yarn" | "pnpm")
+            matches!(program, "npm" | "yarn" | "pnpm" | "bun")
                 && command::subcommand(tokens) == Some("audit")
         }
         Ecosystem::Python => matches!(program, "pip-audit" | "safety"),
@@ -163,6 +135,13 @@ mod tests {
     #[test]
     fn install_with_audit_clears() {
         let facts = ci(&["npm ci && npm audit"]);
+        assert!(ci_installs_ecosystem(&facts, Ecosystem::JavaScript));
+        assert!(ci_audits_ecosystem(&facts, Ecosystem::JavaScript));
+    }
+
+    #[test]
+    fn bun_audit_clears() {
+        let facts = ci(&["bun install --frozen-lockfile && bun audit"]);
         assert!(ci_installs_ecosystem(&facts, Ecosystem::JavaScript));
         assert!(ci_audits_ecosystem(&facts, Ecosystem::JavaScript));
     }
