@@ -14,7 +14,10 @@ pub struct PackageJson {
     pub name: Option<String>,
     #[serde(default, alias = "packageManager")]
     pub package_manager: Option<String>,
-    #[serde(default)]
+    /// `private` is conventionally a boolean, but real manifests sometimes write
+    /// `"true"`/`"false"` as strings (npm tolerates this). Parse leniently so a
+    /// quirky `private` value never aborts the whole manifest and hides findings.
+    #[serde(default, deserialize_with = "de_bool_lenient")]
     pub private: Option<bool>,
     #[serde(default)]
     pub dependencies: BTreeMap<String, String>,
@@ -69,6 +72,27 @@ impl PackageJson {
         let raw = self.package_manager.as_ref()?;
         PackageManagerHint::parse(raw)
     }
+}
+
+/// Deserializes a boolean that may be written as a real bool or as the strings
+/// `"true"`/`"false"`. Any other shape is treated as "not declared" rather than
+/// failing, so a single odd field cannot abort the whole manifest parse.
+fn de_bool_lenient<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    Ok(
+        match Option::<serde_json::Value>::deserialize(deserializer)? {
+            Some(serde_json::Value::Bool(b)) => Some(b),
+            Some(serde_json::Value::String(s)) => match s.trim().to_ascii_lowercase().as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            },
+            _ => None,
+        },
+    )
 }
 
 /// Parsed `packageManager` field, e.g. `yarn@4.1.0`.
@@ -173,5 +197,18 @@ mod tests {
         let pj = parse(r#"{"name":"x","packageManager":"yarn@4.1.0"}"#);
         let hint = pj.package_manager_hint().unwrap();
         assert_eq!(hint.manager, crate::ecosystems::PackageManager::Yarn);
+    }
+
+    #[test]
+    fn private_as_string_does_not_abort_parse() {
+        // Regression: `"private": "true"` (a string) used to fail the whole
+        // manifest parse, hiding every dependency and finding.
+        let pj = parse(r#"{"name":"app","private":"true","dependencies":{"left-pad":"^1"}}"#);
+        assert_eq!(pj.private, Some(true));
+        assert!(pj.has_dependencies());
+
+        assert_eq!(parse(r#"{"private":false}"#).private, Some(false));
+        assert_eq!(parse(r#"{"private":"false"}"#).private, Some(false));
+        assert_eq!(parse(r#"{"name":"x"}"#).private, None);
     }
 }
