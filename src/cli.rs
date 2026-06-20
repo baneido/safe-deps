@@ -265,7 +265,22 @@ fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
     )
     .map_err(CliError::internal)?;
 
-    let as_json = matches!(args.format.as_deref(), Some("json"));
+    // Resolve format with the same precedence as `check` (CLI flag, then
+    // config), validating the value; audit supports text and json.
+    let format = match args.format.as_deref() {
+        Some(s) => config::parse_format(s)?,
+        None => config.format.unwrap_or(OutputFormat::Text),
+    };
+    let as_json = match format {
+        OutputFormat::Json => true,
+        OutputFormat::Text => false,
+        other => {
+            return Err(CliError::usage(format!(
+                "audit does not support '{}' output; use text or json",
+                other.as_str()
+            )))
+        }
+    };
     let text = if as_json {
         crate::audit::render_json(&report).map_err(CliError::internal)?
     } else {

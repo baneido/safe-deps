@@ -53,7 +53,7 @@ pub fn cargo_lock_coordinates(text: &str) -> Vec<PackageCoordinate> {
         .iter()
         .filter_map(|pkg| {
             let source = pkg.get("source").and_then(|s| s.as_str())?;
-            if !source.contains("crates.io") {
+            if !is_crates_io_source(source) {
                 return None;
             }
             Some(PackageCoordinate {
@@ -63,6 +63,19 @@ pub fn cargo_lock_coordinates(text: &str) -> Vec<PackageCoordinate> {
             })
         })
         .collect()
+}
+
+/// Whether a Cargo.lock `source` is the public crates.io index (registry or
+/// sparse), not an alternate registry whose URL merely mentions crates.io.
+fn is_crates_io_source(source: &str) -> bool {
+    source == "registry+https://github.com/rust-lang/crates.io-index"
+        || source.starts_with("sparse+https://index.crates.io/")
+}
+
+/// Whether an npm version string is a plain registry version rather than a git
+/// ref, alias (`npm:real@1`), or URL.
+fn is_registry_version(version: &str) -> bool {
+    !version.contains(':') && !version.contains('/')
 }
 
 /// Parses an npm `package-lock.json` (v1 `dependencies` or v2/v3 `packages`).
@@ -83,8 +96,20 @@ pub fn npm_lock_coordinates(text: &str) -> Vec<PackageCoordinate> {
             if entry.get("link").and_then(|l| l.as_bool()) == Some(true) {
                 continue;
             }
+            // Skip git/file-resolved entries: their `version` is the upstream's
+            // own version, which OSV cannot match to a registry release.
+            if let Some(resolved) = entry.get("resolved").and_then(|r| r.as_str()) {
+                if resolved.starts_with("git+")
+                    || resolved.starts_with("git:")
+                    || resolved.starts_with("file:")
+                {
+                    continue;
+                }
+            }
             if let Some(version) = entry.get("version").and_then(|v| v.as_str()) {
-                out.push(npm_coord(name, version));
+                if is_registry_version(version) {
+                    out.push(npm_coord(name, version));
+                }
             }
         }
     }
@@ -103,8 +128,9 @@ fn collect_npm_v1(
 ) {
     for (name, entry) in deps {
         if let Some(version) = entry.get("version").and_then(|v| v.as_str()) {
-            // Skip non-registry refs (git/file URLs in the version field).
-            if !version.contains("://") && !version.contains('/') {
+            // Skip non-registry refs: git/file URLs and `npm:` aliases all carry
+            // `:` or `/`, which a plain registry version never does.
+            if is_registry_version(version) {
                 out.push(npm_coord(name, version));
             }
         }

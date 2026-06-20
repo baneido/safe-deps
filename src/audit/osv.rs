@@ -34,6 +34,9 @@ impl HttpTransport for CurlTransport {
         let mut child = Command::new("curl")
             .args([
                 "-sS",
+                // Fail (non-zero exit) on HTTP 4xx/5xx so an error page is never
+                // parsed as a vulnerability response; keep the body for context.
+                "--fail-with-body",
                 "--max-time",
                 "30",
                 "-X",
@@ -60,7 +63,7 @@ impl HttpTransport for CurlTransport {
 
     fn get(&self, url: &str) -> Result<String, AuditError> {
         let child = Command::new("curl")
-            .args(["-sS", "--max-time", "30", url])
+            .args(["-sS", "--fail-with-body", "--max-time", "30", url])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -193,7 +196,16 @@ fn parse_querybatch(response: &str, expected: usize) -> Result<Vec<Vec<String>>,
         .get("results")
         .and_then(|r| r.as_array())
         .ok_or_else(|| AuditError::Parse("missing results array".into()))?;
-    let mut out: Vec<Vec<String>> = results
+    // OSV returns exactly one result per query, in order. A mismatch means a
+    // truncated/garbled response; fail rather than silently mark coordinates
+    // clean by padding.
+    if results.len() != expected {
+        return Err(AuditError::Parse(format!(
+            "expected {expected} results, got {}",
+            results.len()
+        )));
+    }
+    let out: Vec<Vec<String>> = results
         .iter()
         .map(|r| {
             r.get("vulns")
@@ -207,8 +219,6 @@ fn parse_querybatch(response: &str, expected: usize) -> Result<Vec<Vec<String>>,
                 .unwrap_or_default()
         })
         .collect();
-    // Be lenient: pad/truncate to the expected length so zipping stays aligned.
-    out.resize(expected, Vec::new());
     Ok(out)
 }
 

@@ -731,12 +731,22 @@ const CACHED_ADVISORY: &str = r#"{
   ]
 }"#;
 
+/// Seeds the OSV cache for left-pad@1.0.0 under `<ws>/cache`, computing the
+/// filename from the same public key logic the binary uses.
+fn seed_leftpad_cache(ws: &TempDir) {
+    let key = safe_deps::audit::PackageCoordinate {
+        ecosystem: "crates.io".to_string(),
+        name: "left-pad".to_string(),
+        version: "1.0.0".to_string(),
+    }
+    .cache_key();
+    write(ws.path(), &format!("cache/{key}.json"), CACHED_ADVISORY);
+}
+
 #[test]
 fn audit_offline_reports_cached_advisory_and_exits_one() {
-    let ws = workspace(&[
-        ("Cargo.lock", CARGO_LOCK_LEFTPAD),
-        ("cache/crates_io__left_pad__1_0_0.json", CACHED_ADVISORY),
-    ]);
+    let ws = workspace(&[("Cargo.lock", CARGO_LOCK_LEFTPAD)]);
+    seed_leftpad_cache(&ws);
     let cache = ws.path().join("cache");
     let out = run(
         &ws,
@@ -758,12 +768,12 @@ fn audit_offline_reports_cached_advisory_and_exits_one() {
 fn audit_respects_advisory_ignore_by_alias() {
     let ws = workspace(&[
         ("Cargo.lock", CARGO_LOCK_LEFTPAD),
-        ("cache/crates_io__left_pad__1_0_0.json", CACHED_ADVISORY),
         (
             "safe-deps.toml",
             "[[advisory_ignores]]\nid = \"CVE-2099-1\"\nreason = \"patched downstream\"\n",
         ),
     ]);
+    seed_leftpad_cache(&ws);
     let cache = ws.path().join("cache");
     let out = run(
         &ws,
@@ -790,10 +800,8 @@ fn audit_offline_without_cache_reports_clean() {
 
 #[test]
 fn audit_json_format() {
-    let ws = workspace(&[
-        ("Cargo.lock", CARGO_LOCK_LEFTPAD),
-        ("cache/crates_io__left_pad__1_0_0.json", CACHED_ADVISORY),
-    ]);
+    let ws = workspace(&[("Cargo.lock", CARGO_LOCK_LEFTPAD)]);
+    seed_leftpad_cache(&ws);
     let cache = ws.path().join("cache");
     let out = run(
         &ws,

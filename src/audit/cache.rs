@@ -50,11 +50,16 @@ impl Cache {
         serde_json::from_str(&text).ok()
     }
 
-    /// Returns cached advisories only if they are within the TTL.
+    /// Returns cached advisories only if they are within the TTL. An entry
+    /// stamped in the future (clock skew or a hand-edited cache) is treated as
+    /// stale rather than perpetually fresh.
     pub fn get_fresh(&self, coord: &PackageCoordinate) -> Option<Vec<Advisory>> {
         let entry = self.load(coord)?;
-        let age = now().saturating_sub(entry.fetched);
-        (age <= self.ttl_secs).then_some(entry.advisories)
+        let now = now();
+        if entry.fetched > now {
+            return None;
+        }
+        ((now - entry.fetched) <= self.ttl_secs).then_some(entry.advisories)
     }
 
     /// Returns cached advisories regardless of age (used in offline mode).

@@ -25,20 +25,31 @@ pub struct PackageCoordinate {
 }
 
 impl PackageCoordinate {
-    /// A stable cache key, filesystem-safe.
+    /// A stable, collision-free, filesystem-safe cache key. A readable but
+    /// lossy prefix aids debugging; an FNV-1a hash of the exact coordinate
+    /// (ecosystem, name, version, NUL-separated) guarantees distinct
+    /// coordinates never share a key even when their punctuation sanitizes the
+    /// same (e.g. `@scope/pkg` vs `scope_pkg`).
     pub fn cache_key(&self) -> String {
-        let sanitize = |s: &str| {
-            s.chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                .collect::<String>()
-        };
-        format!(
-            "{}__{}__{}",
-            sanitize(&self.ecosystem),
-            sanitize(&self.name),
-            sanitize(&self.version)
-        )
+        let readable: String = format!("{}_{}", self.ecosystem, self.name)
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .take(48)
+            .collect();
+        let canonical = format!("{}\0{}\0{}", self.ecosystem, self.name, self.version);
+        format!("{readable}-{:016x}", fnv1a64(&canonical))
     }
+}
+
+/// FNV-1a 64-bit hash; deterministic and dependency-free, used only for cache
+/// key disambiguation (not security).
+fn fnv1a64(s: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 /// A vulnerability advisory affecting a specific package.
