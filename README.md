@@ -67,8 +67,8 @@ usage/config error, `3` internal error, `4` parse failure under
 ### Ecosystem × rule coverage
 
 `✓` = the rule can fire for that ecosystem today; `–` = not applicable or not yet
-implemented. Rules marked **(CI)** are derived from CI workflow commands and only
-fire when a GitHub Actions workflow is present.
+implemented. Rules marked **(CI)** are derived from CI commands and only fire
+when a supported CI configuration is present (see CI provider support below).
 
 | Ecosystem | SD001 | SD002 (CI) | SD003 | SD004 | SD005 | SD006 | SD007 | SD008 (CI) | SD009 (CI) |
 | --------- | :---: | :--------: | :---: | :---: | :---: | :---: | :---: | :--------: | :--------: |
@@ -78,8 +78,8 @@ fire when a GitHub Actions workflow is present.
 | Bun       |   ✓   |     ✓      |   –   |   –   |   ✓   |   ✓   |   –   |     ✓      |     ✓      |
 | pip       |   –   |     ✓      |   ✓   |   ✓   |   –   |   ✓   |   ✓   |     ✓      |     ✓      |
 | uv        |   ✓   |     ✓      |   ✓   |   –   |   –   |   ✓   |   ✓   |     ✓      |     ✓      |
-| Cargo     |   ✓   |     –      |   –   |   –   |   –   |   –   |   –   |     –      |     –      |
-| Go        |   ✓   |     –      |   –   |   –   |   –   |   –   |   –   |     –      |     –      |
+| Cargo     |   ✓   |     ✓      |   –   |   –   |   –   |   –   |   –   |     –      |     –      |
+| Go        |   ✓   |     ✓      |   –   |   –   |   –   |   –   |   –   |     –      |     –      |
 
 Notes:
 
@@ -87,14 +87,22 @@ Notes:
   assessed through `--require-hashes` (SD004) instead.
 - SD006 (unsafe dependency source) covers JavaScript and Python manifests today.
   Extending it to Cargo/Go is tracked separately.
-- Cargo/Go currently surface SD001 (missing `Cargo.lock` / `go.sum`); their CI
-  install commands are not yet recognized by the CI-derived rules.
+- For Cargo/Go, SD002 flags a non-reproducible CI build (`cargo build`/`test`
+  without `--locked`/`--frozen`; `go build`/`test` with `-mod=mod`). SD008/SD009
+  do not yet recognize Cargo/Go commands.
 
 ## CI provider support
 
-CI-aware rules (SD002, SD008, SD009) read commands and `env` from **GitHub
-Actions** workflows (`.github/workflows/*.yml`). Other CI providers
-(GitLab CI, CircleCI, …) are not yet parsed.
+CI-aware rules (SD002, SD008, SD009) read commands and `env` from these CI
+providers:
+
+| Provider       | Config file(s)                |
+| -------------- | ----------------------------- |
+| GitHub Actions | `.github/workflows/*.yml\|yaml` |
+| GitLab CI      | `.gitlab-ci.yml`              |
+| CircleCI       | `.circleci/config.yml`        |
+
+Other providers (Jenkins, Azure Pipelines, …) are not yet parsed.
 
 ## Output formats
 
