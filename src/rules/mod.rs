@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use globset::Glob;
 
-use crate::ci::CiFacts;
+use crate::ci::{self, CiFacts};
 use crate::config::{Config, Suppression};
 use crate::diagnostics::{Diagnostic, DiagnosticLevel};
 use crate::ecosystems::{detect_all, facts_for};
@@ -130,6 +130,34 @@ pub fn analyze(ctx: &WorkspaceContext, profile: Profile, ci_facts: &CiFacts) -> 
             message: format!("unused suppression: {id}"),
             location: None,
         });
+    }
+
+    // Surface CI commands the pragmatic shell tokenizer cannot fully model so a
+    // shell-derived rule (SD002/SD008/SD009) result is not silently trusted. Only
+    // commands that still resolve to a package-manager invocation are flagged, so
+    // unrelated complex shell (e.g. `echo $(date)`) does not add noise.
+    // `ci_facts.commands` is pre-sorted by (file, line), so this is deterministic.
+    for cmd in &ci_facts.commands {
+        let Some(reason) = ci::command::uncertainty(&cmd.command) else {
+            continue;
+        };
+        let pm_relevant = ci::command::segments(&cmd.command)
+            .iter()
+            .any(|seg| ci::command::invocation(seg).is_some());
+        if pm_relevant {
+            diagnostics.push(Diagnostic {
+                level: DiagnosticLevel::Info,
+                // The file lives in `location`; the reporter prints it as a
+                // prefix, so the message carries only the line to avoid a
+                // duplicated path.
+                message: format!(
+                    "line {}: CI command not fully parsed ({reason}); CI-derived findings \
+                     (SD002/SD008/SD009) for this command may be incomplete",
+                    cmd.line
+                ),
+                location: Some(cmd.file.clone()),
+            });
+        }
     }
 
     AnalysisResult {

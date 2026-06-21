@@ -137,6 +137,12 @@ self-contained and cross-platform. Building with
 `--no-default-features --features curl-transport` instead shells out to the
 system `curl` (a TLS-crate-free build, e.g. for toolchains without a C compiler).
 
+## Contributing
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to report issues and land a change.
+- [DEVELOPMENT.md](DEVELOPMENT.md) — build, test, and architecture.
+- [RELEASING.md](RELEASING.md) — the release checklist (maintainers).
+
 ## Design documents
 
 - [Security best practices research](docs/security-best-practices.md)
@@ -162,3 +168,5 @@ Cargo/Go, and additional ecosystems (Composer, Bundler, Gradle/Maven, NuGet).
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE).
+Third-party dependency licenses are catalogued in
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
