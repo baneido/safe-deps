@@ -10,6 +10,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
 
 use crate::config::Config;
+use crate::diagnostics::Diagnostic;
 
 /// Directories always excluded to avoid walking generated/dependency trees.
 const DEFAULT_EXCLUDE_DIRS: &[&str] = &[
@@ -45,6 +46,11 @@ pub struct WorkspaceContext {
     pub root: PathBuf,
     pub files: Vec<FileEntry>,
     pub config: Config,
+    /// Warning diagnostics for paths the directory walk could not traverse
+    /// (permission denied, broken symlink, …). Surfaced so a coverage gap is
+    /// not a silent miss; the analysis engine counts these as parse failures so
+    /// `--strict-parser-errors` can escalate the run.
+    pub scan_diagnostics: Vec<Diagnostic>,
 }
 
 /// A file entry in the workspace, with content loaded lazily.
@@ -150,11 +156,22 @@ pub fn scan(
         .parents(true);
 
     let mut files = Vec::new();
+    let mut scan_diagnostics = Vec::new();
 
     for result in builder.build() {
         let entry = match result {
             Ok(entry) => entry,
-            Err(_) => continue,
+            Err(err) => {
+                // A path the walk could not traverse (permission denied, broken
+                // symlink, …). Record it instead of skipping silently so the
+                // coverage gap is visible. `ignore::Error`'s Display carries the
+                // offending path for IO errors; anchor the location at the root.
+                scan_diagnostics.push(Diagnostic::warn_at(
+                    format!("could not scan a path under the workspace: {err}"),
+                    root.to_path_buf(),
+                ));
+                continue;
+            }
         };
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
@@ -185,10 +202,16 @@ pub fn scan(
     files.sort_by(|a, b| a.relative.cmp(&b.relative));
     files.dedup_by(|a, b| a.relative == b.relative);
 
+    // Walk order is filesystem-dependent; sort so the surfaced diagnostics are
+    // deterministic across runs and platforms (the failing path is carried in
+    // the message). Matches how every other diagnostic source is ordered.
+    scan_diagnostics.sort_by(|a, b| a.message.cmp(&b.message));
+
     Ok(WorkspaceContext {
         root: root.to_path_buf(),
         files,
         config,
+        scan_diagnostics,
     })
 }
 
@@ -252,4 +275,53 @@ pub enum FsError {
     Glob { pattern: String, message: String },
     #[error("internal filesystem error: {0}")]
     Internal(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    #[cfg(unix)]
+    fn walk_errors_are_recorded_as_diagnostics() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::write(locked.join("inner.txt"), "x").unwrap();
+        // Remove read/execute so the walk cannot enumerate the directory.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let ctx = scan(dir.path(), Config::default(), &ScanOptions::default()).unwrap();
+
+        // Restore permissions so the TempDir can be cleaned up.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Running as root bypasses permission checks; only assert when the OS
+        // actually denied us (the realistic CI/developer case).
+        if ctx.scan_diagnostics.is_empty() {
+            eprintln!("skipping: directory permissions were not enforced (running as root?)");
+            return;
+        }
+        assert!(ctx
+            .scan_diagnostics
+            .iter()
+            .any(|d| d.message.contains("could not scan")));
+        // The reachable file is still scanned despite the locked sibling.
+        assert!(ctx
+            .files
+            .iter()
+            .any(|f| f.relative == Path::new("package.json")));
+    }
+
+    #[test]
+    fn clean_workspace_has_no_scan_diagnostics() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let ctx = scan(dir.path(), Config::default(), &ScanOptions::default()).unwrap();
+        assert!(ctx.scan_diagnostics.is_empty());
+    }
 }

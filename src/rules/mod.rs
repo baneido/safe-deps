@@ -55,12 +55,15 @@ pub struct AnalysisResult {
 
 /// Runs all rules over all detected projects.
 pub fn analyze(ctx: &WorkspaceContext, profile: Profile, ci_facts: &CiFacts) -> AnalysisResult {
-    let mut diagnostics = Vec::new();
+    // Surface directory-walk failures recorded during scanning; they are
+    // coverage gaps, counted like parse failures so `--strict-parser-errors`
+    // can escalate.
+    let mut diagnostics = ctx.scan_diagnostics.clone();
+    let mut parse_failures = ctx.scan_diagnostics.len();
 
     let mut projects = detect_all(ctx);
     refine_kinds(&mut projects, ctx);
 
-    let mut parse_failures = 0;
     let mut facts_list = Vec::with_capacity(projects.len());
     for project in &projects {
         match facts_for(project, ctx) {

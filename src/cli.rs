@@ -50,7 +50,8 @@ pub struct AuditArgs {
     #[arg(default_value = ".")]
     pub path: PathBuf,
 
-    /// Config path. Defaults to ./safe-deps.toml when present.
+    /// Config path. Overrides discovery; otherwise `<target>/safe-deps.toml`
+    /// (relative to the analyzed path) is used when present.
     #[arg(long)]
     pub config: Option<PathBuf>,
 
@@ -85,7 +86,8 @@ pub struct CheckArgs {
     #[arg(default_value = ".")]
     pub path: PathBuf,
 
-    /// Config path. Defaults to ./safe-deps.toml when present.
+    /// Config path. Overrides discovery; otherwise `<target>/safe-deps.toml`
+    /// (relative to the analyzed path) is used when present.
     #[arg(long)]
     pub config: Option<PathBuf>,
 
@@ -243,7 +245,7 @@ fn run_check(args: CheckArgs) -> Result<u8, CliError> {
 }
 
 fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
-    let config = load_config(args.config.as_deref())?;
+    let config = load_config(args.config.as_deref(), &args.path)?;
     let scan_options = ScanOptions {
         no_gitignore: args.no_gitignore,
         ..Default::default()
@@ -286,7 +288,10 @@ fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
     .map_err(CliError::internal)?;
 
     // Surface lockfile read/parse failures so an unparsed lockfile is not read
-    // as a clean result.
+    // as a clean result, plus any directory-walk failures from scanning.
+    report
+        .diagnostics
+        .extend(ctx.scan_diagnostics.iter().map(|d| d.message.clone()));
     report.diagnostics.extend(collected.diagnostics);
 
     if offline_unchecked > 0 {
@@ -363,7 +368,7 @@ fn run_init() -> Result<u8, CliError> {
 }
 
 fn resolve_config(args: &CheckArgs) -> Result<ResolvedConfig, CliError> {
-    let config = load_config(args.config.as_deref())?;
+    let config = load_config(args.config.as_deref(), &args.path)?;
     let profile = resolve_value(
         args.profile.as_deref(),
         config.profile,
@@ -392,13 +397,17 @@ fn resolve_config(args: &CheckArgs) -> Result<ResolvedConfig, CliError> {
     })
 }
 
-fn load_config(explicit: Option<&Path>) -> Result<Config, CliError> {
+/// Loads configuration. An explicit `--config` path always wins; otherwise the
+/// default search is anchored at the analysis target (`target/safe-deps.toml`),
+/// not the process's current directory, so `safe-deps check /path/to/repo` picks
+/// up that repo's config rather than silently using defaults.
+fn load_config(explicit: Option<&Path>, target: &Path) -> Result<Config, CliError> {
     if let Some(path) = explicit {
         return Ok(config::load(path)?);
     }
-    let default = Path::new("safe-deps.toml");
+    let default = target.join("safe-deps.toml");
     if default.is_file() {
-        return Ok(config::load(default)?);
+        return Ok(config::load(&default)?);
     }
     Ok(Config::default())
 }

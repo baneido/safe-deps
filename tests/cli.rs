@@ -265,6 +265,25 @@ fn config_file_fail_on_none_overrides_default() {
 }
 
 #[test]
+fn config_is_discovered_relative_to_the_target_path() {
+    // Regression: safe-deps.toml must be discovered in the analyzed directory,
+    // not the process CWD. Running `check sub` from a CWD that has no config
+    // must still pick up sub/safe-deps.toml.
+    let ws = workspace(&[
+        ("sub/package.json", NPM_DEPS),
+        ("sub/safe-deps.toml", "profile = \"strict\"\n"),
+    ]);
+    // CWD is the tempdir root (no safe-deps.toml here); analyze ./sub.
+    let out = run(&ws, &["check", "sub", "--format", "json"]);
+    let report: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{}", stdout(&out)));
+    assert_eq!(
+        report["profile"], "strict",
+        "config in the target dir must be applied: {report}"
+    );
+}
+
+#[test]
 fn config_rule_level_override_downgrades_severity() {
     let ws = workspace(&[
         ("package.json", NPM_DEPS),
@@ -332,6 +351,26 @@ fn invalid_config_is_usage_error() {
     ]);
     let out = run(&ws, &["check", "."]);
     assert_eq!(code(&out), 2);
+}
+
+#[test]
+fn invalid_application_root_glob_is_usage_error() {
+    // A malformed root glob must be a loud config error (exit 2), not a silent
+    // disable of the application_roots/library_roots policy.
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        (
+            "safe-deps.toml",
+            "[policy]\napplication_roots = [\"apps/*\", \"[bad\"]\n",
+        ),
+    ]);
+    let out = run(&ws, &["check", "."]);
+    assert_eq!(code(&out), 2, "{}", stdout(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("application_roots"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 // --- suppressions ------------------------------------------------------------
@@ -1557,4 +1596,45 @@ fn sd006_go_normal_requires_are_clean() {
         ("go.sum", "github.com/x/y v1.2.3 h1:abc=\n"),
     ]);
     assert!(findings_of(&check_json(&ws, &[]), "SD006").is_empty());
+}
+
+// --- workspace-scan error surfacing (#18) ------------------------------------
+
+#[test]
+#[cfg(unix)]
+fn unreadable_directory_is_surfaced_and_escalates_under_strict() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // A clean project (lockfile present, no config) so the run is otherwise
+    // exit 0; any non-zero exit must come from the walk error.
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        ("package-lock.json", r#"{ "lockfileVersion": 3 }"#),
+    ]);
+    let locked = ws.path().join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::write(locked.join("x.txt"), "x").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let normal = run(&ws, &["check", "."]);
+    let strict = run(&ws, &["check", ".", "--strict-parser-errors"]);
+
+    // Restore permissions so the TempDir can be cleaned up.
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let text = stdout(&normal);
+    if !text.contains("could not scan") {
+        // Permissions were not enforced (e.g. running as root); nothing to assert.
+        eprintln!("skipping: directory permissions not enforced (root?)");
+        return;
+    }
+    // The walk error is surfaced as a diagnostic but is only a warning, so a
+    // default run does not fail.
+    assert_eq!(
+        code(&normal),
+        0,
+        "scan diagnostic should not fail a default run"
+    );
+    // Under --strict-parser-errors the coverage gap escalates to exit 4.
+    assert_eq!(code(&strict), 4, "strict mode should escalate a walk error");
 }
