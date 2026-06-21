@@ -253,12 +253,94 @@ pub fn is_install(inv: &Invocation) -> bool {
     }
 }
 
+/// Shell constructs the pragmatic tokenizer does not model. When present, the
+/// `segments`/`invocation` view of a command may mis-split or miss a sub-command,
+/// so callers can surface a low-confidence diagnostic instead of silently
+/// trusting the parse. Returns a short, fixed description of the first construct
+/// found (for a deterministic message), or `None` for a cleanly tokenizable line.
+///
+/// Single-quoted spans are literal in shell, so their contents are ignored (a
+/// literal `echo '$(x)'` is not flagged). Double-quoted spans are kept because
+/// command substitution still runs inside them.
+pub fn uncertainty(command: &str) -> Option<&'static str> {
+    let scanned = strip_single_quoted(command);
+    if scanned.contains("$(") {
+        Some("command substitution")
+    } else if scanned.contains('`') {
+        Some("backtick command substitution")
+    } else if scanned.contains("<(") || scanned.contains(">(") {
+        Some("process substitution")
+    } else if scanned.contains("<<") {
+        // Covers heredocs (`<<EOF`) and herestrings (`<<<`).
+        Some("heredoc or herestring")
+    } else if scanned.contains("() {") || scanned.contains("(){") {
+        Some("shell function definition")
+    } else {
+        None
+    }
+}
+
+/// Removes single-quoted spans from a command so literal text inside them is not
+/// scanned. An unterminated quote drops the remainder, matching how a shell would
+/// treat it as continuing.
+fn strip_single_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_single = false;
+    for c in s.chars() {
+        if c == '\'' {
+            in_single = !in_single;
+            continue;
+        }
+        if !in_single {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn seg(s: &str) -> Vec<Vec<String>> {
         segments(s)
+    }
+
+    #[test]
+    fn uncertainty_flags_complex_constructs() {
+        assert_eq!(
+            uncertainty("npm install $(cat pkgs)"),
+            Some("command substitution")
+        );
+        assert_eq!(
+            uncertainty("npm install `cat pkgs`"),
+            Some("backtick command substitution")
+        );
+        assert_eq!(
+            uncertainty("diff <(npm ls) <(cat baseline)"),
+            Some("process substitution")
+        );
+        assert_eq!(
+            uncertainty("cat <<EOF\nnpm install\nEOF"),
+            Some("heredoc or herestring")
+        );
+        assert_eq!(
+            uncertainty("grep npm <<< \"$pkgs\""),
+            Some("heredoc or herestring")
+        );
+        assert_eq!(
+            uncertainty("install() { npm ci; }"),
+            Some("shell function definition")
+        );
+    }
+
+    #[test]
+    fn uncertainty_is_none_for_clean_commands() {
+        assert_eq!(uncertainty("npm ci && npm test | tee log"), None);
+        assert_eq!(uncertainty("pnpm install --frozen-lockfile"), None);
+        // A literal inside single quotes is not a real construct.
+        assert_eq!(uncertainty("echo '$(not a command)'"), None);
+        assert_eq!(uncertainty("echo 'use `backticks` literally'"), None);
     }
 
     #[test]
