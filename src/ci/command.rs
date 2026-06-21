@@ -290,18 +290,31 @@ pub fn uncertainty(command: &str) -> Option<&'static str> {
     None
 }
 
-/// Whether `command` declares a shell function, in either the `function name`
-/// keyword form or the POSIX `name() {` form, at the start of any statement.
+/// Whether `command` declares a shell function, in either the `function name { … }`
+/// keyword form or the POSIX `name() { … }` form, at the start of any statement.
+/// An opening `{` body token is required, so a command whose program merely ends
+/// in `()` (or is literally `function`) without a brace block is not flagged.
 fn is_function_definition(command: &str) -> bool {
     segments(command).iter().any(|seg| {
-        seg.first().is_some_and(|first| {
-            // `function name …`
-            first == "function"
-                // `name()` — the function name token ends in an empty `()` pair.
-                // (Process/command substitution put `(` mid-token or after `<`/`$`,
-                // so their first segment token does not end in `()`.)
-                || (first.len() > 2 && first.ends_with("()"))
-        })
+        let Some(first) = seg.first() else {
+            return false;
+        };
+        // `name(){ … }` with the brace attached to the name (no space).
+        if first.contains("(){") {
+            return true;
+        }
+        // `name() { … }` — the name token ends in an empty `()` pair and the body
+        // brace follows as the next token. (Process/command substitution put `(`
+        // mid-token or after `<`/`$`, so their first segment token does not end
+        // in `()`.)
+        if first.len() > 2 && first.ends_with("()") {
+            return seg.get(1).is_some_and(|t| t.starts_with('{'));
+        }
+        // `function name { … }` keyword form, with a brace body somewhere after.
+        if first == "function" {
+            return seg.iter().skip(1).any(|t| t.starts_with('{'));
+        }
+        false
     })
 }
 
@@ -533,6 +546,15 @@ mod tests {
         assert_eq!(uncertainty("firebase deploy --only function"), None);
         assert_eq!(uncertainty("# helper function to install deps"), None);
         assert_eq!(uncertainty("python -c \"def f(): pass\""), None);
+        // A definition requires a `{` body: a program ending in `()` or a bare
+        // `function` keyword without a brace block is not flagged.
+        assert_eq!(uncertainty("weird() arg"), None);
+        assert_eq!(uncertainty("function deploy"), None);
+        // The brace may be attached to the name (`name(){`).
+        assert_eq!(
+            uncertainty("deploy(){ npm ci; }"),
+            Some("shell function definition")
+        );
     }
 
     #[test]
