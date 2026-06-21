@@ -11,14 +11,14 @@ queries a vulnerability database (OSV).
 
 > Status: the CLI is implemented (Phases 1–5). It is **not yet published to
 > crates.io**; install a prebuilt binary from GitHub Releases or build from
-> source (both below). Minimum supported Rust version (MSRV): **1.85**.
+> source (both below). Minimum supported Rust version (MSRV): **1.86**.
 
 ## Install
 
 ### Prebuilt binaries (recommended)
 
-Each tagged release publishes binaries for Linux, macOS, and Windows
-(x86-64 and arm64) to [GitHub Releases](https://github.com/baneido/safe-deps/releases),
+Each tagged release publishes binaries for Linux and macOS (x86-64 and arm64)
+and Windows (x86-64) to [GitHub Releases](https://github.com/baneido/safe-deps/releases),
 with a SHA-256 checksum per archive, a signed `SHA256SUMS` manifest, and a
 CycloneDX SBOM.
 

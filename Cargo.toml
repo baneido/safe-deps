@@ -2,10 +2,11 @@
 name = "safe-deps"
 version = "0.1.0"
 edition = "2021"
-# Real MSRV: dependencies (clap, indexmap, globset, …) require Rust 1.85 (they
-# declare rust-version 1.85 and use edition 2024), so 1.80 does not build. The
-# `msrv` CI job pins this version.
-rust-version = "1.85"
+# Real MSRV: transitive dependencies require Rust 1.86 — the audit HTTP stack
+# (ureq → url → idna → icu_* 2.2.0) declares rust-version 1.86, and others use
+# edition 2024, so older toolchains (1.80, 1.85) do not build. The `msrv` CI job
+# pins this version.
+rust-version = "1.86"
 license = "MIT"
 description = "Static linter for package-management security practices."
 repository = "https://github.com/baneido/safe-deps"
