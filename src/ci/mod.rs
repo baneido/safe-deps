@@ -1,16 +1,53 @@
 //! CI fact extraction.
 //!
-//! Phase 2 populates `CiFacts` from GitHub Actions workflows: shell commands
-//! from `run:` blocks (with file/line locations) and `env` assignments at the
-//! workflow, job, and step levels. These facts activate the CI-aware rules
+//! Populates `CiFacts` from CI configuration files via pluggable providers
+//! (GitHub Actions, GitLab CI, CircleCI): shell commands (with file/line
+//! locations) and `env` assignments. These facts activate the CI-aware rules
 //! SD002, SD008, and SD009.
+
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::filesystem::WorkspaceContext;
 
+pub mod circleci;
 pub mod command;
 pub mod github_actions;
+pub mod gitlab_ci;
+pub mod yaml;
+
+/// Commands and env extracted from one CI configuration file.
+#[derive(Debug, Default)]
+pub struct ParsedCi {
+    pub commands: Vec<CiCommand>,
+    pub env: Vec<EnvAssignment>,
+}
+
+/// A CI provider recognizes its configuration files and extracts the shell
+/// commands and env assignments the CI-aware rules reason about.
+pub trait CiProvider: Sync {
+    /// Human-readable name, used in `explain`/coverage docs.
+    fn name(&self) -> &'static str;
+    /// Whether a workspace-relative path is one of this provider's config files.
+    fn matches(&self, relative: &Path) -> bool;
+    /// Parses a recognized file into CI facts.
+    fn parse(&self, relative: &Path, text: &str) -> ParsedCi;
+}
+
+/// All built-in CI providers, in coverage order.
+pub fn providers() -> &'static [&'static dyn CiProvider] {
+    &[
+        &github_actions::GithubActions,
+        &gitlab_ci::GitlabCi,
+        &circleci::CircleCi,
+    ]
+}
+
+/// Human-readable provider names, for coverage docs.
+pub fn provider_names() -> Vec<&'static str> {
+    providers().iter().map(|p| p.name()).collect()
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CiFacts {
@@ -37,17 +74,19 @@ impl CiFacts {
     }
 }
 
-/// Extracts CI facts from every supported CI file in the workspace. Currently
-/// GitHub Actions only; unparseable files are skipped (best effort).
+/// Extracts CI facts from every supported CI file in the workspace, dispatching
+/// each file to the first provider that recognizes it. Unparseable files yield
+/// no commands (best effort).
 pub fn extract(ctx: &WorkspaceContext) -> CiFacts {
     let mut facts = CiFacts::default();
     for file in &ctx.files {
-        if github_actions::is_workflow_file(&file.relative) {
-            if let Ok(text) = crate::filesystem::read_text(ctx, &file.relative) {
-                let parsed = github_actions::parse(&file.relative, &text);
-                facts.commands.extend(parsed.commands);
-                facts.env.extend(parsed.env);
-            }
+        let Some(provider) = providers().iter().find(|p| p.matches(&file.relative)) else {
+            continue;
+        };
+        if let Ok(text) = crate::filesystem::read_text(ctx, &file.relative) {
+            let parsed = provider.parse(&file.relative, &text);
+            facts.commands.extend(parsed.commands);
+            facts.env.extend(parsed.env);
         }
     }
     // `ctx.files` is already sorted, so iteration is deterministic; keep

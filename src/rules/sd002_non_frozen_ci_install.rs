@@ -25,9 +25,11 @@ impl Rule for Sd002 {
     fn explanation(&self) -> &'static str {
         "CI should fail when the manifest and lockfile disagree. Use npm ci, \
 yarn install --immutable, pnpm install --frozen-lockfile, \
-bun install --frozen-lockfile (or bun ci), uv sync --locked, and \
-pip install --require-hashes for deployment requirements. This rule reads \
-CI command facts extracted from GitHub Actions workflows."
+bun install --frozen-lockfile (or bun ci), uv sync --locked, \
+pip install --require-hashes for deployment requirements, cargo build/test \
+--locked, and Go's default -mod=readonly (avoid -mod=mod). This rule reads CI \
+command facts extracted from GitHub Actions, GitLab CI, and CircleCI \
+configurations."
     }
 
     fn is_workspace_rule(&self) -> bool {
@@ -149,9 +151,61 @@ fn classify(tokens: &[String], profile: Profile) -> Option<Hit> {
         },
         // pip, pip3, `python -m pip`, and `uv pip` all normalize to pip here.
         PackageManager::Pip => classify_pip(tokens, profile, sub),
-        // Cargo/Go are not gated by SD002 (no npm-style non-frozen install).
-        PackageManager::Cargo | PackageManager::Go => None,
+        PackageManager::Cargo => classify_cargo(tokens, sub),
+        PackageManager::Go => classify_go(tokens, sub),
     }
+}
+
+/// Cargo subcommands that resolve and compile the dependency graph. Without
+/// `--locked`/`--frozen` they may update `Cargo.lock`, so CI is not reproducible.
+const CARGO_BUILD_SUBCOMMANDS: &[&str] =
+    &["build", "test", "check", "run", "bench", "clippy", "doc"];
+
+fn classify_cargo(tokens: &[String], sub: Option<&str>) -> Option<Hit> {
+    let sub = sub?;
+    if !CARGO_BUILD_SUBCOMMANDS.contains(&sub) {
+        return None;
+    }
+    // `--frozen` implies `--locked` (plus `--offline`); either pins the lockfile.
+    if command::has_any_flag(tokens, &["--locked", "--frozen"]) {
+        return None;
+    }
+    Some(Hit {
+        pm: PackageManager::Cargo,
+        severity: Severity::Warning,
+        confidence: Confidence::Medium,
+        message: format!("`cargo {sub}` may update Cargo.lock in CI"),
+        remediation: "use `--locked` (or `--frozen`) so CI fails on lockfile drift.",
+    })
+}
+
+/// Go build-like subcommands that resolve the module graph.
+const GO_BUILD_SUBCOMMANDS: &[&str] = &["build", "test", "run", "vet", "install"];
+
+fn classify_go(tokens: &[String], sub: Option<&str>) -> Option<Hit> {
+    let sub = sub?;
+    if !GO_BUILD_SUBCOMMANDS.contains(&sub) {
+        return None;
+    }
+    // `-mod=readonly` is the default since Go 1.16; the unsafe signal is an
+    // explicit `-mod=mod`, which lets the build rewrite go.mod/go.sum.
+    if !uses_mod_mod(tokens) {
+        return None;
+    }
+    Some(Hit {
+        pm: PackageManager::Go,
+        severity: Severity::Warning,
+        confidence: Confidence::Medium,
+        message: format!("`go {sub} -mod=mod` lets CI rewrite go.mod/go.sum"),
+        remediation: "drop `-mod=mod` to keep the default `-mod=readonly`, which fails on drift.",
+    })
+}
+
+/// Whether the command passes `-mod=mod` (attached or space-separated).
+fn uses_mod_mod(tokens: &[String]) -> bool {
+    tokens.iter().enumerate().any(|(i, t)| {
+        t == "-mod=mod" || (t == "-mod" && tokens.get(i + 1).map(String::as_str) == Some("mod"))
+    })
 }
 
 fn classify_pip(tokens: &[String], profile: Profile, sub: Option<&str>) -> Option<Hit> {
@@ -227,6 +281,25 @@ mod tests {
         // `npm install <pkg>` adds a specific package (like `npm add`); exempt.
         assert!(one("npm install --no-save eslint", Profile::Balanced).is_none());
         assert!(one("npm i left-pad", Profile::Balanced).is_none());
+    }
+
+    #[test]
+    fn flags_cargo_build_without_locked() {
+        assert!(one("cargo build", Profile::Balanced).is_some());
+        assert!(one("cargo test", Profile::Balanced).is_some());
+        assert!(one("cargo build --locked", Profile::Balanced).is_none());
+        assert!(one("cargo test --frozen", Profile::Balanced).is_none());
+        // Non-build subcommands are not gated.
+        assert!(one("cargo fmt", Profile::Balanced).is_none());
+    }
+
+    #[test]
+    fn flags_go_build_only_with_mod_mod() {
+        // The default (-mod=readonly) is safe; only explicit -mod=mod is flagged.
+        assert!(one("go build ./...", Profile::Balanced).is_none());
+        assert!(one("go build -mod=mod ./...", Profile::Balanced).is_some());
+        assert!(one("go test -mod mod ./...", Profile::Balanced).is_some());
+        assert!(one("go build -mod=readonly ./...", Profile::Balanced).is_none());
     }
 
     #[test]

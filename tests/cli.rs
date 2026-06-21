@@ -1555,3 +1555,59 @@ fn unreadable_directory_is_surfaced_and_escalates_under_strict() {
     // Under --strict-parser-errors the coverage gap escalates to exit 4.
     assert_eq!(code(&strict), 4, "strict mode should escalate a walk error");
 }
+
+// --- CI provider plugins: GitLab CI / CircleCI + Cargo/Go (#22) ---------------
+
+#[test]
+fn gitlab_ci_non_frozen_install_reports_sd002() {
+    let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);
+    write(
+        ws.path(),
+        ".gitlab-ci.yml",
+        "build:\n  script:\n    - npm install\n",
+    );
+    let report = check_json(&ws, &[]);
+    let sd002 = findings_for(&report, "SD002");
+    assert_eq!(sd002.len(), 1, "{report}");
+    assert_eq!(sd002[0]["location"]["file"], ".gitlab-ci.yml");
+}
+
+#[test]
+fn circleci_non_frozen_install_reports_sd002() {
+    let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);
+    write(
+        ws.path(),
+        ".circleci/config.yml",
+        "jobs:\n  build:\n    steps:\n      - run: npm install\n",
+    );
+    let report = check_json(&ws, &[]);
+    let sd002 = findings_for(&report, "SD002");
+    assert_eq!(sd002.len(), 1, "{report}");
+    assert_eq!(sd002[0]["location"]["file"], ".circleci/config.yml");
+}
+
+#[test]
+fn ci_cargo_build_without_locked_reports_sd002() {
+    let manifest = "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n";
+    let ws = workspace(&[("Cargo.toml", manifest), ("Cargo.lock", "version = 3\n")]);
+    write(
+        ws.path(),
+        ".github/workflows/ci.yml",
+        "jobs:\n  build:\n    steps:\n      - run: cargo build\n",
+    );
+    let sd002 = findings_for(&check_json(&ws, &[]), "SD002");
+    assert_eq!(sd002.len(), 1);
+    assert_eq!(sd002[0]["package_manager"], "cargo");
+}
+
+#[test]
+fn ci_cargo_build_locked_is_clean() {
+    let manifest = "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n";
+    let ws = workspace(&[("Cargo.toml", manifest), ("Cargo.lock", "version = 3\n")]);
+    write(
+        ws.path(),
+        ".github/workflows/ci.yml",
+        "jobs:\n  build:\n    steps:\n      - run: cargo build --locked\n",
+    );
+    assert!(findings_for(&check_json(&ws, &[]), "SD002").is_empty());
+}
