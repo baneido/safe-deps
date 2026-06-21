@@ -49,9 +49,10 @@ pub(crate) fn is_proper_ancestor(ancestor: &std::path::Path, descendant: &std::p
     descendant.starts_with(ancestor) && descendant != ancestor
 }
 
-/// Whether the workspace contains a file at the given relative path.
+/// Whether the workspace contains a file at the given relative path. O(1) via
+/// the workspace path index.
 pub(crate) fn contains_file(ctx: &WorkspaceContext, relative: &std::path::Path) -> bool {
-    ctx.files.iter().any(|f| f.relative == relative)
+    ctx.contains(relative)
 }
 
 /// Validates the syntax of a structured manifest/config file and returns a

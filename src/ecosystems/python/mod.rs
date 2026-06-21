@@ -94,7 +94,7 @@ fn detect_python_manager(
 
 fn has_file_in(ctx: &WorkspaceContext, dir: &Path, name: &str) -> bool {
     let target = project_join(dir, name);
-    ctx.files.iter().any(|f| f.relative == target)
+    ctx.contains(&target)
 }
 
 fn is_proper_ancestor(ancestor: &Path, descendant: &Path) -> bool {

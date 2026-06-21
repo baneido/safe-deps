@@ -4,6 +4,9 @@
 //! Dotfiles such as `.npmrc` and `.github/workflows` are included because they
 //! carry security-relevant configuration.
 
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -51,6 +54,76 @@ pub struct WorkspaceContext {
     /// not a silent miss; the analysis engine counts these as parse failures so
     /// `--strict-parser-errors` can escalate the run.
     pub scan_diagnostics: Vec<Diagnostic>,
+
+    // Indices built once from `files` so the per-analyzer lookups below are not
+    // O(files). The values are indices into `files`, in sorted (file) order, so
+    // lookup results keep the same deterministic ordering as a linear scan.
+    path_set: HashSet<PathBuf>,
+    by_name: HashMap<OsString, Vec<u32>>,
+    by_dir: HashMap<PathBuf, Vec<u32>>,
+}
+
+impl WorkspaceContext {
+    /// Builds the context and its lookup indices from the sorted `files` list.
+    fn new(
+        root: PathBuf,
+        files: Vec<FileEntry>,
+        config: Config,
+        scan_diagnostics: Vec<Diagnostic>,
+    ) -> Self {
+        let mut path_set = HashSet::with_capacity(files.len());
+        let mut by_name: HashMap<OsString, Vec<u32>> = HashMap::new();
+        let mut by_dir: HashMap<PathBuf, Vec<u32>> = HashMap::new();
+        for (i, f) in files.iter().enumerate() {
+            path_set.insert(f.relative.clone());
+            if let Some(name) = f.relative.file_name() {
+                by_name
+                    .entry(name.to_os_string())
+                    .or_default()
+                    .push(i as u32);
+            }
+            if let Some(parent) = f.relative.parent() {
+                by_dir
+                    .entry(parent.to_path_buf())
+                    .or_default()
+                    .push(i as u32);
+            }
+        }
+        Self {
+            root,
+            files,
+            config,
+            scan_diagnostics,
+            path_set,
+            by_name,
+            by_dir,
+        }
+    }
+
+    /// Whether the workspace contains a file at the given relative path. O(1).
+    pub fn contains(&self, relative: &Path) -> bool {
+        self.path_set.contains(relative)
+    }
+
+    /// The files (in sorted order) whose basename equals `name`.
+    fn entries_named(&self, name: &str) -> impl Iterator<Item = &FileEntry> {
+        self.by_name
+            .get(OsStr::new(name))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+            .iter()
+            .map(move |&i| &self.files[i as usize])
+    }
+
+    /// The files (in sorted order) whose parent directory is `dir`.
+    fn entries_in_dir(&self, dir: &Path) -> impl Iterator<Item = &FileEntry> {
+        self.by_dir
+            .get(dir)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+            .iter()
+            .map(move |&i| &self.files[i as usize])
+    }
 }
 
 /// A file entry in the workspace, with content loaded lazily.
@@ -87,26 +160,28 @@ pub fn project_join(dir: &Path, name: &str) -> PathBuf {
     }
 }
 
-/// Whether the workspace contains a file at the given relative path.
+/// Whether the workspace contains a file at the given relative path. O(1).
 pub fn has_file(ctx: &WorkspaceContext, relative: &str) -> bool {
-    ctx.files.iter().any(|f| f.relative == Path::new(relative))
+    ctx.contains(Path::new(relative))
 }
 
 /// Whether the workspace contains any file whose relative path ends with the
-/// given trailing components (e.g. `["src", "package.json"]`).
+/// given trailing components (e.g. `["src", "package.json"]`). Indexed on the
+/// final component, so only same-basename files are checked. An empty `suffix`
+/// returns `false` (there is no component to anchor on).
 pub fn has_file_suffix(ctx: &WorkspaceContext, suffix: &[&str]) -> bool {
-    ctx.files
-        .iter()
+    let Some(last) = suffix.last() else {
+        return false;
+    };
+    ctx.entries_named(last)
         .any(|f| ends_with_components(&f.relative, suffix))
 }
 
 /// Finds all files whose final path component equals `name` and whose parent
 /// dir is `dir_relative`. Used to locate manifests at a project root.
 pub fn files_named_in_dir(ctx: &WorkspaceContext, dir_relative: &Path, name: &str) -> Vec<PathBuf> {
-    ctx.files
-        .iter()
-        .filter(|f| f.relative.parent() == Some(dir_relative))
-        .filter(|f| f.relative.file_name().and_then(|n| n.to_str()) == Some(name))
+    ctx.entries_in_dir(dir_relative)
+        .filter(|f| f.relative.file_name() == Some(OsStr::new(name)))
         .map(|f| f.relative.clone())
         .collect()
 }
@@ -114,11 +189,18 @@ pub fn files_named_in_dir(ctx: &WorkspaceContext, dir_relative: &Path, name: &st
 /// Returns the relative paths of all files with the given basename anywhere in
 /// the workspace.
 pub fn files_named(ctx: &WorkspaceContext, name: &str) -> Vec<PathBuf> {
-    ctx.files
-        .iter()
-        .filter(|f| f.relative.file_name().and_then(|n| n.to_str()) == Some(name))
+    ctx.entries_named(name)
         .map(|f| f.relative.clone())
         .collect()
+}
+
+/// Iterates the relative paths of files whose parent directory is `dir`
+/// (in sorted order). O(matches) via the workspace dir index.
+pub fn files_in_dir<'a>(
+    ctx: &'a WorkspaceContext,
+    dir: &Path,
+) -> impl Iterator<Item = &'a Path> + 'a {
+    ctx.entries_in_dir(dir).map(|f| f.relative.as_path())
 }
 
 /// Scans the workspace root and builds a `WorkspaceContext`.
@@ -207,12 +289,12 @@ pub fn scan(
     // the message). Matches how every other diagnostic source is ordered.
     scan_diagnostics.sort_by(|a, b| a.message.cmp(&b.message));
 
-    Ok(WorkspaceContext {
-        root: root.to_path_buf(),
+    Ok(WorkspaceContext::new(
+        root.to_path_buf(),
         files,
         config,
         scan_diagnostics,
-    })
+    ))
 }
 
 fn is_under_default_exclude(relative: &Path) -> bool {
@@ -323,5 +405,61 @@ mod tests {
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
         let ctx = scan(dir.path(), Config::default(), &ScanOptions::default()).unwrap();
         assert!(ctx.scan_diagnostics.is_empty());
+    }
+
+    fn ctx_with(files: &[&str]) -> WorkspaceContext {
+        let dir = TempDir::new().unwrap();
+        for rel in files {
+            let p = dir.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "{}").unwrap();
+        }
+        // Keep the TempDir alive for the scan, then leak it (test process exits).
+        let ctx = scan(dir.path(), Config::default(), &ScanOptions::default()).unwrap();
+        std::mem::forget(dir);
+        ctx
+    }
+
+    #[test]
+    fn index_lookups_match_a_linear_scan() {
+        let ctx = ctx_with(&[
+            "package.json",
+            "packages/a/package.json",
+            "packages/b/package.json",
+            "src/bin/tool.rs",
+            "src/main.rs",
+        ]);
+
+        // contains / has_file
+        assert!(ctx.contains(Path::new("packages/a/package.json")));
+        assert!(!ctx.contains(Path::new("nope.json")));
+        assert!(has_file(&ctx, "src/main.rs"));
+
+        // files_named — all basenames, in sorted order.
+        assert_eq!(
+            files_named(&ctx, "package.json"),
+            vec![
+                PathBuf::from("package.json"),
+                PathBuf::from("packages/a/package.json"),
+                PathBuf::from("packages/b/package.json"),
+            ]
+        );
+
+        // files_named_in_dir — basename within one directory.
+        assert_eq!(
+            files_named_in_dir(&ctx, Path::new("packages/a"), "package.json"),
+            vec![PathBuf::from("packages/a/package.json")]
+        );
+        assert!(files_named_in_dir(&ctx, Path::new("packages/a"), "Cargo.toml").is_empty());
+
+        // files_in_dir — any file in a directory.
+        let bins: Vec<&Path> = files_in_dir(&ctx, Path::new("src/bin")).collect();
+        assert_eq!(bins, vec![Path::new("src/bin/tool.rs")]);
+
+        // has_file_suffix — trailing components.
+        assert!(has_file_suffix(&ctx, &["packages", "a", "package.json"]));
+        assert!(has_file_suffix(&ctx, &["bin", "tool.rs"]));
+        assert!(!has_file_suffix(&ctx, &["a", "main.rs"]));
+        assert!(!has_file_suffix(&ctx, &[]));
     }
 }
