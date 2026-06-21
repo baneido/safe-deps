@@ -15,6 +15,12 @@ unreleased and not yet tagged.
 - Corrected the MSRV to **1.85** (dependencies require it; the previous `1.80`
   did not build) and added an `msrv` CI job that pins it. Added crates.io
   metadata (`readme`/`keywords`/`categories`) toward a future publish.
+- `safe-deps audit` now uses an in-process HTTP client (`ureq` + rustls/`ring`)
+  by default, so the binary no longer depends on the system `curl` and works on
+  minimal containers and Windows out of the box. The previous curl transport is
+  retained behind the `curl-transport` feature (build with
+  `--no-default-features --features curl-transport`). `--offline` and the cache
+  TTL contract are unchanged.
 - Added a `complex-shell-not-fully-parsed` info diagnostic that flags CI `run`
   commands using constructs the pragmatic tokenizer cannot fully parse (command
   and process substitution, backticks, heredocs/here-strings, and shell function

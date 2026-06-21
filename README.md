@@ -163,9 +163,13 @@ Key settings:
 
 `audit` is a separate, explicitly-networked pipeline. It extracts pinned,
 registry-sourced coordinates from `Cargo.lock` and `package-lock.json`, queries
-OSV for known advisories, and caches results on disk (default TTL 24h; HTTP via
-the system `curl`). `--offline` uses only the cache. `check` never touches the
-network.
+OSV for known advisories, and caches results on disk (default TTL 24h).
+`--offline` uses only the cache. `check` never touches the network.
+
+HTTP uses an in-process client (`ureq` with rustls) by default, so the binary is
+self-contained and cross-platform. Building with
+`--no-default-features --features curl-transport` instead shells out to the
+system `curl` (a TLS-crate-free build, e.g. for toolchains without a C compiler).
 
 ## Contributing
 
