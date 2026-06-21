@@ -20,8 +20,8 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  lint-test:
-    name: fmt / clippy / test
+  lint:
+    name: fmt / clippy
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -39,6 +39,25 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+        with:
+          toolchain: stable
+      - name: Cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Test
         run: cargo test --locked
 
@@ -64,3 +83,76 @@ jobs:
         run: cargo audit
       - name: Deny (advisories / licenses / bans / sources)
         run: cargo deny check
+
+  coverage:
+    name: coverage (informational)
+    runs-on: ubuntu-latest
+    # Coverage is reported, not gated: a drop should not block a PR yet.
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
+        with:
+          tool: cargo-llvm-cov@0.6.21
+      - name: Cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Coverage summary
+        run: cargo llvm-cov --locked --workspace --summary-only
+
+  actions-audit:
+    name: actionlint / zizmor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install actionlint
+        uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
+        with:
+          tool: actionlint@1.7.7
+      - name: actionlint
+        run: actionlint -color
+      - name: zizmor (informational)
+        # Workflow security scanner. Informational for now: surface findings
+        # without blocking. Runs offline so it needs no token.
+        continue-on-error: true
+        run: pipx run zizmor --offline .github/workflows/
+
+  release-smoke:
+    name: release smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+        with:
+          toolchain: stable
+      - name: Cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Release build
+        run: cargo build --release --locked
+      - name: Smoke run
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=target/release/safe-deps
+          "$bin" --version
+          "$bin" list-rules
+          "$bin" explain SD001 > /dev/null
+          # An empty workspace has no projects, so `check` is clean (exit 0).
+          mkdir -p smoke-empty
+          "$bin" check smoke-empty --format json > /dev/null
+          echo "release smoke passed"

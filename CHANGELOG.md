@@ -8,6 +8,10 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Hardened CI to production quality: a Linux/Windows/macOS test matrix,
+  informational coverage (`cargo llvm-cov`), GitHub Actions static analysis
+  (`actionlint` blocking, `zizmor` informational), and a release-build smoke
+  test. SHA-pinned actions, least privilege, and `--locked` are preserved.
 - Replaced the unmaintained `serde_yaml` dependency with the maintained
   `serde_yaml_ng` fork (imported under the same name; no API changes).
 - Added package-manager security best-practices research.
