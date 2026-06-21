@@ -5,14 +5,16 @@ This file provides guidance to Claude Code (https://claude.ai/code) when working
 ## Project
 
 `safe-deps` is a Rust CLI static linter for package-management security practices
-(reproducibility, integrity, registry/TLS safety). It scans a workspace and emits
-findings without installing dependencies, executing project code, or making network
-calls — `safe-deps check` is deterministic and offline by design.
+(reproducibility, integrity, registry/TLS safety, supply-chain hardening). It scans
+a workspace and emits findings without installing dependencies, executing project
+code, or making network calls — `safe-deps check` is deterministic and offline by
+design.
 
-Note: `README.md` still says "design/docs only, no released CLI." That status line
-is **stale** — the Phase 1 MVP (scanner, npm/Yarn/pnpm/Bun/pip/uv detection, rules
-SD001 + SD003–SD004, text/JSON output) is implemented and lives under `src/`. (SD002 is registered but CI-backed and inactive in Phase 1.) Trust the code
-over the README status banner.
+Status: Phases 1–5 are implemented under `src/` — the scanner; JavaScript
+(npm/Yarn/pnpm/Bun), Python (pip/uv), Cargo, and Go analyzers; rules **SD001–SD009**;
+text/JSON/SARIF/JUnit output; GitHub Actions CI parsing; and the networked
+`safe-deps audit` (OSV) mode. The crate is not yet published to crates.io. `README.md`
+is current — trust the code when in doubt.
 
 ## Commands
 
@@ -51,12 +53,12 @@ scan (filesystem.rs)          → WorkspaceContext (file list, no content)
 detect_all (ecosystems)       → Vec<Project>   (root + package_manager + kind)
 facts_for (ecosystems)        → ProjectFacts    (parsers; NO policy decisions)
 rules::analyze (rules/mod.rs) → Findings + Diagnostics
-reporter_for (report/)        → bytes (text or json)
+reporter_for (report/)        → bytes (text, json, sarif, or junit)
 ```
 
 `safe-deps audit` (`audit/`) is a **separate, explicitly-networked** pipeline that
 bypasses rules/report: `scan → audit::collect (lockfile coordinates) →
-VulnerabilitySource (OSV over the `HttpTransport`, default `curl`) → audit::render`.
+VulnerabilitySource (OSV over the HttpTransport, default curl) → audit::render`.
 Network access lives **only** in the transport; `check` never touches it. Keep it
 that way — do not route `audit` through `rules::analyze`, and do not add network
 calls to the `check` path.
@@ -72,15 +74,16 @@ parsers populate only the fields relevant to their manager, and `None`/empty mea
 - `rule.rs` owns the core types **and** `Profile` + `Policy`. They live here, not in
   `config.rs`, to break a module cycle: `rule` depends on `ecosystems`/`ci`, and
   `config` depends on `rule`. Don't move `Profile`/`Policy` into `config`.
-- `ecosystems/` has two analyzers (`javascript/`, `python/`) registered in
-  `ecosystems::analyzers()`, each implementing the `Analyzer` trait
+- `ecosystems/` has four analyzers (`javascript/`, `python/`, `cargo`, `go`)
+  registered in `ecosystems::analyzers()`, each implementing the `Analyzer` trait
   (`detect` + `facts`). `javascript/mod.rs` is the fullest example (package-manager
   detection, workspace inheritance, monorepo lockfile coverage).
-- `ci/mod.rs` is a **Phase 1 stub**: `CiFacts::empty()`. GitHub Actions parsing and
-  the CI-dependent rules (SD002/SD008/SD009 command detection) are Phase 2.
-- `report/`: `reporter_for` maps `OutputFormat`. Text, JSON, and JUnit are real;
-  **SARIF** is accepted as a CLI value but currently **falls back to the text
-  reporter** (Phase 2).
+- `ci/mod.rs` parses **GitHub Actions** workflows (`ci/github_actions.rs`) into
+  `CiFacts` (run commands with file/line + `env`), and `ci/command.rs` tokenizes
+  shell into `Invocation`s. These feed the CI-derived rules (SD002/SD008/SD009).
+  Other CI providers are not yet parsed.
+- `report/`: `reporter_for` maps `OutputFormat`. Text, JSON, SARIF (2.1.0), and
+  JUnit reporters are all real.
 
 ### Findings vs Diagnostics
 
@@ -124,6 +127,11 @@ unless the user configures `application_roots`/`library_roots`. See `sd001_sever
 
 ## Rule status
 
-SD001, SD003, and SD004 are implemented. SD002 is registered but inactive until CI command extraction lands (Phase 2).
-SD005–SD010 are specified in `docs/design/safe-deps-cli-design.md` (the rule taxonomy and roadmap) but not yet
-built. `docs/security-best-practices.md` is the research backing the rule IDs.
+**SD001–SD009 are all implemented and registered** in `rules::all_rules()`. The
+CI-derived rules (SD002 non-frozen install, SD008 audit-missing, SD009 dangerous
+flags) only fire when a GitHub Actions workflow supplies `CiFacts`. SD006 (unsafe
+dependency source) currently covers JavaScript and Python manifests; Cargo/Go are
+not yet wired into it. SD001 covers npm/Yarn/pnpm/Bun/uv/Cargo/Go (pip has no
+conventional lockfile). See the README's coverage matrix for the per-ecosystem
+breakdown. `docs/design/safe-deps-cli-design.md` holds the rule taxonomy/roadmap and
+`docs/security-best-practices.md` is the research backing the rule IDs.
