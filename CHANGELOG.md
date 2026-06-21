@@ -13,7 +13,9 @@ unreleased and not yet tagged.
   and semi-structured manifest content, plus targeted fixtures for edge cases
   (invalid-but-tolerated manifests, hash pins, mixed `uv.toml`, Unicode names,
   deep nesting, and a many-project monorepo).
-
+- Added contributor documentation (`CONTRIBUTING.md`, `DEVELOPMENT.md`,
+  `RELEASING.md`) and a generated `THIRD_PARTY_LICENSES.md` dependency-license
+  report.
 - Replaced the unmaintained `serde_yaml` dependency with the maintained
   `serde_yaml_ng` fork (imported under the same name; no API changes).
 - Added package-manager security best-practices research.

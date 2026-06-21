@@ -1300,6 +1300,60 @@ fn ci_npm_install_flags_sd002_with_workflow_location() {
 }
 
 #[test]
+fn ci_complex_shell_command_emits_uncertainty_diagnostic() {
+    // A package-manager command wrapped in a construct the tokenizer cannot model
+    // must surface a low-confidence diagnostic.
+    let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "npm install $(cat extra.txt)");
+    let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);
+    write(ws.path(), ".github/workflows/ci.yml", &workflow);
+    let report = check_json(&ws, &[]);
+    let diags = report["diagnostics"].as_array().unwrap();
+    assert!(
+        diags.iter().any(|d| {
+            let m = d["message"].as_str().unwrap_or("");
+            m.contains("not fully parsed") && m.contains("command substitution")
+        }),
+        "expected uncertainty diagnostic: {report}"
+    );
+}
+
+#[test]
+fn ci_clean_shell_command_has_no_uncertainty_diagnostic() {
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        ("package-lock.json", NPM_LOCK),
+        (".github/workflows/ci.yml", WORKFLOW_NPM_INSTALL),
+    ]);
+    let report = check_json(&ws, &[]);
+    let diags = report["diagnostics"].as_array().unwrap();
+    assert!(
+        !diags.iter().any(|d| d["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("not fully parsed")),
+        "a cleanly tokenized command should not emit an uncertainty diagnostic: {report}"
+    );
+}
+
+#[test]
+fn ci_complex_non_pm_command_does_not_emit_uncertainty() {
+    // Complex shell that does not invoke a package manager is not the CI rules'
+    // concern, so it must not add diagnostic noise.
+    let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "echo $(date)");
+    let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);
+    write(ws.path(), ".github/workflows/ci.yml", &workflow);
+    let report = check_json(&ws, &[]);
+    let diags = report["diagnostics"].as_array().unwrap();
+    assert!(
+        !diags.iter().any(|d| d["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("not fully parsed")),
+        "non-package-manager complex command should not emit uncertainty: {report}"
+    );
+}
+
+#[test]
 fn ci_npm_ci_is_frozen_and_clears_sd002() {
     let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "npm ci");
     let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);

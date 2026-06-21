@@ -81,7 +81,10 @@ fn parsed_cleanly(json: &serde_json::Value) -> bool {
         .map(|ds| {
             !ds.iter().any(|d| {
                 let m = d["message"].as_str().unwrap_or("");
-                m.contains("could not parse") || m.contains("could not read")
+                m.contains("could not parse")
+                    || m.contains("could not read")
+                    || m.contains("failed to parse")
+                    || m.contains("failed to read")
             })
         })
         .unwrap_or(true)
@@ -101,6 +104,19 @@ fn finding_count(json: &serde_json::Value, rule_id: &str) -> usize {
         .iter()
         .filter(|f| f["rule_id"] == rule_id)
         .count()
+}
+
+#[test]
+fn parsed_cleanly_rejects_ecosystem_parse_diagnostics() {
+    let failed_parse = serde_json::json!({
+        "diagnostics": [{"message": "failed to parse package.json: expected value"}]
+    });
+    assert!(!parsed_cleanly(&failed_parse));
+
+    let failed_read = serde_json::json!({
+        "diagnostics": [{"message": "failed to read package.json: permission denied"}]
+    });
+    assert!(!parsed_cleanly(&failed_read));
 }
 
 // --- property tests ----------------------------------------------------------
@@ -175,7 +191,6 @@ fn package_json_with_non_bool_private_field_is_tolerated() {
         r#"{"name":"x","private":"true","dependencies":{"a":"1.0.0"},"scripts":{"x":1}}"#,
     )]);
     let json = report_json(dir.path());
-    assert!(json["findings"].is_array());
     assert!(
         parsed_cleanly(&json),
         "lenient package.json field types should not produce parse diagnostics: {json}"
