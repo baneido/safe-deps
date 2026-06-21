@@ -5,8 +5,8 @@ How to build, test, and navigate `safe-deps`. For contribution process see
 
 ## Prerequisites
 
-- A Rust toolchain. The crate targets **edition 2021** with an **MSRV of 1.80**;
-  develop on stable. `rustfmt` and `clippy` components are required for the
+- A Rust toolchain. The crate targets **edition 2021** with an **MSRV of 1.86**
+  (kept in sync with `rust-version` in `Cargo.toml`); develop on stable. `rustfmt` and `clippy` components are required for the
   local gate (`rustup component add rustfmt clippy`).
 - Node.js (only for the Markdown/spelling lint: `markdownlint-cli2`, `cspell`).
 - Optional: [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) and
