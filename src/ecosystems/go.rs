@@ -269,4 +269,46 @@ mod tests {
         let facts = facts_for(&dir);
         assert!(!facts[0].lockfiles.is_empty());
     }
+
+    #[test]
+    fn replace_to_local_path_is_an_unsafe_dependency() {
+        let text =
+            "module m\n\nrequire github.com/x/y v1.0.0\n\nreplace github.com/x/y => ./vendor/y\n";
+        let deps = go_dependencies(text, Path::new("go.mod"));
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "github.com/x/y");
+        assert_eq!(deps[0].spec, "./vendor/y");
+        assert!(matches!(deps[0].source, DependencySource::Path));
+    }
+
+    #[test]
+    fn replace_to_module_is_not_emitted() {
+        // A module-to-module replacement is proxy-resolved and checksummed (safe).
+        let text = "module m\nreplace github.com/x/y => github.com/z/y v1.4.0\n";
+        assert!(go_dependencies(text, Path::new("go.mod")).is_empty());
+    }
+
+    #[test]
+    fn replace_block_form_strips_comments_and_versions() {
+        let text = "module m\n\nreplace (\n\tgithub.com/a/b v1.0.0 => ../local/b // dev only\n\tgithub.com/c/d => github.com/e/d v1.0.0\n)\n";
+        let deps = go_dependencies(text, Path::new("go.mod"));
+        assert_eq!(deps.len(), 1, "only the local-path replace is unsafe");
+        assert_eq!(deps[0].name, "github.com/a/b");
+        assert_eq!(deps[0].spec, "../local/b");
+    }
+
+    #[test]
+    fn replace_prefixed_module_path_is_not_a_directive() {
+        // A line beginning with "replace" but not the directive (no boundary).
+        let text = "module m\nreplacement.example/x v1.0.0\n";
+        assert!(go_dependencies(text, Path::new("go.mod")).is_empty());
+    }
+
+    #[test]
+    fn malformed_go_mod_is_tolerated() {
+        // Garbage must yield no requires/deps rather than panic.
+        let garbage = "}{ not really go.mod (((\nreplace =>\nrequire (\n";
+        assert_eq!(parse_requires(garbage), 0);
+        assert!(go_dependencies(garbage, Path::new("go.mod")).is_empty());
+    }
 }
