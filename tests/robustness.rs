@@ -218,15 +218,27 @@ fn requirements_with_hash_pins_is_parsed() {
 
 #[test]
 fn uv_toml_mixed_index_forms_is_parsed() {
-    let dir = workspace(&[(
-        "uv.toml",
-        "[[index]]\nurl = \"http://insecure.example/simple\"\n\n[pip]\nindex-url = \"https://ok.example\"\n",
-    )]);
+    // `uv.toml` on its own is not a detected project: detection keys off
+    // `pyproject.toml`/`requirements*.txt`. A minimal `pyproject.toml` makes the
+    // uv analyzer run so the `uv.toml` index settings are actually loaded.
+    let dir = workspace(&[
+        ("pyproject.toml", "[project]\nname = \"x\"\nversion = \"0\"\n"),
+        (
+            "uv.toml",
+            "[[index]]\nurl = \"http://insecure.example/simple\"\n\n[pip]\nindex-url = \"https://ok.example\"\n",
+        ),
+    ]);
     let json = report_json(dir.path());
-    assert!(json["findings"].is_array());
     assert!(
         parsed_cleanly(&json),
         "mixed uv.toml index forms should parse: {json}"
+    );
+    // The plaintext-HTTP `[[index]]` url must surface as SD003, proving the
+    // `uv.toml` index settings actually flowed through to the rules rather than
+    // the test passing vacuously because `uv.toml` was never parsed.
+    assert!(
+        finding_count(&json, "SD003") >= 1,
+        "insecure http index in uv.toml should be flagged by SD003: {json}"
     );
 }
 
