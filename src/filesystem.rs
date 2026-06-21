@@ -202,6 +202,11 @@ pub fn scan(
     files.sort_by(|a, b| a.relative.cmp(&b.relative));
     files.dedup_by(|a, b| a.relative == b.relative);
 
+    // Walk order is filesystem-dependent; sort so the surfaced diagnostics are
+    // deterministic across runs and platforms (the failing path is carried in
+    // the message). Matches how every other diagnostic source is ordered.
+    scan_diagnostics.sort_by(|a, b| a.message.cmp(&b.message));
+
     Ok(WorkspaceContext {
         root: root.to_path_buf(),
         files,
