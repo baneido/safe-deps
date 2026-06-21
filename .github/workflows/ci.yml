@@ -39,6 +39,10 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Clippy (curl-transport fallback)
+        # The curl fallback is a distinct feature set (no native TLS crate); lint
+        # it too so a feature-gating regression in that build is caught.
+        run: cargo clippy --all-targets --locked --no-default-features --features curl-transport -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
