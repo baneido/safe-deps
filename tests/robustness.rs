@@ -73,6 +73,20 @@ fn report_json(dir: &Path) -> serde_json::Value {
     serde_json::from_slice(&run_pipeline(dir)).expect("valid json report")
 }
 
+/// Whether the run produced no parse-failure diagnostic — i.e. every manifest
+/// was parsed successfully rather than merely surviving without a panic.
+fn parsed_cleanly(json: &serde_json::Value) -> bool {
+    json["diagnostics"]
+        .as_array()
+        .map(|ds| {
+            !ds.iter().any(|d| {
+                let m = d["message"].as_str().unwrap_or("");
+                m.contains("could not parse") || m.contains("could not read")
+            })
+        })
+        .unwrap_or(true)
+}
+
 // --- property tests ----------------------------------------------------------
 
 /// Content strategy: a mix of bounded arbitrary text (malformed manifests),
@@ -153,6 +167,10 @@ fn requirements_with_hash_pins_is_parsed() {
     )]);
     let json = report_json(dir.path());
     assert!(json["findings"].is_array());
+    assert!(
+        parsed_cleanly(&json),
+        "hash-pinned requirements should parse: {json}"
+    );
 }
 
 #[test]
@@ -163,6 +181,10 @@ fn uv_toml_mixed_index_forms_is_parsed() {
     )]);
     let json = report_json(dir.path());
     assert!(json["findings"].is_array());
+    assert!(
+        parsed_cleanly(&json),
+        "mixed uv.toml index forms should parse: {json}"
+    );
 }
 
 #[test]
