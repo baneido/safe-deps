@@ -163,17 +163,23 @@ const CURL_BIN: &str = "curl";
 #[cfg(all(feature = "curl-transport", windows))]
 const CURL_BIN: &str = "curl.exe";
 
-/// Resolves the `curl` binary to a concrete path, independently of how the
+/// Resolves the `curl` binary to a concrete path, reducing reliance on how the
 /// ambient `PATH` is ordered. Pure (env values and an existence predicate are
 /// injected) so the policy is unit-testable without touching the real
 /// filesystem or process environment.
 ///
 /// Order: (1) the `SAFE_DEPS_CURL` override, used verbatim; (2) the first
 /// trusted directory that contains `curl`; (3) the first **absolute** `PATH`
-/// entry that contains `curl` (relative entries such as `.` are skipped so the
-/// working directory can never supply the binary). Falls back to the bare name
-/// so a host with `curl` in an unusual location still works exactly as a plain
-/// `Command::new("curl")` would — resolution only ever *improves* on that.
+/// entry that contains `curl` (relative entries such as `.` are skipped in this
+/// scan, so the working directory cannot supply the binary *via PATH search*).
+///
+/// When none of those resolve, it falls back to the bare name so a host with
+/// `curl` in an unusual location still works exactly as a plain
+/// `Command::new("curl")` would. Note this fallback re-introduces the OS's own
+/// exec-time `PATH` lookup (which *can* consult a relative entry like `.`): the
+/// relative-entry guarantee holds for the resolved cases (1)–(3), not for the
+/// bare-name fallback. The fallback never regresses relative to the previous
+/// unconditional `Command::new("curl")`.
 #[cfg(feature = "curl-transport")]
 fn resolve_curl_from(
     override_var: Option<OsString>,
@@ -697,7 +703,12 @@ mod curl_resolution_tests {
 
     #[test]
     fn transport_exposes_resolved_path() {
-        let t = CurlTransport::new();
-        assert_eq!(t.curl_path().file_name().unwrap(), Path::new(CURL_BIN));
+        // Construct with a fixed path (rather than `new()`, which reads the real
+        // environment) so the test is deterministic regardless of the host's
+        // SAFE_DEPS_CURL / PATH.
+        let t = CurlTransport {
+            curl: PathBuf::from("/opt/pinned/curl"),
+        };
+        assert_eq!(t.curl_path(), Path::new("/opt/pinned/curl"));
     }
 }

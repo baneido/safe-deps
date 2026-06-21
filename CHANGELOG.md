@@ -9,10 +9,12 @@ unreleased and not yet tagged.
 ## Unreleased
 
 - Hardened the optional `curl-transport` audit fallback: the system `curl` is now
-  resolved to a concrete path up front (preferring trusted absolute directories
-  over `PATH`, skipping relative `PATH` entries, and honoring a `SAFE_DEPS_CURL`
-  override) instead of relying on `PATH` resolution at exec time, so a poisoned
-  `PATH` cannot shadow the binary. The resolved path is surfaced by
+  resolved to a concrete path up front — honoring a `SAFE_DEPS_CURL` override,
+  then preferring trusted absolute directories over `PATH`, and skipping relative
+  `PATH` entries during the scan — instead of relying solely on exec-time `PATH`
+  resolution. When `curl` is found this way a poisoned `PATH` cannot shadow it;
+  if it is found in none of those locations the code falls back to the bare name
+  (legacy behavior, no regression). The resolved path is surfaced by
   `audit --verbose` and in spawn-error messages, and a CI step now runs the
   `curl-transport` test suite. The default `native-http` build is unaffected.
 - Added a `docs lint` CI job that runs `markdownlint-cli2` and `cspell` on every
