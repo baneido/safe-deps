@@ -133,10 +133,12 @@ pub fn analyze(ctx: &WorkspaceContext, profile: Profile, ci_facts: &CiFacts) -> 
     }
 
     // Surface CI commands the pragmatic shell tokenizer cannot fully model so a
-    // shell-derived rule (SD002/SD008/SD009) result is not silently trusted. Only
-    // commands that still resolve to a package-manager invocation are flagged, so
-    // unrelated complex shell (e.g. `echo $(date)`) does not add noise.
-    // `ci_facts.commands` is pre-sorted by (file, line), so this is deterministic.
+    // shell-derived rule (SD002/SD008/SD009) result is not silently trusted. These
+    // are informational — the command is still analyzed best-effort, so they are
+    // NOT counted as parse failures. Only commands that still resolve to a
+    // package-manager invocation are flagged, so unrelated complex shell (e.g.
+    // `echo $(date)`) does not add noise. `ci_facts.commands` is pre-sorted by
+    // (file, line), so this is deterministic.
     for cmd in &ci_facts.commands {
         let Some(reason) = ci::command::uncertainty(&cmd.command) else {
             continue;
@@ -151,7 +153,7 @@ pub fn analyze(ctx: &WorkspaceContext, profile: Profile, ci_facts: &CiFacts) -> 
                 // prefix, so the message carries only the line to avoid a
                 // duplicated path.
                 message: format!(
-                    "line {}: CI command not fully parsed ({reason}); CI-derived findings \
+                    "complex-shell-not-fully-parsed ({reason}) at line {}; CI-derived findings \
                      (SD002/SD008/SD009) for this command may be incomplete",
                     cmd.line
                 ),

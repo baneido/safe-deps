@@ -13,6 +13,12 @@ unreleased and not yet tagged.
   and semi-structured manifest content, plus targeted fixtures for edge cases
   (invalid-but-tolerated manifests, hash pins, mixed `uv.toml`, Unicode names,
   deep nesting, and a many-project monorepo).
+- Added a `complex-shell-not-fully-parsed` info diagnostic that flags CI `run`
+  commands using constructs the pragmatic tokenizer cannot fully parse (command
+  and process substitution, backticks, heredocs/here-strings, and shell function
+  definitions), so reduced-confidence CI rule coverage is surfaced rather than
+  silent. Only emitted for commands that resolve to a package-manager invocation
+  (to avoid noise) and informational only — it is not a parse failure.
 - Added contributor documentation (`CONTRIBUTING.md`, `DEVELOPMENT.md`,
   `RELEASING.md`) and a generated `THIRD_PARTY_LICENSES.md` dependency-license
   report.
