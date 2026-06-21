@@ -20,7 +20,10 @@ safe-deps check examples/npm-insecure-registry --format json
 safe-deps explain SD003                                     # why it matters
 ```
 
-`check` exits `0` when clean and `1` when it finds an issue at or above
-`--fail-on` (default `error`), so these double as a quick CI smoke test.
-`safe-deps init` writes a commented `safe-deps.toml` to start configuring your
-own project.
+Every example still *reports* its finding, but the exit code depends on
+severity: `check` exits `1` only when a finding is at or above `--fail-on`
+(default `error`). So `npm-insecure-registry` (SD003, an error) fails a default
+run, while the warning-level examples (`missing-lockfile`, `pip-extra-index`)
+report their findings and exit `0` — add `--fail-on warning` to make those fail
+the gate too. `safe-deps init` writes a commented `safe-deps.toml` to start
+configuring your own project.
