@@ -4,9 +4,9 @@
 [advisories]
 # Uses the RUSTSEC advisory database (fetched fresh each run). Vulnerabilities,
 # unmaintained, unsound, and yanked crates are denied by default. No ignores are
-# needed against the current database: the YAML stack is clean (serde_yaml has no
-# unmaintained advisory yet; the transitive unsafe-libyaml is >= 0.2.10, past
-# RUSTSEC-2023-0075). serde_yaml's eventual removal is tracked in issue #23.
+# needed: the unmaintained `serde_yaml` was replaced by the maintained
+# `serde_yaml_ng` fork (#23), and the transitive `unsafe-libyaml` is past
+# RUSTSEC-2023-0075.
 ignore = []
 
 [licenses]
