@@ -29,6 +29,22 @@ pub struct PackageJson {
     pub optional_dependencies: BTreeMap<String, String>,
     #[serde(default)]
     pub workspaces: Workspaces,
+    #[serde(default)]
+    pub pnpm: Option<PnpmManifestConfig>,
+    /// Bun reads `trustedDependencies` from `package.json` (not bunfig.toml).
+    #[serde(default, alias = "trustedDependencies")]
+    pub trusted_dependencies: Vec<String>,
+}
+
+/// The subset of the `package.json` `pnpm` field that `safe-deps` reads.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PnpmManifestConfig {
+    #[serde(
+        default,
+        alias = "dangerouslyAllowAllBuilds",
+        deserialize_with = "de_bool_lenient"
+    )]
+    pub dangerously_allow_all_builds: Option<bool>,
 }
 
 /// `workspaces` may be an array of globs or an object with `packages`.
@@ -71,6 +87,32 @@ impl PackageJson {
     pub fn package_manager_hint(&self) -> Option<PackageManagerHint> {
         let raw = self.package_manager.as_ref()?;
         PackageManagerHint::parse(raw)
+    }
+
+    /// All declared dependencies, classified by source and anchored to `file`,
+    /// for SD006. `peer` dependencies are excluded: they declare a
+    /// host-provided contract rather than something this project installs.
+    pub fn dependencies(&self, file: &std::path::Path) -> Vec<crate::ecosystems::Dependency> {
+        use crate::ecosystems::source::classify_js_source;
+        use crate::ecosystems::{Dependency, DependencyGroup};
+        let groups = [
+            (&self.dependencies, DependencyGroup::Production),
+            (&self.dev_dependencies, DependencyGroup::Development),
+            (&self.optional_dependencies, DependencyGroup::Optional),
+        ];
+        let mut out = Vec::new();
+        for (map, group) in groups {
+            for (name, spec) in map {
+                out.push(Dependency {
+                    name: name.clone(),
+                    source: classify_js_source(spec),
+                    spec: spec.clone(),
+                    group,
+                    file: file.to_path_buf(),
+                });
+            }
+        }
+        out
     }
 }
 
