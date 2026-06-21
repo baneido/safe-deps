@@ -12,6 +12,12 @@ unreleased and not yet tagged.
   informational coverage (`cargo llvm-cov`), GitHub Actions static analysis
   (`actionlint` blocking, `zizmor` informational), and a release-build smoke
   test. SHA-pinned actions, least privilege, and `--locked` are preserved.
+- Normalized rendered report paths to `/` separators across text, JSON, JUnit,
+  SARIF, and diagnostics output so Windows and Unix runs produce stable paths
+  for fixtures, suppressions, and downstream consumers.
+- Added contributor documentation (`CONTRIBUTING.md`, `DEVELOPMENT.md`,
+  `RELEASING.md`) and a generated `THIRD_PARTY_LICENSES.md` dependency-license
+  report.
 - Replaced the unmaintained `serde_yaml` dependency with the maintained
   `serde_yaml_ng` fork (imported under the same name; no API changes).
 - Added package-manager security best-practices research.

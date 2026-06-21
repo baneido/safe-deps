@@ -84,7 +84,7 @@ impl JsonReport {
                 version: report.tool_version.clone(),
             },
             profile: report.profile.as_str().to_string(),
-            path: crate::report::display_path(&report.path),
+            path: crate::path::normalize_separators(&report.path),
             findings,
             diagnostics,
             summary: JsonSummary {
@@ -104,11 +104,11 @@ fn json_finding(f: &Finding) -> JsonFinding {
         confidence: f.confidence.as_str().to_string(),
         message: f.message.clone(),
         location: f.location.as_ref().map(|l| JsonLocation {
-            file: crate::report::display_path(&l.file),
+            file: crate::path::normalize_separators(&l.file),
             line: l.line,
             column: l.column,
         }),
-        project_root: crate::report::display_path(&f.project_root),
+        project_root: crate::path::normalize_separators(&f.project_root),
         ecosystem: f.ecosystem.as_str().to_string(),
         package_manager: f.package_manager.map(|p| p.as_str().to_string()),
         remediation: f.remediation.clone(),
@@ -124,7 +124,10 @@ fn json_diagnostic(d: &Diagnostic) -> JsonDiagnostic {
         }
         .to_string(),
         message: d.message.clone(),
-        location: d.location.as_ref().map(|p| crate::report::display_path(p)),
+        location: d
+            .location
+            .as_ref()
+            .map(|p| crate::path::normalize_separators(p)),
     }
 }
 

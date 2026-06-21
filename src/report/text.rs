@@ -25,7 +25,7 @@ fn render(out: &mut Vec<u8>, report: &Report) -> Result<(), ReportError> {
         out,
         "profile: {}  path: {}",
         report.profile.as_str(),
-        crate::report::display_path(&report.path)
+        crate::path::normalize_separators(&report.path)
     )
     .map_err(write_err)?;
     writeln!(out, "findings: {}", findings.len()).map_err(write_err)?;
@@ -49,7 +49,7 @@ fn render(out: &mut Vec<u8>, report: &Report) -> Result<(), ReportError> {
             let loc = diag
                 .location
                 .as_ref()
-                .map(|p| crate::report::display_path(p))
+                .map(|p| crate::path::normalize_separators(p))
                 .unwrap_or_else(|| "-".to_string());
             writeln!(out, "  [{level}] {loc}: {}", diag.message).map_err(write_err)?;
         }
@@ -84,13 +84,13 @@ fn render_by_severity(
                 .location
                 .as_ref()
                 .map(|l| {
-                    let base = crate::report::display_path(&l.file);
+                    let base = crate::path::normalize_separators(&l.file);
                     match l.line {
                         Some(line) => format!("{base}:{line}"),
                         None => base,
                     }
                 })
-                .unwrap_or_else(|| crate::report::display_path(&finding.project_root));
+                .unwrap_or_else(|| crate::path::normalize_separators(&finding.project_root));
             writeln!(
                 out,
                 "  {id} [{pm}] {loc} (confidence: {conf})",

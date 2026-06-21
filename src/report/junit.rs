@@ -72,7 +72,7 @@ fn classname(f: &Finding) -> String {
 fn detail(f: &Finding) -> String {
     let mut text = String::new();
     if let Some(loc) = &f.location {
-        text.push_str(&crate::report::display_path(&loc.file));
+        text.push_str(&crate::path::normalize_separators(&loc.file));
         if let Some(line) = loc.line {
             text.push_str(&format!(":{line}"));
         }

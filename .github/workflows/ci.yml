@@ -130,9 +130,9 @@ jobs:
           ./actionlint -color
       - name: zizmor (informational)
         # Workflow security scanner. Informational for now: surface findings
-        # without blocking. Runs offline so it needs no token.
+        # without blocking. Pin the package version so rule changes are explicit.
         continue-on-error: true
-        run: pipx run zizmor --offline .github/workflows/
+        run: pipx run --spec zizmor==1.26.1 zizmor --offline .github/workflows/
 
   release-smoke:
     name: release smoke
