@@ -20,21 +20,18 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  lint-test:
-    name: fmt / clippy / test
+  lint:
+    name: fmt / clippy
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
           components: rustfmt, clippy
-      - name: Cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -43,6 +40,21 @@ jobs:
         # The curl fallback is a distinct feature set (no native TLS crate); lint
         # it too so a feature-gating regression in that build is caught.
         run: cargo clippy --all-targets --locked --no-default-features --features curl-transport -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
       - name: Test
         run: cargo test --locked
 
@@ -54,10 +66,11 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
+          # audit/deny don't compile the crate, so the build cache buys nothing.
+          cache: "false"
       - name: Install cargo-audit and cargo-deny
         uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
         with:
@@ -68,6 +81,80 @@ jobs:
         run: cargo audit
       - name: Deny (advisories / licenses / bans / sources)
         run: cargo deny check
+
+  coverage:
+    name: coverage (informational)
+    runs-on: ubuntu-latest
+    # Coverage is informational: no threshold is set, so a coverage *drop* never
+    # fails the job. It is intentionally NOT continue-on-error, though, so that
+    # genuine breakage (a failing test or the coverage tooling erroring out) is
+    # surfaced as a red check instead of being hidden behind a green job.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          components: llvm-tools-preview
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
+        with:
+          tool: cargo-llvm-cov@0.6.21
+      - name: Coverage summary
+        run: cargo llvm-cov --locked --workspace --summary-only
+
+  actions-audit:
+    name: actionlint / zizmor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        # actionlint is a Go tool (not a crate), so install it from the pinned
+        # release with a checksum rather than via install-action.
+        run: |
+          set -euo pipefail
+          version=1.7.7
+          sha256=023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+          url="https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz"
+          curl -fsSL -o actionlint.tar.gz "$url"
+          echo "${sha256}  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz actionlint
+          ./actionlint -color
+      - name: zizmor (informational)
+        # Workflow security scanner. Informational for now: surface findings
+        # without blocking. Pin the package version so rule changes are explicit.
+        continue-on-error: true
+        run: pipx run --spec zizmor==1.26.1 zizmor --offline .github/workflows/
+
+  release-smoke:
+    name: release smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
+      - name: Release build
+        run: cargo build --release --locked
+      - name: Smoke run
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=target/release/safe-deps
+          "$bin" --version
+          "$bin" list-rules
+          "$bin" explain SD001 > /dev/null
+          # An empty workspace has no projects, so `check` is clean (exit 0).
+          mkdir -p smoke-empty
+          "$bin" check smoke-empty --format json > /dev/null
+          echo "release smoke passed"
 
   msrv:
     name: msrv (1.86)

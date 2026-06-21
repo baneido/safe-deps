@@ -1,0 +1,25 @@
+name: Set up Rust
+description: >-
+  Install the pinned Rust toolchain and (optionally) restore the shared build
+  cache. Centralizes the toolchain/cache action pins so a SHA bump lives in one
+  place instead of being duplicated across every job.
+inputs:
+  components:
+    description: 'Comma-separated rustup components (e.g. "rustfmt, clippy").'
+    required: false
+    default: ""
+  cache:
+    description: 'Restore the shared build cache ("true"/"false").'
+    required: false
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+      with:
+        toolchain: stable
+        components: ${{ inputs.components }}
+    - name: Cache
+      if: ${{ inputs.cache == 'true' }}
+      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1

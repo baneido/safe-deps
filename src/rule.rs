@@ -142,11 +142,11 @@ impl Finding {
     /// to `/` so suppression globs (always written with `/`) match on Windows,
     /// where `to_string_lossy` would otherwise yield backslashes.
     pub fn location_path_string(&self) -> String {
-        let raw = match &self.location {
-            Some(loc) => loc.file.to_string_lossy(),
-            None => self.project_root.to_string_lossy(),
+        let path = match &self.location {
+            Some(loc) => loc.file.as_path(),
+            None => self.project_root.as_path(),
         };
-        raw.replace(std::path::MAIN_SEPARATOR, "/")
+        crate::path::normalize_separators(path)
     }
 }
 
@@ -266,6 +266,13 @@ mod tests {
         assert!(file_only.line.is_none());
         let with_line = Location::line("a/b.toml", 7);
         assert_eq!(with_line.line, Some(7));
+    }
+
+    #[test]
+    fn normalize_separators_handles_windows_style_paths_on_any_platform() {
+        let normalized =
+            crate::path::normalize_separators(std::path::Path::new(r"pkg\package.json"));
+        assert_eq!(normalized, "pkg/package.json");
     }
 
     #[test]

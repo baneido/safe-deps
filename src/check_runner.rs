@@ -47,7 +47,7 @@ pub fn run(req: CheckRequest) -> Result<u8, CliError> {
         eprintln!(
             "scanned {} files under {}",
             ctx.files.len(),
-            ctx.root.display()
+            crate::path::normalize_separators(&ctx.root)
         );
     }
 
