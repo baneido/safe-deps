@@ -86,9 +86,20 @@ jobs:
     name: coverage (informational)
     runs-on: ubuntu-latest
     # Coverage is informational: no threshold is set, so a coverage *drop* never
-    # fails the job. It is intentionally NOT continue-on-error, though, so that
-    # genuine breakage (a failing test or the coverage tooling erroring out) is
-    # surfaced as a red check instead of being hidden behind a green job.
+    # fails the job. The test run and report generation are intentionally NOT
+    # continue-on-error, so genuine breakage (a failing test or the coverage
+    # tooling erroring out) is surfaced as a red check instead of being hidden
+    # behind a green job. Only the upload to GitHub's native Code Quality feature
+    # is best-effort (fail-on-error: false) so the PR check does not go red if
+    # Code Quality has not yet been enabled for the repository.
+    permissions:
+      contents: read
+      # github-code-quality[bot] needs this to record the coverage report and
+      # post the per-file coverage comment on pull requests.
+      code-quality: write
+      # actions/upload-code-coverage looks up the associated PR number on push
+      # runs; without this the lookup is denied and coverage is not linked.
+      pull-requests: read
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -102,8 +113,26 @@ jobs:
         uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
         with:
           tool: cargo-llvm-cov@0.6.21
+      # Run the suite once under instrumentation, then derive both the log
+      # summary and the Cobertura XML from the same profile data so the test
+      # suite is not executed twice.
+      - name: Run tests with coverage instrumentation
+        run: cargo llvm-cov --no-report --locked --workspace
       - name: Coverage summary
-        run: cargo llvm-cov --locked --workspace --summary-only
+        run: cargo llvm-cov report
+      - name: Coverage report (Cobertura)
+        run: cargo llvm-cov report --cobertura --output-path cobertura.xml
+      - name: Upload to GitHub Code Quality
+        # Native GitHub code coverage (replaces a third-party uploader such as
+        # Codecov). Pinned to v1.3.0; `language` is the Linguist name.
+        uses: actions/upload-code-coverage@abb5995db9e0199b0e2bb9dbd136fce4cb1ec4d3 # v1.3.0
+        with:
+          file: cobertura.xml
+          language: Rust
+          label: code-coverage/llvm-cov
+          # Best-effort: do not fail the PR check if Code Quality is not enabled
+          # for the repository yet (see the job comment above).
+          fail-on-error: false
 
   actions-audit:
     name: actionlint / zizmor
@@ -124,6 +153,9 @@ jobs:
           curl -fsSL -o actionlint.tar.gz "$url"
           echo "${sha256}  actionlint.tar.gz" | sha256sum -c -
           tar xzf actionlint.tar.gz actionlint
+          # Suppressions live in .github/actionlint.yaml, path-scoped to ci.yml,
+          # so an unrelated workflow that misuses the (not-yet-known)
+          # code-quality scope still errors. See that file for the rationale.
           ./actionlint -color
       - name: zizmor (informational)
         # Workflow security scanner. Informational for now: surface findings
