@@ -8,6 +8,12 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Corrected the SD006 coverage docs: the README rule matrix and `CLAUDE.md` said
+  SD006 (unsafe dependency source) did not cover Cargo/Go, but it has since #35 —
+  it flags Cargo `git`/`path` deps and `[patch]`/`[replace]` redirects and Go
+  local-path `replace` targets. Marked them `✓` and noted the remaining
+  deeper detections (Cargo `[source]` `replace-with`, Go `GOPRIVATE`/sumdb) as
+  tracked in #65.
 - Added a `docs lint` CI job that runs `markdownlint-cli2` and `cspell` on every
   push and pull request, so the existing Markdown/spelling checks are now a PR
   gate rather than local-only. Uses an SHA-pinned `actions/setup-node` with
