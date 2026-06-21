@@ -4,9 +4,10 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::ecosystems::source::classify_python_source;
 use crate::ecosystems::{
-    EcoError, Ecosystem, FileFact, InstallSettings, PackageManager, Project, ProjectFacts,
-    ProjectKind,
+    Dependency, DependencyGroup, EcoError, Ecosystem, FileFact, InstallSettings, PackageManager,
+    Project, ProjectFacts, ProjectKind,
 };
 use crate::filesystem::{files_named, project_join, WorkspaceContext};
 
@@ -174,6 +175,72 @@ fn requirements_files(ctx: &WorkspaceContext) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Collects classified dependencies from a Python project directory, drawing on
+/// both `pyproject.toml` (`[project]`/`[tool.uv]` dependencies) and any
+/// `requirements*.txt` in the same directory, so SD006 covers pip and uv
+/// projects alike. A pre-parsed `pyproject` is reused to avoid a second parse.
+/// Each dependency is anchored to the file it came from. Exact `(name, spec)`
+/// duplicates (the same package and spec declared in both pyproject and an
+/// exported `requirements.txt`) are collapsed, but a package declared with
+/// *different* specs/sources in each is kept so an unsafe source is never
+/// dropped just because a same-named safe one was seen first.
+/// A `requirements*.txt` whose name marks it as dev/test holds development
+/// dependencies; everything else is treated as production.
+fn requirements_group(path: &Path) -> DependencyGroup {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if name.contains("dev") || name.contains("test") {
+        DependencyGroup::Development
+    } else {
+        DependencyGroup::Production
+    }
+}
+
+fn python_dependencies(
+    ctx: &WorkspaceContext,
+    dir: &Path,
+    pyproject: Option<&pyproject::Pyproject>,
+) -> Vec<Dependency> {
+    let py_path = project_join(dir, "pyproject.toml");
+    let owned = if pyproject.is_none() && has_file_in(ctx, dir, "pyproject.toml") {
+        pyproject::load(ctx, &py_path).ok()
+    } else {
+        None
+    };
+    let mut out = Vec::new();
+    if let Some(py) = pyproject.or(owned.as_ref()) {
+        out.extend(py.classified_dependencies(&py_path));
+    }
+    for req in requirements_files(ctx)
+        .into_iter()
+        .filter(|p| project_dir(p) == *dir)
+    {
+        // A `requirements-dev.txt` / `requirements/test.txt` holds dev deps, so
+        // a local editable path there is not a production-source finding.
+        let group = requirements_group(&req);
+        if let Ok(r) = requirements::load(ctx, &req) {
+            for spec in r.specs {
+                let bare = spec.strip_prefix("-e ").unwrap_or(&spec).trim();
+                out.push(Dependency {
+                    name: pyproject::pep508_name(bare),
+                    source: classify_python_source(&spec),
+                    spec,
+                    group,
+                    file: req.clone(),
+                });
+            }
+        }
+    }
+    // Collapse exact (name, spec) duplicates only, so distinct sources for the
+    // same package both survive (SD006 still flags the unsafe one).
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|d| seen.insert((d.name.clone(), d.spec.clone())));
+    out
+}
+
 fn build_uv_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFacts, EcoError> {
     let dir = &project.root;
     let py_path = project_join(dir, "pyproject.toml");
@@ -242,6 +309,7 @@ fn build_uv_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFa
         lockfiles,
         configs,
         has_manifest_dependencies,
+        dependencies: python_dependencies(ctx, dir, py.as_ref()),
         install_settings: settings,
         covered_by_workspace_lockfile: covered_by_uv_workspace(ctx, dir),
         has_legacy_bun_lockfile: false,
@@ -314,6 +382,7 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
         lockfiles: Vec::new(),
         configs,
         has_manifest_dependencies,
+        dependencies: python_dependencies(ctx, dir, None),
         install_settings: settings,
         covered_by_workspace_lockfile: false,
         has_legacy_bun_lockfile: false,

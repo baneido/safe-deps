@@ -18,6 +18,16 @@ This project is in the design stage. There is no released CLI yet.
 - Added rule `SD009` (dangerous install flags such as `--force` and
   `--break-system-packages`).
 - Added SARIF 2.1.0 output for GitHub code scanning.
+- Added dependency-source classification (registry/git/path/tarball/workspace)
+  for npm/Yarn/pnpm/Bun and pip/uv manifests.
+- Added rule `SD005` (install-time script/build bypass): pnpm
+  `dangerouslyAllowAllBuilds` and a Bun `trustedDependencies` wildcard.
+- Added rule `SD006` (unsafe dependency source): floating Git refs, SSH VCS
+  sources, direct tarball URLs, and production local-path dependencies, honoring
+  `[policy] allow_git_dependencies` and `allow_local_path_dependencies`.
+- Added rule `SD007` (dependency confusion): pip/uv `--extra-index-url` and uv
+  `index-strategy = "unsafe-best-match"`, escalated to an error under the strict
+  profile.
 - Added `safe-deps audit`, an explicit networked mode that queries OSV for known
   vulnerabilities in pinned dependencies (`Cargo.lock`, `package-lock.json`).
   `safe-deps check` remains fully offline and static.
