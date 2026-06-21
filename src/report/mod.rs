@@ -7,6 +7,7 @@ use crate::diagnostics::Diagnostic;
 use crate::rule::{Finding, Profile};
 
 pub mod json;
+pub mod junit;
 pub mod sarif;
 pub mod text;
 
@@ -43,7 +44,7 @@ pub fn reporter_for(format: OutputFormat) -> Box<dyn Reporter> {
         OutputFormat::Text => Box::new(text::TextReporter),
         OutputFormat::Json => Box::new(json::JsonReporter),
         OutputFormat::Sarif => Box::new(sarif::SarifReporter),
-        OutputFormat::Junit => Box::new(text::TextReporter),
+        OutputFormat::Junit => Box::new(junit::JunitReporter),
     }
 }
 

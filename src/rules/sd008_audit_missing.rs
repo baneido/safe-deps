@@ -93,6 +93,9 @@ fn is_audit(tokens: &[String], ecosystem: Ecosystem) -> bool {
                 && command::subcommand(tokens) == Some("audit")
         }
         Ecosystem::Python => matches!(program, "pip-audit" | "safety"),
+        // Rust/Go are not driven by SD008 yet (their CI installs aren't
+        // recognized as install invocations, so this rule never fires for them).
+        Ecosystem::Rust | Ecosystem::Go => false,
     }
 }
 
@@ -102,6 +105,8 @@ fn audit_remediation(ecosystem: Ecosystem) -> &'static str {
             "add an audit step (e.g. `npm audit`/`pnpm audit`) or set [policy] external_audit."
         }
         Ecosystem::Python => "add an audit step (e.g. `pip-audit`) or set [policy] external_audit.",
+        Ecosystem::Rust => "add an audit step (e.g. `cargo audit`) or set [policy] external_audit.",
+        Ecosystem::Go => "add an audit step (e.g. `govulncheck`) or set [policy] external_audit.",
     }
 }
 

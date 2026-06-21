@@ -182,7 +182,9 @@ fn lockfile_in_dir(ctx: &WorkspaceContext, dir: &Path, manager: PackageManager) 
         PackageManager::Yarn => &["yarn.lock"],
         PackageManager::Pnpm => &["pnpm-lock.yaml"],
         PackageManager::Bun => &["bun.lock"],
-        PackageManager::Pip | PackageManager::Uv => &[],
+        PackageManager::Pip | PackageManager::Uv | PackageManager::Cargo | PackageManager::Go => {
+            &[]
+        }
     };
     names
         .iter()
@@ -277,7 +279,9 @@ fn collect_configs(ctx: &WorkspaceContext, dir: &Path, manager: PackageManager) 
         PackageManager::Pnpm => &[".npmrc", "pnpm-workspace.yaml"],
         PackageManager::Yarn => &[".yarnrc.yml", ".yarnrc"],
         PackageManager::Bun => &["bunfig.toml", ".npmrc"],
-        PackageManager::Pip | PackageManager::Uv => &[],
+        PackageManager::Pip | PackageManager::Uv | PackageManager::Cargo | PackageManager::Go => {
+            &[]
+        }
     };
     candidates
         .iter()
@@ -344,7 +348,7 @@ fn build_install_settings(
                 }
             }
         }
-        PackageManager::Pip | PackageManager::Uv => {}
+        PackageManager::Pip | PackageManager::Uv | PackageManager::Cargo | PackageManager::Go => {}
     }
 
     settings

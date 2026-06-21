@@ -78,9 +78,9 @@ parsers populate only the fields relevant to their manager, and `None`/empty mea
   detection, workspace inheritance, monorepo lockfile coverage).
 - `ci/mod.rs` is a **Phase 1 stub**: `CiFacts::empty()`. GitHub Actions parsing and
   the CI-dependent rules (SD002/SD008/SD009 command detection) are Phase 2.
-- `report/`: `reporter_for` maps `OutputFormat`. SARIF and JUnit are accepted as CLI
-  values but currently **fall back to the text reporter** (Phase 2). Only text and
-  JSON are real.
+- `report/`: `reporter_for` maps `OutputFormat`. Text, JSON, and JUnit are real;
+  **SARIF** is accepted as a CLI value but currently **falls back to the text
+  reporter** (Phase 2).
 
 ### Findings vs Diagnostics
 

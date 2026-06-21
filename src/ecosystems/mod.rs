@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::filesystem::WorkspaceContext;
 
+pub mod cargo;
+pub mod go;
 pub mod javascript;
 pub mod python;
 pub mod source;
@@ -22,6 +24,31 @@ pub fn is_http_url(url: &str) -> bool {
     let trimmed = url.trim_start();
     let lower = trimmed.to_ascii_lowercase();
     lower.starts_with("http://")
+}
+
+/// The directory containing a manifest, normalized so a manifest at the
+/// workspace root yields `.` (matching the normalized entries in
+/// [`WorkspaceContext::files`]). Shared by the ecosystem analyzers.
+pub(crate) fn manifest_dir(manifest: &std::path::Path) -> PathBuf {
+    manifest
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Whether `ancestor` is a strict ancestor directory of `descendant`. A `.`
+/// (workspace root) is an ancestor of everything except itself.
+pub(crate) fn is_proper_ancestor(ancestor: &std::path::Path, descendant: &std::path::Path) -> bool {
+    if ancestor == std::path::Path::new(".") {
+        return descendant != std::path::Path::new(".");
+    }
+    descendant.starts_with(ancestor) && descendant != ancestor
+}
+
+/// Whether the workspace contains a file at the given relative path.
+pub(crate) fn contains_file(ctx: &WorkspaceContext, relative: &std::path::Path) -> bool {
+    ctx.files.iter().any(|f| f.relative == relative)
 }
 
 /// Validates the syntax of a structured manifest/config file and returns a
@@ -61,6 +88,8 @@ pub fn syntax_diagnostic(
 pub enum Ecosystem {
     JavaScript,
     Python,
+    Rust,
+    Go,
 }
 
 impl Ecosystem {
@@ -68,6 +97,8 @@ impl Ecosystem {
         match self {
             Ecosystem::JavaScript => "javascript",
             Ecosystem::Python => "python",
+            Ecosystem::Rust => "rust",
+            Ecosystem::Go => "go",
         }
     }
 }
@@ -88,6 +119,8 @@ pub enum PackageManager {
     Bun,
     Pip,
     Uv,
+    Cargo,
+    Go,
 }
 
 impl PackageManager {
@@ -99,6 +132,8 @@ impl PackageManager {
             PackageManager::Bun => "bun",
             PackageManager::Pip => "pip",
             PackageManager::Uv => "uv",
+            PackageManager::Cargo => "cargo",
+            PackageManager::Go => "go",
         }
     }
 
@@ -109,6 +144,8 @@ impl PackageManager {
             | PackageManager::Pnpm
             | PackageManager::Bun => Ecosystem::JavaScript,
             PackageManager::Pip | PackageManager::Uv => Ecosystem::Python,
+            PackageManager::Cargo => Ecosystem::Rust,
+            PackageManager::Go => Ecosystem::Go,
         }
     }
 }
@@ -234,6 +271,8 @@ pub fn analyzers() -> Vec<Box<dyn Analyzer>> {
     vec![
         Box::new(javascript::JavaScriptAnalyzer),
         Box::new(python::PythonAnalyzer),
+        Box::new(cargo::CargoAnalyzer),
+        Box::new(go::GoAnalyzer),
     ]
 }
 
@@ -260,6 +299,8 @@ fn ecosystem_analyzer_name(ecosystem: Ecosystem) -> &'static str {
     match ecosystem {
         Ecosystem::JavaScript => "javascript",
         Ecosystem::Python => "python",
+        Ecosystem::Rust => "rust",
+        Ecosystem::Go => "go",
     }
 }
 

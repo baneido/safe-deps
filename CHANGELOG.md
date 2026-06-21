@@ -28,6 +28,11 @@ This project is in the design stage. There is no released CLI yet.
 - Added rule `SD007` (dependency confusion): pip/uv `--extra-index-url` and uv
   `index-strategy = "unsafe-best-match"`, escalated to an error under the strict
   profile.
+- Added a Cargo (Rust) ecosystem analyzer: detects crates, infers
+  application/library kind, and reports a missing `Cargo.lock` via SD001.
+- Added a Go modules ecosystem analyzer: detects modules and reports a missing
+  `go.sum` via SD001.
+- Added JUnit XML output (`--format junit`) for generic CI test dashboards.
 - Added `safe-deps audit`, an explicit networked mode that queries OSV for known
   vulnerabilities in pinned dependencies (`Cargo.lock`, `package-lock.json`).
   `safe-deps check` remains fully offline and static.

@@ -43,7 +43,9 @@ covers member packages."
             PackageManager::Npm
             | PackageManager::Yarn
             | PackageManager::Pnpm
-            | PackageManager::Uv => {
+            | PackageManager::Uv
+            | PackageManager::Cargo
+            | PackageManager::Go => {
                 if !facts.lockfiles.is_empty() {
                     return Vec::new();
                 }
@@ -77,9 +79,33 @@ fn missing_finding(input: &RuleInput, pm: PackageManager) -> Finding {
         project_root: facts.project.root.clone(),
         ecosystem: facts.project.ecosystem,
         package_manager: Some(pm),
-        remediation: Some(format!(
-            "commit {lockfile_name} and install from it in CI with a frozen/locked command."
-        )),
+        remediation: Some(remediation(pm).to_string()),
+    }
+}
+
+/// Per-manager remediation, since the right "frozen install" differs by tool —
+/// e.g. Go installs from `go.mod` (go.sum is a checksum file), Cargo uses
+/// `--locked`.
+fn remediation(pm: PackageManager) -> &'static str {
+    match pm {
+        PackageManager::Npm => "commit package-lock.json and install with `npm ci` in CI.",
+        PackageManager::Yarn => {
+            "commit yarn.lock and install with `yarn install --immutable` in CI."
+        }
+        PackageManager::Pnpm => {
+            "commit pnpm-lock.yaml and install with `pnpm install --frozen-lockfile` in CI."
+        }
+        PackageManager::Bun => {
+            "commit bun.lock and install with `bun install --frozen-lockfile` in CI."
+        }
+        PackageManager::Uv => "commit uv.lock and install with `uv sync --locked` in CI.",
+        PackageManager::Cargo => "commit Cargo.lock and build with `cargo build --locked` in CI.",
+        PackageManager::Go => {
+            "commit go.sum (run `go mod tidy`) and build with `-mod=readonly` in CI."
+        }
+        PackageManager::Pip => {
+            "pin and hash requirements, and install with `pip install --require-hashes` in CI."
+        }
     }
 }
 
@@ -116,6 +142,8 @@ fn expected_lockfile_name(pm: PackageManager) -> &'static str {
         PackageManager::Pnpm => "pnpm-lock.yaml",
         PackageManager::Bun => "bun.lock",
         PackageManager::Uv => "uv.lock",
+        PackageManager::Cargo => "Cargo.lock",
+        PackageManager::Go => "go.sum",
         PackageManager::Pip => "lockfile",
     }
 }
