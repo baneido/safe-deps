@@ -1408,7 +1408,7 @@ fn audit_format_honors_env_var() {
 
 #[test]
 fn audit_config_discovered_relative_to_target_not_cwd() {
-    // Mirrors `config_discovered_relative_to_target_not_cwd` for the audit path:
+    // Mirrors `config_is_discovered_relative_to_the_target_path` for the audit path:
     // the default `safe-deps.toml` must be discovered relative to the analysis
     // target, not the process cwd. Here `format = "json"` lives in the target's
     // config; running `audit` from an unrelated cwd must still honor it.
