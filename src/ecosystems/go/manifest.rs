@@ -64,4 +64,12 @@ mod tests {
         let tricky = "module m\nrequire-utils.example/x v1.0.0 is not a directive\n";
         assert_eq!(parse_requires(tricky), 0);
     }
+
+    #[test]
+    fn malformed_input_counts_zero_requires() {
+        // Malformed input must not panic; this fragment degrades to a zero
+        // count (the trailing `require (` opens a block that never adds rows).
+        let garbage = "}{ not really go.mod (((\nreplace =>\nrequire (\n";
+        assert_eq!(parse_requires(garbage), 0);
+    }
 }

@@ -15,6 +15,11 @@ unreleased and not yet tagged.
 - Normalized rendered report paths to `/` separators across text, JSON, JUnit,
   SARIF, and diagnostics output so Windows and Unix runs produce stable paths
   for fixtures, suppressions, and downstream consumers.
+- Added `proptest`-based robustness tests for the ecosystem analyzers: property
+  tests assert the offline pipeline never panics and is deterministic on random
+  and semi-structured manifest content, plus targeted fixtures for edge cases
+  (invalid-but-tolerated manifests, hash pins, mixed `uv.toml`, Unicode names,
+  deep nesting, and a many-project monorepo).
 - `safe-deps audit` now uses an in-process HTTP client (`ureq` + rustls/`ring`)
   by default, so the binary no longer depends on the system `curl` and works on
   minimal containers and Windows out of the box. The previous curl transport is
