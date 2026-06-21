@@ -8,6 +8,13 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Added a single-source guard for rule metadata (`tests/rule_metadata.rs`): the
+  README rule table must match `Rule::summary()` for every registered rule (and
+  list the same ids), so documentation can no longer silently drift from the
+  code that `list-rules`/`explain` print. Reconciled two pre-existing drifts
+  (SD003, SD006) by regenerating the README table from the registry. First
+  increment toward #66.
+
 - Added a `docs lint` CI job that runs `markdownlint-cli2` and `cspell` on every
   push and pull request, so the existing Markdown/spelling checks are now a PR
   gate rather than local-only. Uses an SHA-pinned `actions/setup-node` with

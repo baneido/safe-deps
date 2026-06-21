@@ -84,17 +84,17 @@ usage/config error, `3` internal error, `4` parse failure under
 
 ## Rules
 
-| ID    | Summary                                                                        |
-| ----- | ------------------------------------------------------------------------------ |
-| SD001 | Lockfile missing for a manifest that declares dependencies.                    |
-| SD002 | CI installs should use a frozen/locked command, not a resolving one.           |
-| SD003 | Registry or index uses HTTP, or TLS verification is disabled.                  |
-| SD004 | Integrity or checksum validation is disabled.                                  |
-| SD005 | Dependency build/lifecycle scripts are broadly enabled.                        |
-| SD006 | Dependency resolves from an unsafe source (floating git, tarball, local path). |
-| SD007 | Index/source config exposes the project to dependency confusion.               |
-| SD008 | CI installs dependencies but no audit command is visible.                      |
-| SD009 | CI install commands use a flag that bypasses dependency safety checks.         |
+| ID    | Summary                                                                  |
+| ----- | ------------------------------------------------------------------------ |
+| SD001 | Lockfile missing for a manifest that declares dependencies.              |
+| SD002 | CI installs should use a frozen/locked command, not a resolving one.     |
+| SD003 | Registry or index uses HTTP or TLS verification is disabled.             |
+| SD004 | Integrity or checksum validation is disabled.                            |
+| SD005 | Dependency build/lifecycle scripts are broadly enabled.                  |
+| SD006 | Dependency resolves from an unsafe source (floating git, tarball, path). |
+| SD007 | Index/source config exposes the project to dependency confusion.         |
+| SD008 | CI installs dependencies but no audit command is visible.                |
+| SD009 | CI install commands use a flag that bypasses dependency safety checks.   |
 
 `safe-deps explain <ID>` prints the full rationale and remediation for a rule.
 
