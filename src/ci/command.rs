@@ -257,28 +257,33 @@ pub fn is_install(inv: &Invocation) -> bool {
 /// parse, returning a short human-readable reason. The tokenizer still produces
 /// a best-effort segmentation; this exposes the uncertainty so a reduced-
 /// confidence parse is not mistaken for a clean one (surfaced as the
-/// `complex-shell-not-fully-parsed` diagnostic).
-///
-/// It deliberately flags only uncommon, genuinely ambiguous constructs that can
-/// cause a command to be mis-segmented (and so mis-classified by the CI rules);
-/// ordinary command substitution (`$(…)`, backticks) is parsed acceptably and is
-/// not flagged, to keep the signal low-noise.
+/// `complex-shell-not-fully-parsed` diagnostic). Returns the first construct
+/// found, in a fixed order, so the message is deterministic.
 pub fn uncertainty(command: &str) -> Option<&'static str> {
-    // Heredoc / here-string and process substitution use the `<`/`>` redirection
-    // operators the segmenter consumes, so scan a "skeleton" with quoted spans
-    // and `$((…))` arithmetic removed — this avoids matching `<<`/`<(` inside a
-    // string literal (`echo "a << b"`) or a left-shift (`$((1<<2))`).
-    let skeleton = strip_quoted(&strip_arithmetic(command));
-    if has_heredoc(&skeleton) {
-        return Some("heredoc / here-string");
+    // `$((…))` arithmetic is neither command substitution nor (for its inner
+    // `<<` left-shift) a heredoc, so strip it before both scans below.
+    let cleaned = strip_arithmetic(command);
+    // Substitution scan: keep double-quoted content (substitutions still run
+    // inside `"…"`), drop single-quoted literals and backslash-escaped chars.
+    let subst = scannable(&cleaned);
+    if subst.contains("$(") {
+        return Some("command substitution");
     }
-    if skeleton.contains("<(") || skeleton.contains(">(") {
+    if subst.contains('`') {
+        return Some("backtick command substitution");
+    }
+    // Redirection operators never appear inside quotes, so strip all quoted
+    // spans before looking for process substitution and heredocs/here-strings.
+    let ops = strip_quoted(&cleaned);
+    if ops.contains("<(") || ops.contains(">(") {
         return Some("process substitution");
     }
-    // Shell function definitions are command-position constructs, so check the
+    if has_heredoc(&ops) {
+        return Some("heredoc / here-string");
+    }
+    // Function definitions are command-position constructs, so check the
     // quote-aware segments rather than the raw string: this flags `function f {`
-    // and `f() { … }` but not a `function`/`()` that appears inside an argument
-    // (`echo "a function"`), a comment, or a flag value (`--only function`).
+    // and `f() { … }` but not a `function`/`()` inside an argument or comment.
     if is_function_definition(command) {
         return Some("shell function definition");
     }
@@ -316,8 +321,57 @@ fn strip_arithmetic(command: &str) -> String {
     out
 }
 
+/// Returns a view of the command for substitution scanning, with shell-inert
+/// text removed: single-quoted spans (everything inside is literal) and
+/// backslash-escaped characters are dropped. Double-quoted spans are kept because
+/// command substitution and backticks still run inside them — but a single quote
+/// inside a double-quoted span is an ordinary character, not a span delimiter
+/// (POSIX), so it does not start stripping. An unterminated quote drops the
+/// remainder, matching how a shell would treat it as continuing.
+fn scannable(s: &str) -> String {
+    enum State {
+        Normal,
+        Single,
+        Double,
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut state = State::Normal;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match state {
+            // Outside quotes: a backslash escapes (and thus neutralizes) the next
+            // character, so `\$(` is not a substitution.
+            State::Normal => match c {
+                '\\' => {
+                    chars.next();
+                }
+                '\'' => state = State::Single,
+                '"' => state = State::Double,
+                _ => out.push(c),
+            },
+            // Single quotes: no escapes, everything literal until the next `'`.
+            State::Single => {
+                if c == '\'' {
+                    state = State::Normal;
+                }
+            }
+            // Double quotes: substitutions still run, so keep the text, but a
+            // backslash escapes the next character (e.g. `\$` is literal).
+            State::Double => match c {
+                '\\' => {
+                    chars.next();
+                }
+                '"' => state = State::Normal,
+                _ => out.push(c),
+            },
+        }
+    }
+    out
+}
+
 /// Removes single- and double-quoted spans (and their quote characters), so a
-/// `<<`/`<(` inside a string literal is not mistaken for a real operator.
+/// `<<`/`<(` inside a string literal is not mistaken for a real operator. Used
+/// for redirection-operator detection, which never occurs inside quotes.
 fn strip_quoted(command: &str) -> String {
     let mut out = String::with_capacity(command.len());
     let mut quote: Option<char> = None;
@@ -382,6 +436,75 @@ mod tests {
     }
 
     #[test]
+    fn uncertainty_flags_all_unparseable_constructs() {
+        assert_eq!(
+            uncertainty("npm install $(cat pkgs)"),
+            Some("command substitution")
+        );
+        assert_eq!(
+            uncertainty("npm install `cat pkgs`"),
+            Some("backtick command substitution")
+        );
+        assert_eq!(
+            uncertainty("diff <(npm ls) <(cat baseline)"),
+            Some("process substitution")
+        );
+        assert_eq!(
+            uncertainty("cat <<EOF\nnpm install\nEOF"),
+            Some("heredoc / here-string")
+        );
+        assert_eq!(
+            uncertainty("grep npm <<< \"$pkgs\""),
+            Some("heredoc / here-string")
+        );
+        assert_eq!(
+            uncertainty("install() { npm ci; }"),
+            Some("shell function definition")
+        );
+        assert_eq!(
+            uncertainty("function deploy { npm ci; }"),
+            Some("shell function definition")
+        );
+    }
+
+    #[test]
+    fn uncertainty_is_none_for_clean_commands() {
+        assert_eq!(uncertainty("npm ci && npm test | tee log"), None);
+        assert_eq!(uncertainty("pnpm install --frozen-lockfile"), None);
+        assert_eq!(uncertainty("pip install -r requirements.txt"), None);
+        // A literal inside single quotes is not a real construct.
+        assert_eq!(uncertainty("echo '$(not a command)'"), None);
+        assert_eq!(uncertainty("echo 'use `backticks` literally'"), None);
+    }
+
+    #[test]
+    fn uncertainty_is_quote_arithmetic_and_escape_aware() {
+        // Single quotes inside a double-quoted span are literal, so the
+        // substitution still runs and must be flagged.
+        assert_eq!(
+            uncertainty("npm install \"'$(cat pkgs)'\""),
+            Some("command substitution")
+        );
+        // A backslash-escaped `$` is literal, not a substitution.
+        assert_eq!(uncertainty("echo \\$(not really)"), None);
+        assert_eq!(uncertainty("echo \"\\$(not really)\""), None);
+        // `<<` inside quotes or as an arithmetic left-shift is not a heredoc.
+        assert_eq!(uncertainty("echo \"value << shifted\""), None);
+        assert_eq!(uncertainty("echo $((1 << 2))"), None);
+        assert_eq!(uncertainty("RESULT=$((x<<y)) make"), None);
+    }
+
+    #[test]
+    fn uncertainty_function_detection_avoids_false_positives() {
+        // `function`/`()` only count at command position, not inside arguments,
+        // flag values, or comment lines.
+        assert_eq!(uncertainty("echo \"this function checks the build\""), None);
+        assert_eq!(uncertainty("firebase deploy --only function"), None);
+        assert_eq!(uncertainty("# helper function to install deps"), None);
+        assert_eq!(uncertainty("python -c \"def f(): pass\""), None);
+    }
+
+    #[test]
     fn splits_on_and_and_pipe() {
         let s = seg("npm install && npm test | tee log");
         assert_eq!(s.len(), 3);
@@ -402,50 +525,6 @@ mod tests {
         let s = seg("CI=true /usr/local/bin/pnpm install");
         assert_eq!(program(&s[0]), Some("pnpm"));
         assert_eq!(subcommand(&s[0]), Some("install"));
-    }
-
-    #[test]
-    fn flags_uncertain_shell_constructs() {
-        assert_eq!(
-            uncertainty("cat <<EOF\nhi\nEOF"),
-            Some("heredoc / here-string")
-        );
-        assert_eq!(
-            uncertainty("grep foo <<<\"$bar\""),
-            Some("heredoc / here-string")
-        );
-        assert_eq!(uncertainty("diff <(a) <(b)"), Some("process substitution"));
-        assert_eq!(
-            uncertainty("deploy() { npm ci; }"),
-            Some("shell function definition")
-        );
-        assert_eq!(
-            uncertainty("function deploy { npm ci; }"),
-            Some("shell function definition")
-        );
-    }
-
-    #[test]
-    fn ordinary_commands_are_not_flagged() {
-        // Command substitution and plain pipelines are parsed acceptably.
-        assert_eq!(uncertainty("npm ci && npm test"), None);
-        assert_eq!(uncertainty("echo $(date) > log"), None);
-        assert_eq!(uncertainty("VERSION=`git rev-parse HEAD` make"), None);
-        assert_eq!(uncertainty("pip install -r requirements.txt"), None);
-    }
-
-    #[test]
-    fn does_not_false_positive_on_the_word_function_or_quoted_or_shift() {
-        // `function`/`()` only count at command position, not inside arguments,
-        // flag values, or comment lines (block scalars emit comments verbatim).
-        assert_eq!(uncertainty("echo \"this function checks the build\""), None);
-        assert_eq!(uncertainty("firebase deploy --only function"), None);
-        assert_eq!(uncertainty("# helper function to install deps"), None);
-        assert_eq!(uncertainty("python -c \"def f(): pass\""), None);
-        // `<<` inside quotes or as an arithmetic left-shift is not a heredoc.
-        assert_eq!(uncertainty("echo \"value << shifted\""), None);
-        assert_eq!(uncertainty("echo $((1 << 2))"), None);
-        assert_eq!(uncertainty("RESULT=$((x<<y)) make"), None);
     }
 
     #[test]
