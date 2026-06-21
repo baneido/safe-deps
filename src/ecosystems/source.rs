@@ -202,6 +202,8 @@ pub fn classify_go_replace_target(target: &str) -> DependencySource {
         || t.starts_with('/')
         || t.starts_with(".\\")
         || t.starts_with("..\\")
+        // Windows UNC share, e.g. `\\server\share\mod`.
+        || t.starts_with("\\\\")
         || is_windows_abs_path(t);
     if is_local {
         DependencySource::Path
@@ -397,6 +399,8 @@ mod tests {
     fn go_windows_absolute_replace_is_path() {
         assert_eq!(classify_go_replace_target("C:\\dev\\local"), Path);
         assert_eq!(classify_go_replace_target("D:/dev/local"), Path);
+        // UNC share path.
+        assert_eq!(classify_go_replace_target("\\\\server\\share\\mod"), Path);
     }
 
     #[test]

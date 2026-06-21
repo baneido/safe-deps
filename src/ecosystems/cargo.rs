@@ -167,19 +167,10 @@ fn cargo_dependencies(value: &toml::Value, file: &Path) -> Vec<Dependency> {
         }
     };
 
-    let as_table = |v: &toml::Value, k: &str| v.get(k).and_then(|d| d.as_table()).cloned();
-    push(
-        as_table(value, "dependencies").as_ref(),
-        DependencyGroup::Production,
-    );
-    push(
-        as_table(value, "build-dependencies").as_ref(),
-        DependencyGroup::Production,
-    );
-    push(
-        as_table(value, "dev-dependencies").as_ref(),
-        DependencyGroup::Development,
-    );
+    let as_table = |k: &str| value.get(k).and_then(|d| d.as_table());
+    push(as_table("dependencies"), DependencyGroup::Production);
+    push(as_table("build-dependencies"), DependencyGroup::Production);
+    push(as_table("dev-dependencies"), DependencyGroup::Development);
     // `[target.<cfg>.dependencies]` etc.
     if let Some(targets) = value.get("target").and_then(|t| t.as_table()) {
         for cfg in targets.values() {
