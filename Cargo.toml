@@ -25,6 +25,21 @@ thiserror = "2"
 ignore = "0.4"
 globset = "0.4"
 rayon = "1"
+# Native HTTP for `safe-deps audit` (the only networked path). Uses the `ureq`
+# rustls backend (`ring`), which needs no `cmake`/`aws-lc`. Only pulled in with
+# the default `native-http` feature.
+ureq = { version = "2.12", default-features = false, features = [
+    "tls",
+], optional = true }
+
+[features]
+# `native-http` (default) makes `audit` self-contained via the in-process `ureq`
+# client. `curl-transport` is the legacy fallback that shells out to the system
+# `curl`; build with `--no-default-features --features curl-transport` for an
+# HTTP stack that needs no TLS crate (e.g. toolchains without a C compiler).
+default = ["native-http"]
+native-http = ["dep:ureq"]
+curl-transport = []
 
 [dev-dependencies]
 insta = "1"

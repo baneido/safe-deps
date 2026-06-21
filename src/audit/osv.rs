@@ -1,14 +1,17 @@
 //! OSV.dev vulnerability source.
 //!
 //! Queries <https://osv.dev> for the given coordinates. Network I/O is behind
-//! the [`HttpTransport`] trait so the audit logic is testable without a network,
-//! and so the HTTP mechanism (the default shells out to `curl`, which is
-//! ubiquitous and keeps the binary dependency-free) can be swapped later. A
-//! single `querybatch` POST covers all packages; advisory details are fetched
-//! once per unique vulnerability id and cached.
+//! the [`HttpTransport`] trait so the audit logic is testable without a network.
+//! The transport is pluggable: the default `native-http` build uses an
+//! in-process `ureq` client (so the binary is self-contained and cross-platform),
+//! and the `curl-transport` feature falls back to the system `curl`. A single
+//! `querybatch` POST covers all packages; advisory details are fetched once per
+//! unique vulnerability id and cached.
 
 use std::collections::BTreeMap;
+#[cfg(feature = "curl-transport")]
 use std::io::Write;
+#[cfg(feature = "curl-transport")]
 use std::process::{Command, Stdio};
 
 use serde::Deserialize;
@@ -16,8 +19,15 @@ use serde::Deserialize;
 use crate::audit::cache::Cache;
 use crate::audit::{Advisory, AuditError, PackageCoordinate, VulnerabilitySource};
 
+#[cfg(not(any(feature = "native-http", feature = "curl-transport")))]
+compile_error!("enable either the `native-http` (default) or `curl-transport` feature");
+
 const QUERYBATCH_URL: &str = "https://api.osv.dev/v1/querybatch";
 const VULN_URL: &str = "https://api.osv.dev/v1/vulns/";
+
+/// Overall per-request network timeout.
+#[cfg(feature = "native-http")]
+const TIMEOUT_SECS: u64 = 30;
 
 /// An HTTP transport abstraction. Implementations must perform real network I/O
 /// only here; everything else in the audit path stays offline.
@@ -26,9 +36,89 @@ pub trait HttpTransport {
     fn get(&self, url: &str) -> Result<String, AuditError>;
 }
 
-/// Default transport: invokes the system `curl`.
+/// The default transport for this build: the in-process `ureq` client when the
+/// `native-http` feature is enabled, otherwise the `curl` fallback.
+#[cfg(feature = "native-http")]
+pub fn default_transport() -> UreqTransport {
+    UreqTransport::new()
+}
+
+/// The default transport for this build (the `curl` fallback, when `native-http`
+/// is disabled).
+#[cfg(all(not(feature = "native-http"), feature = "curl-transport"))]
+pub fn default_transport() -> CurlTransport {
+    CurlTransport
+}
+
+/// In-process transport using the `ureq` HTTP client (rustls/`ring` TLS). No
+/// external process or system `curl` is required.
+#[cfg(feature = "native-http")]
+pub struct UreqTransport {
+    agent: ureq::Agent,
+}
+
+#[cfg(feature = "native-http")]
+impl UreqTransport {
+    pub fn new() -> Self {
+        Self {
+            agent: ureq::AgentBuilder::new()
+                .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
+                .build(),
+        }
+    }
+}
+
+#[cfg(feature = "native-http")]
+impl Default for UreqTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "native-http")]
+impl HttpTransport for UreqTransport {
+    fn post_json(&self, url: &str, body: &str) -> Result<String, AuditError> {
+        read_response(
+            self.agent
+                .post(url)
+                .set("Content-Type", "application/json")
+                .send_string(body),
+        )
+    }
+
+    fn get(&self, url: &str) -> Result<String, AuditError> {
+        read_response(self.agent.get(url).call())
+    }
+}
+
+/// Turns a `ureq` result into a response body or an [`AuditError`]. An HTTP
+/// 4xx/5xx is an error (so an error page is never parsed as a vulnerability
+/// response), keeping the response body for context — mirroring curl's
+/// `--fail-with-body`.
+#[cfg(feature = "native-http")]
+fn read_response(result: Result<ureq::Response, ureq::Error>) -> Result<String, AuditError> {
+    match result {
+        Ok(resp) => resp
+            .into_string()
+            .map_err(|e| AuditError::Transport(e.to_string())),
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            let detail = body.trim();
+            if detail.is_empty() {
+                Err(AuditError::Transport(format!("HTTP {code}")))
+            } else {
+                Err(AuditError::Transport(format!("HTTP {code}: {detail}")))
+            }
+        }
+        Err(e) => Err(AuditError::Transport(e.to_string())),
+    }
+}
+
+/// Fallback transport: invokes the system `curl`.
+#[cfg(feature = "curl-transport")]
 pub struct CurlTransport;
 
+#[cfg(feature = "curl-transport")]
 impl HttpTransport for CurlTransport {
     fn post_json(&self, url: &str, body: &str) -> Result<String, AuditError> {
         let mut child = Command::new("curl")
@@ -72,6 +162,7 @@ impl HttpTransport for CurlTransport {
     }
 }
 
+#[cfg(feature = "curl-transport")]
 fn finish(child: std::process::Child) -> Result<String, AuditError> {
     let out = child
         .wait_with_output()

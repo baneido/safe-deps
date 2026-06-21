@@ -235,8 +235,11 @@ fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
         0
     };
 
-    let source =
-        crate::audit::osv::OsvSource::new(crate::audit::osv::CurlTransport, cache, args.offline);
+    let source = crate::audit::osv::OsvSource::new(
+        crate::audit::osv::default_transport(),
+        cache,
+        args.offline,
+    );
 
     let mut report = crate::audit::run_audit(
         &coords,
