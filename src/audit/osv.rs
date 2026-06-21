@@ -29,6 +29,12 @@ const VULN_URL: &str = "https://api.osv.dev/v1/vulns/";
 #[cfg(feature = "native-http")]
 const TIMEOUT_SECS: u64 = 30;
 
+/// Upper bound on a single response body read from the network. Generous for
+/// OSV (whose `querybatch`/vuln responses are small) while bounding memory on an
+/// unexpected or hostile response.
+#[cfg(feature = "native-http")]
+const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
+
 /// An HTTP transport abstraction. Implementations must perform real network I/O
 /// only here; everything else in the audit path stays offline.
 pub trait HttpTransport {
@@ -63,6 +69,11 @@ impl UreqTransport {
         Self {
             agent: ureq::AgentBuilder::new()
                 .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
+                // The OSV endpoints are fixed HTTPS URLs that do not redirect;
+                // refuse redirects (matching the old curl path, which had no
+                // `-L`) so a response can never be transparently re-routed to
+                // another host.
+                .redirects(0)
                 .build(),
         }
     }
@@ -98,11 +109,9 @@ impl HttpTransport for UreqTransport {
 #[cfg(feature = "native-http")]
 fn read_response(result: Result<ureq::Response, ureq::Error>) -> Result<String, AuditError> {
     match result {
-        Ok(resp) => resp
-            .into_string()
-            .map_err(|e| AuditError::Transport(e.to_string())),
+        Ok(resp) => read_body(resp),
         Err(ureq::Error::Status(code, resp)) => {
-            let body = resp.into_string().unwrap_or_default();
+            let body = read_body(resp).unwrap_or_default();
             let detail = body.trim();
             if detail.is_empty() {
                 Err(AuditError::Transport(format!("HTTP {code}")))
@@ -112,6 +121,20 @@ fn read_response(result: Result<ureq::Response, ureq::Error>) -> Result<String, 
         }
         Err(e) => Err(AuditError::Transport(e.to_string())),
     }
+}
+
+/// Reads a response body as a UTF-8 string, capped at [`MAX_RESPONSE_BYTES`]
+/// (rather than `ureq`'s default 10 MiB limit) so a large legitimate
+/// `querybatch` response is not silently truncated, while still bounding memory.
+#[cfg(feature = "native-http")]
+fn read_body(resp: ureq::Response) -> Result<String, AuditError> {
+    use std::io::Read;
+    let mut buf = String::new();
+    resp.into_reader()
+        .take(MAX_RESPONSE_BYTES)
+        .read_to_string(&mut buf)
+        .map_err(|e| AuditError::Transport(e.to_string()))?;
+    Ok(buf)
 }
 
 /// Fallback transport: invokes the system `curl`.
