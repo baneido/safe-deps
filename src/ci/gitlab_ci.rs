@@ -46,12 +46,42 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
             i += 1;
             continue;
         };
-        if !SCRIPT_KEYS.contains(&key) {
+        let is_script = SCRIPT_KEYS.contains(&key);
+
+        // Consume the whole block scalar for ANY key, but only emit commands for
+        // a script key — so a `script:`-looking line inside a non-script block
+        // (e.g. a multi-line `variables:` value) is not parsed as a command.
+        if is_block_scalar_indicator(value) {
+            let mut j = i + 1;
+            while j < lines.len() {
+                let line = lines[j];
+                if line.trim().is_empty() {
+                    j += 1;
+                    continue;
+                }
+                if leading_spaces(line) <= key_indent {
+                    break;
+                }
+                if is_script {
+                    push(
+                        &mut commands,
+                        relative,
+                        j,
+                        unquote(strip_comment(line).trim()),
+                    );
+                }
+                j += 1;
+            }
+            i = j;
+            continue;
+        }
+
+        if !is_script {
             i += 1;
             continue;
         }
         // Inline single command: `script: npm ci`.
-        if !value.is_empty() && !is_block_scalar_indicator(value) {
+        if !value.is_empty() {
             push(
                 &mut commands,
                 relative,
@@ -61,7 +91,7 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
             i += 1;
             continue;
         }
-        // Block: consume more-indented lines as array items / block-scalar text.
+        // Array form: consume `- item` lines (incl. per-item `- |` block text).
         let mut j = i + 1;
         while j < lines.len() {
             let line = lines[j];
@@ -74,13 +104,11 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
             }
             let content = strip_comment(line).trim();
             if let Some(item) = content.strip_prefix("- ") {
-                // An array item; `- |` introduces a per-item block scalar whose
-                // content lines are handled by the plain-content branch below.
                 if !is_block_scalar_indicator(item.trim()) {
                     push(&mut commands, relative, j, unquote(item.trim()));
                 }
             } else if content != "-" && !is_block_scalar_indicator(content) {
-                // Block-scalar content line (`script: |` form, or under `- |`).
+                // Block-scalar content line under a `- |` array item.
                 push(&mut commands, relative, j, unquote(content));
             }
             j += 1;
@@ -203,6 +231,20 @@ job:
     fn strips_comments_and_quotes() {
         let text = "job:\n  script:\n    - \"npm ci\" # frozen\n";
         assert_eq!(cmds(text), vec!["npm ci"]);
+    }
+
+    #[test]
+    fn script_like_line_in_a_non_script_block_is_not_a_command() {
+        let text = "\
+variables:
+  NOTE: |
+    script: echo leaked
+    before_script: echo also
+job:
+  script:
+    - npm test
+";
+        assert_eq!(cmds(text), vec!["npm test"]);
     }
 
     #[test]

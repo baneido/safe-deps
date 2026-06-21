@@ -24,8 +24,11 @@ pub fn dedent(line: &str, n: usize) -> &str {
     &line[idx..]
 }
 
-/// Strips a trailing YAML comment (` #…`) that is not inside quotes. A `#` with
-/// no preceding whitespace (e.g. inside `a#b`) is not a comment.
+/// Strips a trailing YAML comment (` #…`) that is not inside a quoted scalar. A
+/// `#` with no preceding whitespace (e.g. inside `a#b`) is not a comment. A
+/// quote only opens a quoted scalar at a value boundary (start, after a space,
+/// `-`, `:`, …), so a shell apostrophe such as `don't` is not treated as a YAML
+/// quote and a following ` # comment` is still stripped.
 pub fn strip_comment(line: &str) -> &str {
     let bytes = line.as_bytes();
     let mut quote: Option<u8> = None;
@@ -39,7 +42,7 @@ pub fn strip_comment(line: &str) -> &str {
                 }
             }
             None => {
-                if c == b'"' || c == b'\'' {
+                if (c == b'"' || c == b'\'') && is_scalar_boundary(bytes, i) {
                     quote = Some(c);
                 } else if c == b'#' && (i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b'\t') {
                     return &line[..i];
@@ -49,6 +52,15 @@ pub fn strip_comment(line: &str) -> &str {
         i += 1;
     }
     line
+}
+
+/// Whether byte `i` is at a YAML value boundary where a quoted scalar may begin.
+fn is_scalar_boundary(bytes: &[u8], i: usize) -> bool {
+    i == 0
+        || matches!(
+            bytes[i - 1],
+            b' ' | b'\t' | b'-' | b':' | b',' | b'[' | b'{' | b'('
+        )
 }
 
 /// If `line` is a block-mapping key (`key: value`, optionally introduced by a
@@ -126,6 +138,9 @@ mod tests {
         assert_eq!(strip_comment("npm ci # frozen"), "npm ci ");
         assert_eq!(strip_comment("echo \"a # b\""), "echo \"a # b\"");
         assert_eq!(strip_comment("url#anchor"), "url#anchor");
+        // A shell apostrophe is not a YAML quote, so the comment still strips.
+        assert_eq!(strip_comment("don't deploy # disabled"), "don't deploy ");
+        assert_eq!(strip_comment("echo 'a # b'"), "echo 'a # b'");
     }
 
     #[test]

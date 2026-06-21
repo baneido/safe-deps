@@ -55,50 +55,40 @@ fn extract_run_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
         // empty/map form defers to the nested `command:` key (handled on its own
         // iteration). `command:` always carries shell.
         let carries_command = key == "command" || key == "run";
-        if !carries_command {
-            i += 1;
+
+        // Consume the whole block scalar for ANY key, but only emit commands for
+        // a run/command key — so a `run:`/`command:`-looking line inside an
+        // unrelated block (e.g. `description: |`) is not parsed as a command.
+        if is_block_scalar_indicator(value) {
+            let mut j = i + 1;
+            while j < lines.len() {
+                let line = lines[j];
+                if line.trim().is_empty() {
+                    j += 1;
+                    continue;
+                }
+                if leading_spaces(line) <= key_indent {
+                    break;
+                }
+                if carries_command {
+                    push(&mut commands, relative, j, strip_comment(line).trim());
+                }
+                j += 1;
+            }
+            i = j;
             continue;
         }
-        if !value.is_empty() && !is_block_scalar_indicator(value) {
+        if carries_command && !value.is_empty() {
             push(
                 &mut commands,
                 relative,
                 i,
                 unquote(strip_comment(value).trim()),
             );
-            i += 1;
-        } else if is_block_scalar_indicator(value) {
-            i = consume_block(&lines, i, key_indent, relative, &mut commands);
-        } else {
-            i += 1;
         }
+        i += 1;
     }
     commands
-}
-
-/// Emits each non-blank content line of a block scalar starting after `key_idx`
-/// as a command; returns the index of the first line at/under `key_indent`.
-fn consume_block(
-    lines: &[&str],
-    key_idx: usize,
-    key_indent: usize,
-    relative: &Path,
-    commands: &mut Vec<CiCommand>,
-) -> usize {
-    let mut j = key_idx + 1;
-    while j < lines.len() {
-        let line = lines[j];
-        if line.trim().is_empty() {
-            j += 1;
-            continue;
-        }
-        if leading_spaces(line) <= key_indent {
-            break;
-        }
-        push(commands, relative, j, strip_comment(line).trim());
-        j += 1;
-    }
-    j
 }
 
 fn push(commands: &mut Vec<CiCommand>, relative: &Path, line_idx: usize, command: &str) {
@@ -199,6 +189,22 @@ jobs:
             cmds(text),
             vec!["pip install -r requirements.txt", "pytest"]
         );
+    }
+
+    #[test]
+    fn run_like_line_in_a_non_run_block_is_not_a_command() {
+        let text = "\
+jobs:
+  build:
+    steps:
+      - run:
+          name: notes
+          description: |
+            run: executes the suite
+            command: cleanup
+      - run: npm ci
+";
+        assert_eq!(cmds(text), vec!["npm ci"]);
     }
 
     #[test]

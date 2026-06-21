@@ -44,11 +44,6 @@ pub fn providers() -> &'static [&'static dyn CiProvider] {
     ]
 }
 
-/// Human-readable provider names, for coverage docs.
-pub fn provider_names() -> Vec<&'static str> {
-    providers().iter().map(|p| p.name()).collect()
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CiFacts {
     pub commands: Vec<CiCommand>,
