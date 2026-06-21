@@ -73,6 +73,20 @@ safe-deps init                       # write a commented safe-deps.toml
 usage/config error, `3` internal error, `4` parse failure under
 `--strict-parser-errors`.
 
+## Try it
+
+[`examples/`](examples) holds small, self-contained projects that each trip one
+rule, plus a hardened baseline that stays clean:
+
+```bash
+safe-deps check examples/missing-lockfile        # SD001
+safe-deps check examples/npm-insecure-registry   # SD003
+safe-deps check examples/pip-extra-index          # SD007 (+ SD004)
+safe-deps check examples/clean-baseline          # no findings, exit 0
+```
+
+See [`examples/README.md`](examples/README.md) for what each demonstrates.
+
 ## Supported ecosystems
 
 | Ecosystem  | Package managers     |

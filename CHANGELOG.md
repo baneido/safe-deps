@@ -8,6 +8,11 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Added `examples/` onboarding fixtures: small self-contained projects that each
+  trip one rule (`missing-lockfile` → SD001, `npm-insecure-registry` → SD003,
+  `pip-extra-index` → SD007), plus a hardened `clean-baseline` that stays clean.
+  README links them under a "Try it" section.
+
 - Added a `docs lint` CI job that runs `markdownlint-cli2` and `cspell` on every
   push and pull request, so the existing Markdown/spelling checks are now a PR
   gate rather than local-only. Uses an SHA-pinned `actions/setup-node` with
