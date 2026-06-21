@@ -791,10 +791,13 @@ fn audit_respects_advisory_ignore_by_alias() {
 }
 
 #[test]
-fn audit_offline_without_cache_reports_clean() {
+fn audit_offline_without_cache_notes_unchecked_packages() {
     let ws = workspace(&[("Cargo.lock", CARGO_LOCK_LEFTPAD)]);
     let out = run(&ws, &["audit", ".", "--offline", "--no-cache"]);
-    assert!(stdout(&out).contains("No known vulnerabilities"));
+    let text = stdout(&out);
+    assert!(text.contains("No known vulnerabilities"), "{text}");
+    // An offline cache miss must not read as a clean bill of health.
+    assert!(text.contains("not in the cache were not checked"), "{text}");
     assert_eq!(code(&out), 0);
 }
 

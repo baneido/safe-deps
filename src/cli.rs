@@ -254,16 +254,35 @@ fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
             .unwrap_or_else(crate::audit::cache::Cache::default_dir);
         Some(crate::audit::cache::Cache::new(dir, args.cache_ttl))
     };
+
+    // In offline mode only cached coordinates are actually checked; count the
+    // misses so an offline gap is not mistaken for a clean bill of health.
+    let offline_unchecked = if args.offline {
+        coords
+            .iter()
+            .filter(|c| !cache.as_ref().is_some_and(|cache| cache.contains(c)))
+            .count()
+    } else {
+        0
+    };
+
     let source =
         crate::audit::osv::OsvSource::new(crate::audit::osv::CurlTransport, cache, args.offline);
 
-    let report = crate::audit::run_audit(
+    let mut report = crate::audit::run_audit(
         &coords,
         &source,
         &config.advisory_ignores,
         config::today_ymd(),
     )
     .map_err(CliError::internal)?;
+
+    if offline_unchecked > 0 {
+        report.packages_audited = coords.len().saturating_sub(offline_unchecked);
+        report.diagnostics.push(format!(
+            "offline: {offline_unchecked} package(s) not in the cache were not checked"
+        ));
+    }
 
     // Resolve format with the same precedence as `check` (CLI flag, then
     // config), validating the value; audit supports text and json.

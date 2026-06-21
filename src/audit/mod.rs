@@ -148,18 +148,15 @@ pub fn run_audit(
     }
 
     let mut advisories = source.query(coords)?;
-    // Deterministic ordering: by package then advisory id.
-    advisories.sort_by(|a, b| {
+    // Deterministic ordering: by package (incl. version, since a name can appear
+    // at multiple versions) then advisory id.
+    advisories.sort_by_key(|a| {
         (
-            a.package.ecosystem.as_str(),
-            a.package.name.as_str(),
-            a.id.as_str(),
+            a.package.ecosystem.clone(),
+            a.package.name.clone(),
+            a.package.version.clone(),
+            a.id.clone(),
         )
-            .cmp(&(
-                b.package.ecosystem.as_str(),
-                b.package.name.as_str(),
-                b.id.as_str(),
-            ))
     });
 
     for advisory in advisories {

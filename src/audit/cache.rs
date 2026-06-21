@@ -50,6 +50,11 @@ impl Cache {
         serde_json::from_str(&text).ok()
     }
 
+    /// Whether a cache entry exists for `coord` (regardless of freshness).
+    pub fn contains(&self, coord: &PackageCoordinate) -> bool {
+        self.path(coord).exists()
+    }
+
     /// Returns cached advisories only if they are within the TTL. An entry
     /// stamped in the future (clock skew or a hand-edited cache) is treated as
     /// stale rather than perpetually fresh.

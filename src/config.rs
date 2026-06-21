@@ -169,19 +169,19 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
     for ignore in &config.advisory_ignores {
         if ignore.id.trim().is_empty() {
             return Err(ConfigError::Invalid(
-                "advisory_ignore requires an `id`".to_string(),
+                "an [[advisory_ignores]] entry requires an `id`".to_string(),
             ));
         }
         if ignore.reason.trim().is_empty() {
             return Err(ConfigError::Invalid(format!(
-                "advisory_ignore for {} is missing a reason",
+                "[[advisory_ignores]] entry for {} is missing a reason",
                 ignore.id
             )));
         }
         if let Some(expires) = &ignore.expires {
             if parse_iso_date(expires).is_none() {
                 return Err(ConfigError::Invalid(format!(
-                    "advisory_ignore for {} has invalid expires '{}' (expected YYYY-MM-DD)",
+                    "[[advisory_ignores]] entry for {} has invalid expires '{}' (expected YYYY-MM-DD)",
                     ignore.id, expires
                 )));
             }
