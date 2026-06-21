@@ -133,6 +133,12 @@ OSV for known advisories, and caches results on disk (default TTL 24h; HTTP via
 the system `curl`). `--offline` uses only the cache. `check` never touches the
 network.
 
+## Contributing
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to report issues and land a change.
+- [DEVELOPMENT.md](DEVELOPMENT.md) — build, test, and architecture.
+- [RELEASING.md](RELEASING.md) — the release checklist (maintainers).
+
 ## Design documents
 
 - [Security best practices research](docs/security-best-practices.md)
@@ -158,3 +164,5 @@ Cargo/Go, and additional ecosystems (Composer, Bundler, Gradle/Maven, NuGet).
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE).
+Third-party dependency licenses are catalogued in
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
