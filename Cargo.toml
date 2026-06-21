@@ -27,7 +27,7 @@ serde_json = "1"
 # unchanged. Same API and `unsafe-libyaml` backend; MIT-licensed (the old crate
 # was dual MIT/Apache-2.0). Tracked in issue #23.
 serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
-toml = "0.8"
+toml = "1.1"
 thiserror = "2"
 ignore = "0.4"
 globset = "0.4"
