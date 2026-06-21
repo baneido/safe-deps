@@ -44,20 +44,16 @@ fn testcase(f: &Finding, index: usize) -> String {
     let name = escape(&format!("[{index}] {}: {}", f.rule_id, f.message));
     let classname = escape(&classname(f));
     let detail = escape(&detail(f));
+    let rule_id = escape(f.rule_id.as_str());
+    let message = escape(&f.message);
     let body = match f.severity {
-        Severity::Error => format!(
-            "      <error message=\"{}\" type=\"{}\">{}</error>\n",
-            escape(&f.message),
-            f.rule_id,
-            detail
-        ),
-        Severity::Warning => format!(
-            "      <failure message=\"{}\" type=\"{}\">{}</failure>\n",
-            escape(&f.message),
-            f.rule_id,
-            detail
-        ),
-        Severity::Info => format!("      <skipped message=\"{}\"/>\n", escape(&f.message)),
+        Severity::Error => {
+            format!("      <error message=\"{message}\" type=\"{rule_id}\">{detail}</error>\n")
+        }
+        Severity::Warning => {
+            format!("      <failure message=\"{message}\" type=\"{rule_id}\">{detail}</failure>\n")
+        }
+        Severity::Info => format!("      <skipped message=\"{message}\"/>\n"),
     };
     format!("    <testcase name=\"{name}\" classname=\"{classname}\">\n{body}    </testcase>\n")
 }
@@ -153,6 +149,16 @@ mod tests {
         assert!(xml.contains("<error message=\"missing Cargo.lock\" type=\"SD001\">"));
         assert!(xml.contains("<failure message=\"git dep\" type=\"SD006\">"));
         assert!(xml.contains("<skipped message=\"note\"/>"));
+    }
+
+    #[test]
+    fn escapes_rule_id_in_type_attribute() {
+        let mut f = finding("S<&>D", Severity::Error, "boom");
+        f.rule_id = RuleId::new("S<&>D");
+        let xml = String::from_utf8(JunitReporter.format(&report_with(vec![f]).clone()).unwrap())
+            .unwrap();
+        assert!(xml.contains("type=\"S&lt;&amp;&gt;D\""), "{xml}");
+        assert!(!xml.contains("type=\"S<&>D\""));
     }
 
     #[test]
