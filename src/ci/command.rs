@@ -372,23 +372,40 @@ fn scannable(s: &str) -> String {
 /// Removes single- and double-quoted spans (and their quote characters), so a
 /// `<<`/`<(` inside a string literal is not mistaken for a real operator. Used
 /// for redirection-operator detection, which never occurs inside quotes.
+///
+/// Backslash escaping is honored outside quotes and inside double quotes (so an
+/// escaped quote `\"` does not end the span and an escaped `\<` is not an
+/// operator). Inside single quotes a backslash is literal, per POSIX.
 fn strip_quoted(command: &str) -> String {
     let mut out = String::with_capacity(command.len());
     let mut quote: Option<char> = None;
-    for c in command.chars() {
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
         match quote {
-            Some(q) => {
-                if c == q {
+            // Single quotes: no escapes; only another `'` ends the span.
+            Some('\'') => {
+                if c == '\'' {
                     quote = None;
                 }
             }
-            None => {
-                if c == '\'' || c == '"' {
-                    quote = Some(c);
-                } else {
-                    out.push(c);
+            // Double quotes: a backslash escapes the next char (so `\"` does not
+            // end the span); otherwise `"` ends it. Content is dropped either way.
+            Some(_) => match c {
+                '\\' => {
+                    chars.next();
                 }
-            }
+                '"' => quote = None,
+                _ => {}
+            },
+            // Outside quotes a backslash neutralizes the next char, so `\<`/`\"`
+            // are literal and start neither an operator nor a quoted span.
+            None => match c {
+                '\\' => {
+                    chars.next();
+                }
+                '\'' | '"' => quote = Some(c),
+                _ => out.push(c),
+            },
         }
     }
     out
@@ -413,9 +430,11 @@ fn has_heredoc(skeleton: &str) -> bool {
             while matches!(chars.get(j), Some(' ') | Some('\t')) {
                 j += 1;
             }
-            // A heredoc delimiter starts with a word char or quote/backslash.
+            // A heredoc delimiter is a word; it may start with a letter, digit,
+            // `_`, or a quote/backslash. (A `<<` followed by an operator or end
+            // of input is a left-shift the arithmetic strip missed, not a heredoc.)
             if let Some(&d) = chars.get(j) {
-                if d.is_alphabetic() || d == '_' || d == '"' || d == '\'' || d == '\\' {
+                if d.is_alphanumeric() || d == '_' || d == '"' || d == '\'' || d == '\\' {
                     return true;
                 }
             }
@@ -492,6 +511,18 @@ mod tests {
         assert_eq!(uncertainty("echo \"value << shifted\""), None);
         assert_eq!(uncertainty("echo $((1 << 2))"), None);
         assert_eq!(uncertainty("RESULT=$((x<<y)) make"), None);
+        // An escaped quote does not end a double-quoted span, so a `<<` that
+        // appears only inside the string literal is still not a heredoc.
+        assert_eq!(uncertainty("echo \"a \\\"<<\\\" b\""), None);
+    }
+
+    #[test]
+    fn heredoc_delimiter_may_start_with_a_digit() {
+        // POSIX here-doc delimiters are general words, so `<<1` is valid.
+        assert_eq!(
+            uncertainty("npm ci <<1\nfoo\n1"),
+            Some("heredoc / here-string")
+        );
     }
 
     #[test]
