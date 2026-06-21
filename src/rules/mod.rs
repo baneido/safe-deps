@@ -15,12 +15,14 @@ use crate::ecosystems::{detect_all, facts_for};
 use crate::filesystem::WorkspaceContext;
 use crate::project::refine_kinds;
 use crate::report::sort_findings;
-use crate::rule::{Finding, Profile, Rule, RuleInput};
+use crate::rule::{Finding, Profile, Rule, RuleInput, WorkspaceInput};
 
 pub mod sd001_lockfile_missing;
 pub mod sd002_non_frozen_ci_install;
 pub mod sd003_insecure_registry;
 pub mod sd004_integrity_disabled;
+pub mod sd008_audit_missing;
+pub mod sd009_dangerous_flags;
 
 /// Returns all built-in rules.
 pub fn all_rules() -> Vec<Box<dyn Rule>> {
@@ -29,6 +31,8 @@ pub fn all_rules() -> Vec<Box<dyn Rule>> {
         Box::new(sd002_non_frozen_ci_install::Sd002),
         Box::new(sd003_insecure_registry::Sd003),
         Box::new(sd004_integrity_disabled::Sd004),
+        Box::new(sd008_audit_missing::Sd008),
+        Box::new(sd009_dangerous_flags::Sd009),
     ]
 }
 
@@ -72,6 +76,8 @@ pub fn analyze(ctx: &WorkspaceContext, profile: Profile, ci_facts: &CiFacts) -> 
     }
 
     let rules = all_rules();
+
+    // Project-scoped rules run once per detected project.
     let mut findings: Vec<Finding> = facts_list
         .iter()
         .flat_map(|facts| {
@@ -83,10 +89,22 @@ pub fn analyze(ctx: &WorkspaceContext, profile: Profile, ci_facts: &CiFacts) -> 
             };
             rules
                 .iter()
+                .filter(|rule| !rule.is_workspace_rule())
                 .flat_map(|rule| rule.evaluate(&input))
                 .collect::<Vec<_>>()
         })
         .collect();
+
+    // Workspace-scoped rules (CI-derived) run exactly once so a single unsafe
+    // command is not duplicated across every project in a monorepo.
+    let ws_input = WorkspaceInput {
+        ci: ci_facts,
+        profile,
+        policy: &ctx.config.policy,
+    };
+    for rule in rules.iter().filter(|rule| rule.is_workspace_rule()) {
+        findings.extend(rule.evaluate_workspace(&ws_input));
+    }
 
     apply_rule_overrides(&mut findings, &ctx.config);
     let (suppressed_count, supp_diagnostics, used) =
