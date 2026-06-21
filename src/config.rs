@@ -187,6 +187,21 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             }
         }
     }
+    // Reject invalid project-root globs loudly. Otherwise a single bad pattern
+    // silently disables the whole application_roots/library_roots set, lowering
+    // severities without any signal to the user.
+    for (field, patterns) in [
+        ("application_roots", &config.policy.application_roots),
+        ("library_roots", &config.policy.library_roots),
+    ] {
+        for pattern in patterns {
+            if let Err(err) = globset::Glob::new(pattern) {
+                return Err(ConfigError::Invalid(format!(
+                    "[policy] {field} has invalid glob '{pattern}': {err}"
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -336,6 +351,29 @@ mod tests {
         assert_eq!(parse_fail_on("none").unwrap(), FailLevel::None);
         assert!(parse_format("yaml").is_err());
         assert!(parse_fail_on("fatal").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_root_glob() {
+        // A single bad pattern must fail loudly rather than silently disabling
+        // the whole root set.
+        let mut config = Config::default();
+        config.policy.application_roots = vec!["apps/*".to_string(), "[bad".to_string()];
+        match validate(&config) {
+            Err(ConfigError::Invalid(msg)) => {
+                assert!(msg.contains("application_roots"), "{msg}");
+                assert!(msg.contains("[bad"), "{msg}");
+            }
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_valid_root_globs() {
+        let mut config = Config::default();
+        config.policy.application_roots = vec!["apps/*".to_string()];
+        config.policy.library_roots = vec!["libs/**".to_string(), "tools/*/lib".to_string()];
+        assert!(validate(&config).is_ok());
     }
 
     #[test]

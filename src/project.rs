@@ -4,13 +4,10 @@
 //! configured roots, projects stay `Unknown` and avoid high-severity findings
 //! for rules where library/application policy differs.
 
-use std::path::Path;
-
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use crate::ecosystems::{Project, ProjectKind};
 use crate::filesystem::WorkspaceContext;
-use crate::rule::Policy;
 
 /// Refines the `ProjectKind` of each project using configured roots. Projects
 /// already classified by an analyzer are left unchanged.
@@ -34,25 +31,9 @@ pub fn refine_kinds(projects: &mut [Project], ctx: &WorkspaceContext) {
     }
 }
 
-/// Infers a kind from a single project root and policy.
-pub fn infer_kind(project_root: &Path, workspace_root: &Path, policy: &Policy) -> ProjectKind {
-    let relative = project_root
-        .strip_prefix(workspace_root)
-        .unwrap_or(project_root);
-    let rel_str = relative.to_string_lossy();
-    if let Some(set) = build_root_set(&policy.application_roots) {
-        if set.is_match(&*rel_str) {
-            return ProjectKind::Application;
-        }
-    }
-    if let Some(set) = build_root_set(&policy.library_roots) {
-        if set.is_match(&*rel_str) {
-            return ProjectKind::Library;
-        }
-    }
-    ProjectKind::Unknown
-}
-
+/// Builds a glob set from configured root patterns, or `None` when none are
+/// configured. Invalid globs are rejected earlier by `config::validate`, so
+/// reaching `Glob::new(...).ok()?` with a bad pattern is not expected.
 fn build_root_set(patterns: &[String]) -> Option<GlobSet> {
     if patterns.is_empty() {
         return None;

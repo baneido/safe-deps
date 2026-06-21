@@ -334,6 +334,26 @@ fn invalid_config_is_usage_error() {
     assert_eq!(code(&out), 2);
 }
 
+#[test]
+fn invalid_application_root_glob_is_usage_error() {
+    // A malformed root glob must be a loud config error (exit 2), not a silent
+    // disable of the application_roots/library_roots policy.
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        (
+            "safe-deps.toml",
+            "[policy]\napplication_roots = [\"apps/*\", \"[bad\"]\n",
+        ),
+    ]);
+    let out = run(&ws, &["check", "."]);
+    assert_eq!(code(&out), 2, "{}", stdout(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("application_roots"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 // --- suppressions ------------------------------------------------------------
 
 #[test]
