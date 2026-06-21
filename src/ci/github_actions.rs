@@ -20,9 +20,11 @@ pub fn is_workflow_file(relative: &Path) -> bool {
             _ => None,
         })
         .collect();
-    let in_workflows = comps
-        .windows(2)
-        .any(|w| w[0] == ".github" && w[1] == "workflows");
+    // GitHub Actions only runs workflows under the repository-root
+    // `.github/workflows/`. Anchoring to the path prefix avoids treating a
+    // nested `docs/.github/workflows/ci.yml` (or any vendored copy) as a real
+    // workflow and extracting phantom CI commands from it.
+    let in_workflows = comps.len() >= 2 && comps[0] == ".github" && comps[1] == "workflows";
     let ext_ok = relative
         .extension()
         .and_then(|e| e.to_str())
@@ -210,16 +212,52 @@ fn clean_inline_scalar(value: &str) -> String {
     // A quoted scalar runs to its matching closing quote; anything after it
     // (e.g. ` # comment`) is not part of the value. Handle this before comment
     // stripping so `run: "npm ci" # note` yields `npm ci`, not `"npm ci"`.
-    if let Some(quote) = v.chars().next().filter(|c| *c == '"' || *c == '\'') {
-        if let Some(end) = v[1..].find(quote) {
-            return v[1..=end].to_string();
-        }
+    if let Some(unquoted) = unquote_scalar(v) {
+        return unquoted;
     }
     // For unquoted scalars, ` #` begins a comment.
     if let Some(idx) = v.find(" #") {
         return v[..idx].trim_end().to_string();
     }
     v.to_string()
+}
+
+/// Unquotes a YAML flow scalar, honoring escapes so an embedded quote does not
+/// truncate the command: `\"` inside a double-quoted scalar and `''` inside a
+/// single-quoted one. Returns `None` if `v` is not quoted or has no closing
+/// quote (an unterminated scalar falls back to the raw text).
+fn unquote_scalar(v: &str) -> Option<String> {
+    let chars: Vec<char> = v.chars().collect();
+    let quote = *chars.first().filter(|c| **c == '"' || **c == '\'')?;
+    let mut out = String::new();
+    let mut i = 1;
+    while i < chars.len() {
+        let c = chars[i];
+        if quote == '"' {
+            // Double-quoted: a backslash escapes the next char (keep it literal).
+            if c == '\\' && i + 1 < chars.len() {
+                out.push(chars[i + 1]);
+                i += 2;
+                continue;
+            }
+            if c == quote {
+                return Some(out);
+            }
+        } else {
+            // Single-quoted: a doubled quote `''` is one literal quote.
+            if c == quote {
+                if chars.get(i + 1) == Some(&quote) {
+                    out.push(quote);
+                    i += 2;
+                    continue;
+                }
+                return Some(out);
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    None
 }
 
 fn leading_spaces(line: &str) -> usize {
@@ -299,6 +337,28 @@ mod tests {
         assert!(!is_workflow_file(Path::new(".github/dependabot.yml")));
         assert!(!is_workflow_file(Path::new("docs/ci.yml")));
         assert!(!is_workflow_file(Path::new(".github/workflows/notes.md")));
+        // Only the repository-root .github/workflows is a real workflow dir; a
+        // nested or vendored copy is not.
+        assert!(!is_workflow_file(Path::new(
+            "docs/.github/workflows/ci.yml"
+        )));
+        assert!(!is_workflow_file(Path::new(
+            "vendor/x/.github/workflows/ci.yaml"
+        )));
+    }
+
+    #[test]
+    fn inline_run_with_escaped_quotes_is_not_truncated() {
+        // Double-quoted scalar with escaped inner quotes.
+        let text = "steps:\n  - run: \"echo \\\"hi\\\" && npm ci\"\n";
+        let cmds = extract_run_commands(&PathBuf::from("w.yml"), text);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].command, "echo \"hi\" && npm ci");
+        // Single-quoted scalar with a doubled inner quote.
+        let text = "steps:\n  - run: 'echo ''hi'' && npm ci'\n";
+        let cmds = extract_run_commands(&PathBuf::from("w.yml"), text);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].command, "echo 'hi' && npm ci");
     }
 
     #[test]
