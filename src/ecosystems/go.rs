@@ -7,11 +7,9 @@
 //! library is not inferable from `go.mod` alone, so modules stay `Unknown`
 //! (warning) unless the user configures roots.
 
-use std::path::Path;
-
 use crate::ecosystems::{
-    contains_file, is_proper_ancestor, manifest_dir, Analyzer, EcoError, Ecosystem, FileFact,
-    InstallSettings, PackageManager, Project, ProjectFacts, ProjectKind,
+    contains_file, manifest_dir, Analyzer, EcoError, Ecosystem, FileFact, InstallSettings,
+    PackageManager, Project, ProjectFacts, ProjectKind,
 };
 use crate::filesystem::{files_named, project_join, read_text, WorkspaceContext};
 
@@ -41,9 +39,24 @@ impl Analyzer for GoAnalyzer {
             relative: mod_path.clone(),
         });
 
-        let has_manifest_dependencies = read_text(ctx, &mod_path)
-            .map(|text| parse_requires(&text) > 0)
-            .unwrap_or(false);
+        // An unreadable go.mod is surfaced as a parse diagnostic (so it is not
+        // silently treated as dependency-free and can escalate under
+        // --strict-parser-errors), mirroring the other analyzers.
+        let mut parse_diagnostics = Vec::new();
+        let has_manifest_dependencies = if manifest.is_some() {
+            match read_text(ctx, &mod_path) {
+                Ok(text) => parse_requires(&text) > 0,
+                Err(err) => {
+                    parse_diagnostics.push(crate::diagnostics::Diagnostic::warn_at(
+                        format!("could not read {}: {err}", mod_path.display()),
+                        mod_path.clone(),
+                    ));
+                    false
+                }
+            }
+        } else {
+            false
+        };
 
         let sum_path = project_join(dir, "go.sum");
         let lockfiles = if contains_file(ctx, &sum_path) {
@@ -59,29 +72,14 @@ impl Analyzer for GoAnalyzer {
             configs: Vec::new(),
             has_manifest_dependencies,
             install_settings: InstallSettings::default(),
-            // A module usually keeps its own go.sum, but a Go workspace
-            // (`go.work` + `go.work.sum`) provides a shared integrity file.
-            covered_by_workspace_lockfile: covered_by_go_work(ctx, dir),
+            // Each module keeps its own go.sum. A workspace `go.work.sum`
+            // supplements (does not replace) a module's checksums, so a module
+            // missing its own go.sum is still flagged.
+            covered_by_workspace_lockfile: false,
             has_legacy_bun_lockfile: false,
-            parse_diagnostics: Vec::new(),
+            parse_diagnostics,
         })
     }
-}
-
-/// Whether a proper-ancestor `go.work` workspace holds a `go.work.sum` covering
-/// this module's checksums.
-fn covered_by_go_work(ctx: &WorkspaceContext, dir: &Path) -> bool {
-    if dir == Path::new(".") {
-        return false;
-    }
-    for work in files_named(ctx, "go.work") {
-        let root = manifest_dir(&work);
-        if is_proper_ancestor(&root, dir) && contains_file(ctx, &project_join(&root, "go.work.sum"))
-        {
-            return true;
-        }
-    }
-    false
 }
 
 /// Counts required modules in a `go.mod`, across both the block form

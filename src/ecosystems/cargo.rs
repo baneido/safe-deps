@@ -36,7 +36,10 @@ impl Analyzer for CargoAnalyzer {
                     root: dir,
                     ecosystem: Ecosystem::Rust,
                     package_manager: PackageManager::Cargo,
-                    kind: parsed.kind,
+                    // Emit Unknown so `refine_kinds` can apply user-configured
+                    // application_roots/library_roots; `facts` infers from the
+                    // crate's targets only when the kind is still Unknown.
+                    kind: ProjectKind::Unknown,
                 })
             })
             .collect()
@@ -70,8 +73,15 @@ impl Analyzer for CargoAnalyzer {
             Vec::new()
         };
 
+        // Infer kind only when the user's roots (applied by refine_kinds) left
+        // it Unknown, so configured application/library roots win.
+        let mut project = project.clone();
+        if project.kind == ProjectKind::Unknown {
+            project.kind = parsed.kind;
+        }
+
         Ok(ProjectFacts {
-            project: project.clone(),
+            project,
             manifest,
             lockfiles,
             configs: Vec::new(),
@@ -153,8 +163,11 @@ fn declares_dependencies(value: &toml::Value) -> bool {
 fn infer_kind(ctx: &WorkspaceContext, dir: &Path, value: &toml::Value) -> ProjectKind {
     let has_lib =
         value.get("lib").is_some() || contains_file(ctx, &project_join(dir, "src/lib.rs"));
-    let has_bin =
-        value.get("bin").is_some() || contains_file(ctx, &project_join(dir, "src/main.rs"));
+    // A binary is declared via `[[bin]]`, `src/main.rs`, or the `src/bin/*.rs`
+    // autobin convention.
+    let has_bin = value.get("bin").is_some()
+        || contains_file(ctx, &project_join(dir, "src/main.rs"))
+        || has_autobin(ctx, dir);
     if has_lib {
         ProjectKind::Library
     } else if has_bin {
@@ -164,10 +177,19 @@ fn infer_kind(ctx: &WorkspaceContext, dir: &Path, value: &toml::Value) -> Projec
     }
 }
 
-/// A crate is covered when a proper-ancestor `[workspace]` root holds a
-/// `Cargo.lock`, mirroring the JS/Python monorepo coverage rule. The ancestor
-/// check is a cheap `workspace`-key probe to avoid re-parsing every manifest
-/// fully for each member.
+/// Whether the crate has any `src/bin/*.rs` autobin target.
+fn has_autobin(ctx: &WorkspaceContext, dir: &Path) -> bool {
+    let bin_dir = project_join(dir, "src/bin");
+    ctx.files.iter().any(|f| {
+        f.relative.parent() == Some(bin_dir.as_path())
+            && f.relative.extension().and_then(|e| e.to_str()) == Some("rs")
+    })
+}
+
+/// A crate is covered when it is an actual member of a proper-ancestor
+/// `[workspace]` that holds a `Cargo.lock`. A crate matched by the workspace's
+/// `exclude`, or absent from an explicit `members` list, is NOT covered (it has
+/// no lockfile of its own).
 fn covered_by_workspace(ctx: &WorkspaceContext, dir: &Path) -> bool {
     if dir == Path::new(".") {
         return false;
@@ -177,22 +199,67 @@ fn covered_by_workspace(ctx: &WorkspaceContext, dir: &Path) -> bool {
         if !is_proper_ancestor(&root, dir) {
             continue;
         }
-        if is_workspace_manifest(ctx, &manifest)
-            && contains_file(ctx, &project_join(&root, "Cargo.lock"))
-        {
+        let Some(ws) = workspace_spec(ctx, &manifest) else {
+            continue;
+        };
+        if !contains_file(ctx, &project_join(&root, "Cargo.lock")) {
+            continue;
+        }
+        // Path of the crate relative to the workspace root.
+        let rel = if root == Path::new(".") {
+            dir
+        } else {
+            dir.strip_prefix(&root).unwrap_or(dir)
+        };
+        if matches_any(&ws.exclude, rel) {
+            continue;
+        }
+        // With an explicit `members` list only matching crates are covered;
+        // without one the workspace auto-includes nested path crates.
+        if ws.members.is_empty() || matches_any(&ws.members, rel) {
             return true;
         }
     }
     false
 }
 
-/// Cheap check for a `[workspace]` table without inferring kind or scanning the
-/// filesystem.
-fn is_workspace_manifest(ctx: &WorkspaceContext, manifest: &Path) -> bool {
-    read_text(ctx, manifest)
+struct WorkspaceSpec {
+    members: Vec<String>,
+    exclude: Vec<String>,
+}
+
+/// Returns the `[workspace]` membership/exclude globs if `manifest` declares a
+/// workspace, else `None`.
+fn workspace_spec(ctx: &WorkspaceContext, manifest: &Path) -> Option<WorkspaceSpec> {
+    let value: toml::Value = read_text(ctx, manifest)
         .ok()
-        .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
-        .is_some_and(|v| v.get("workspace").is_some())
+        .and_then(|text| toml::from_str(&text).ok())?;
+    let ws = value.get("workspace")?;
+    let globs = |key: &str| {
+        ws.get(key)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    Some(WorkspaceSpec {
+        members: globs("members"),
+        exclude: globs("exclude"),
+    })
+}
+
+/// Whether a relative crate path matches any workspace glob (Cargo globs are
+/// relative to the workspace root and `/`-separated).
+fn matches_any(globs: &[String], rel: &Path) -> bool {
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    globs.iter().any(|g| {
+        globset::Glob::new(g)
+            .map(|glob| glob.compile_matcher().is_match(&rel_str))
+            .unwrap_or(false)
+    })
 }
 
 #[cfg(test)]
@@ -297,5 +364,42 @@ mod tests {
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].project.root, PathBuf::from("crates/a"));
         assert!(facts[0].covered_by_workspace_lockfile);
+    }
+
+    #[test]
+    fn excluded_crate_is_not_covered_by_workspace() {
+        let dir = ws(&[
+            (
+                "Cargo.toml",
+                "[workspace]\nmembers = [\"crates/*\"]\nexclude = [\"vendored/sub\"]\n",
+            ),
+            ("Cargo.lock", "version = 3\n"),
+            (
+                "vendored/sub/Cargo.toml",
+                "[package]\nname = \"sub\"\n[dependencies]\nx = \"1\"\n",
+            ),
+            ("vendored/sub/src/lib.rs", "\n"),
+        ]);
+        let facts = facts_for(&dir);
+        let sub = facts
+            .iter()
+            .find(|f| f.project.root == std::path::Path::new("vendored/sub"))
+            .unwrap();
+        assert!(
+            !sub.covered_by_workspace_lockfile,
+            "an excluded crate is not covered by the workspace lock"
+        );
+    }
+
+    #[test]
+    fn src_bin_autobin_is_an_application() {
+        let dir = ws(&[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"app\"\n[dependencies]\nx = \"1\"\n",
+            ),
+            ("src/bin/tool.rs", "fn main() {}\n"),
+        ]);
+        assert_eq!(facts_for(&dir)[0].project.kind, ProjectKind::Application);
     }
 }

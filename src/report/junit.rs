@@ -29,8 +29,8 @@ impl Reporter for JunitReporter {
         out.push_str(&format!(
             "  <testsuite name=\"safe-deps\" tests=\"{total}\" failures=\"{failures}\" errors=\"{errors}\" skipped=\"{skipped}\">\n"
         ));
-        for (index, finding) in sorted.iter().enumerate() {
-            out.push_str(&testcase(finding, index));
+        for finding in &sorted {
+            out.push_str(&testcase(finding));
         }
         out.push_str("  </testsuite>\n");
         out.push_str("</testsuites>\n");
@@ -38,10 +38,11 @@ impl Reporter for JunitReporter {
     }
 }
 
-fn testcase(f: &Finding, index: usize) -> String {
-    // Include a stable index so two findings with an identical rule+message+path
-    // remain distinct testcases (dashboards key on classname+name).
-    let name = escape(&format!("[{index}] {}: {}", f.rule_id, f.message));
+fn testcase(f: &Finding) -> String {
+    // A stable name (rule + message) so a dashboard keeps pass/fail history
+    // across runs; the location goes in classname. Two findings that are
+    // genuinely identical (same rule, message and location) are the same case.
+    let name = escape(&format!("{}: {}", f.rule_id, f.message));
     let classname = escape(&classname(f));
     let detail = escape(&detail(f));
     let rule_id = escape(f.rule_id.as_str());
@@ -53,7 +54,11 @@ fn testcase(f: &Finding, index: usize) -> String {
         Severity::Warning => {
             format!("      <failure message=\"{message}\" type=\"{rule_id}\">{detail}</failure>\n")
         }
-        Severity::Info => format!("      <skipped message=\"{message}\"/>\n"),
+        // Carry the same detail (file:line, remediation) as the other outcomes
+        // so an informational finding is not bare in the dashboard.
+        Severity::Info => {
+            format!("      <skipped message=\"{message}\">{detail}</skipped>\n")
+        }
     };
     format!("    <testcase name=\"{name}\" classname=\"{classname}\">\n{body}    </testcase>\n")
 }
@@ -148,7 +153,11 @@ mod tests {
         assert!(xml.contains("skipped=\"1\""));
         assert!(xml.contains("<error message=\"missing Cargo.lock\" type=\"SD001\">"));
         assert!(xml.contains("<failure message=\"git dep\" type=\"SD006\">"));
-        assert!(xml.contains("<skipped message=\"note\"/>"));
+        // `<skipped>` now carries the detail (file:line, remediation) like the
+        // other outcomes, and names omit a position index so they stay stable.
+        assert!(xml.contains("<skipped message=\"note\">"));
+        assert!(xml.contains("do the thing"));
+        assert!(!xml.contains("[0]"));
     }
 
     #[test]

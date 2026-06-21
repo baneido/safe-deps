@@ -796,3 +796,52 @@ fn junit_output_is_well_formed() {
     // Errors present → process exits 1 by default.
     assert_eq!(code(&out), 1);
 }
+
+// --- Phase 4 review follow-ups (036-jp) --------------------------------------
+
+#[test]
+fn cargo_user_library_root_overrides_inferred_kind() {
+    // A lib crate (would infer Library->Warning) configured as a library root
+    // stays a warning; but a configured application_root must win and escalate
+    // to error, proving detect emits Unknown and refine_kinds applies first.
+    let ws = workspace(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"lib\"\n[dependencies]\nserde = \"1\"\n",
+        ),
+        ("src/lib.rs", "\n"),
+        ("safe-deps.toml", "[policy]\napplication_roots = [\"**\"]\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    let sd001 = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["rule_id"] == "SD001")
+        .expect("SD001");
+    assert_eq!(
+        sd001["severity"], "error",
+        "configured application_root must win"
+    );
+}
+
+#[test]
+fn go_module_missing_sum_remediation_is_go_specific() {
+    let ws = workspace(&[(
+        "go.mod",
+        "module example.com/m\n\ngo 1.21\n\nrequire github.com/x/y v1.0.0\n",
+    )]);
+    let report = check_json(&ws, &[]);
+    let sd001 = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["rule_id"] == "SD001")
+        .expect("SD001");
+    let rem = sd001["remediation"].as_str().unwrap();
+    assert!(
+        rem.contains("go mod tidy") || rem.contains("-mod=readonly"),
+        "{rem}"
+    );
+    assert!(!rem.contains("install from"));
+}
