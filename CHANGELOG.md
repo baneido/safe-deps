@@ -8,6 +8,13 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Hardened CI to production quality: a Linux/Windows/macOS test matrix,
+  informational coverage (`cargo llvm-cov`), GitHub Actions static analysis
+  (`actionlint` blocking, `zizmor` informational), and a release-build smoke
+  test. SHA-pinned actions, least privilege, and `--locked` are preserved.
+- Normalized rendered report paths to `/` separators across text, JSON, JUnit,
+  SARIF, and diagnostics output so Windows and Unix runs produce stable paths
+  for fixtures, suppressions, and downstream consumers.
 - Added `proptest`-based robustness tests for the ecosystem analyzers: property
   tests assert the offline pipeline never panics and is deterministic on random
   and semi-structured manifest content, plus targeted fixtures for edge cases

@@ -11,6 +11,7 @@ pub mod config;
 pub mod diagnostics;
 pub mod ecosystems;
 pub mod filesystem;
+pub(crate) mod path;
 pub mod project;
 pub mod report;
 pub mod rule;
