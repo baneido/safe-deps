@@ -21,11 +21,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  create-release:
+    name: create release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release
+    steps:
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        # Create the release once, up front, so the parallel build jobs only
+        # upload to it (upload-rust-binary-action uploads but does not create,
+        # and five jobs racing to create would collide). Idempotent on re-runs.
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$REPO" --title "$TAG" \
+              --generate-notes --verify-tag
+          fi
+
   build:
     name: build ${{ matrix.target }}
+    needs: create-release
     runs-on: ${{ matrix.os }}
     permissions:
-      contents: write # create the release and upload assets
+      contents: write # upload assets to the release
     strategy:
       fail-fast: false
       matrix:
