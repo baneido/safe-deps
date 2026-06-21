@@ -2,7 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-This project is in the design stage. There is no released CLI yet.
+The format is based on [Keep a Changelog](https://keepachangelog.com/). The CLI
+is implemented but not yet published to crates.io, so everything below is
+unreleased and not yet tagged.
 
 ## Unreleased
 

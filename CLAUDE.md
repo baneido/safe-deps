@@ -32,10 +32,13 @@ cargo run -- explain SD003
 cargo run -- list-rules
 ```
 
-There is **no Rust CI workflow** — only `docs.yml` (markdown lint, spell check,
-link check, `zizmor`). Run `cargo test` / `cargo clippy` locally before committing.
+Rust CI runs in `.github/workflows/ci.yml`: one job runs `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, and `cargo test`; a second job runs
+`cargo audit` and `cargo deny check`. Run `cargo test` / `cargo clippy` locally
+before committing so CI stays green.
 
-Docs/markdown changes must pass the docs CI:
+There is no separate docs/markdown CI workflow; lint docs/markdown locally before
+committing:
 
 ```bash
 npm ci                  # installs markdownlint-cli2 + cspell
