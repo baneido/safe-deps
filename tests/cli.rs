@@ -1311,7 +1311,7 @@ fn ci_complex_shell_command_emits_uncertainty_diagnostic() {
     assert!(
         diags.iter().any(|d| {
             let m = d["message"].as_str().unwrap_or("");
-            m.contains("not fully parsed") && m.contains("command substitution")
+            m.contains("complex-shell-not-fully-parsed") && m.contains("command substitution")
         }),
         "expected uncertainty diagnostic: {report}"
     );
@@ -1330,7 +1330,7 @@ fn ci_clean_shell_command_has_no_uncertainty_diagnostic() {
         !diags.iter().any(|d| d["message"]
             .as_str()
             .unwrap_or("")
-            .contains("not fully parsed")),
+            .contains("complex-shell-not-fully-parsed")),
         "a cleanly tokenized command should not emit an uncertainty diagnostic: {report}"
     );
 }
@@ -1348,7 +1348,7 @@ fn ci_complex_non_pm_command_does_not_emit_uncertainty() {
         !diags.iter().any(|d| d["message"]
             .as_str()
             .unwrap_or("")
-            .contains("not fully parsed")),
+            .contains("complex-shell-not-fully-parsed")),
         "non-package-manager complex command should not emit uncertainty: {report}"
     );
 }
@@ -1360,6 +1360,35 @@ fn ci_npm_ci_is_frozen_and_clears_sd002() {
     write(ws.path(), ".github/workflows/ci.yml", &workflow);
     let report = check_json(&ws, &[]);
     assert!(findings_for(&report, "SD002").is_empty(), "{report}");
+}
+
+#[test]
+fn ci_uncertainty_diagnostic_is_info_and_not_a_parse_failure() {
+    // A here-string on a package-manager install: pm-relevant and uncertain.
+    let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "npm install <<< \"$DEPS\"");
+    let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);
+    write(ws.path(), ".github/workflows/ci.yml", &workflow);
+    let report = check_json(&ws, &[]);
+    let diags = report["diagnostics"].as_array().unwrap();
+    let diag = diags
+        .iter()
+        .find(|d| {
+            d["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("complex-shell-not-fully-parsed")
+        })
+        .unwrap_or_else(|| panic!("expected uncertainty diagnostic, got: {diags:?}"));
+    assert_eq!(diag["level"], "info");
+    assert_eq!(diag["location"], ".github/workflows/ci.yml");
+    // Informational only: it is not a parse failure, so --strict-parser-errors
+    // does not escalate to exit code 4. `--fail-on none` isolates this from the
+    // SD002 finding the non-frozen install also produces.
+    let out = run(
+        &ws,
+        &["check", ".", "--strict-parser-errors", "--fail-on", "none"],
+    );
+    assert_eq!(code(&out), 0);
 }
 
 #[test]

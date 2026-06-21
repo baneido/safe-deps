@@ -15,6 +15,12 @@ unreleased and not yet tagged.
 - Normalized rendered report paths to `/` separators across text, JSON, JUnit,
   SARIF, and diagnostics output so Windows and Unix runs produce stable paths
   for fixtures, suppressions, and downstream consumers.
+- Added a `complex-shell-not-fully-parsed` info diagnostic that flags CI `run`
+  commands using constructs the pragmatic tokenizer cannot fully parse (command
+  and process substitution, backticks, heredocs/here-strings, and shell function
+  definitions), so reduced-confidence CI rule coverage is surfaced rather than
+  silent. Only emitted for commands that resolve to a package-manager invocation
+  (to avoid noise) and informational only — it is not a parse failure.
 - Added contributor documentation (`CONTRIBUTING.md`, `DEVELOPMENT.md`,
   `RELEASING.md`) and a generated `THIRD_PARTY_LICENSES.md` dependency-license
   report.
