@@ -8,6 +8,9 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Added contributor documentation (`CONTRIBUTING.md`, `DEVELOPMENT.md`,
+  `RELEASING.md`) and a generated `THIRD_PARTY_LICENSES.md` dependency-license
+  report.
 - Replaced the unmaintained `serde_yaml` dependency with the maintained
   `serde_yaml_ng` fork (imported under the same name; no API changes).
 - Added package-manager security best-practices research.
