@@ -31,6 +31,9 @@ pub struct PackageJson {
     pub workspaces: Workspaces,
     #[serde(default)]
     pub pnpm: Option<PnpmManifestConfig>,
+    /// Bun reads `trustedDependencies` from `package.json` (not bunfig.toml).
+    #[serde(default, alias = "trustedDependencies")]
+    pub trusted_dependencies: Vec<String>,
 }
 
 /// The subset of the `package.json` `pnpm` field that `safe-deps` reads.

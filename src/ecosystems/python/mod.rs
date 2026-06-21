@@ -179,10 +179,26 @@ fn requirements_files(ctx: &WorkspaceContext) -> Vec<PathBuf> {
 /// both `pyproject.toml` (`[project]`/`[tool.uv]` dependencies) and any
 /// `requirements*.txt` in the same directory, so SD006 covers pip and uv
 /// projects alike. A pre-parsed `pyproject` is reused to avoid a second parse.
-/// Each dependency is anchored to the file it came from. A package is reported
-/// once: pyproject is collected first and is authoritative, so a package that
-/// also appears in an exported `requirements.txt` (even with a different spec
-/// string) does not produce a duplicate SD006 finding.
+/// Each dependency is anchored to the file it came from. Exact `(name, spec)`
+/// duplicates (the same package and spec declared in both pyproject and an
+/// exported `requirements.txt`) are collapsed, but a package declared with
+/// *different* specs/sources in each is kept so an unsafe source is never
+/// dropped just because a same-named safe one was seen first.
+/// A `requirements*.txt` whose name marks it as dev/test holds development
+/// dependencies; everything else is treated as production.
+fn requirements_group(path: &Path) -> DependencyGroup {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if name.contains("dev") || name.contains("test") {
+        DependencyGroup::Development
+    } else {
+        DependencyGroup::Production
+    }
+}
+
 fn python_dependencies(
     ctx: &WorkspaceContext,
     dir: &Path,
@@ -202,6 +218,9 @@ fn python_dependencies(
         .into_iter()
         .filter(|p| project_dir(p) == *dir)
     {
+        // A `requirements-dev.txt` / `requirements/test.txt` holds dev deps, so
+        // a local editable path there is not a production-source finding.
+        let group = requirements_group(&req);
         if let Ok(r) = requirements::load(ctx, &req) {
             for spec in r.specs {
                 let bare = spec.strip_prefix("-e ").unwrap_or(&spec).trim();
@@ -209,17 +228,16 @@ fn python_dependencies(
                     name: pyproject::pep508_name(bare),
                     source: classify_python_source(&spec),
                     spec,
-                    group: DependencyGroup::Production,
+                    group,
                     file: req.clone(),
                 });
             }
         }
     }
-    // Dedup by package name (pyproject collected first wins) so the same
-    // package declared in pyproject and an exported requirements file is not
-    // reported twice, regardless of differing spec strings.
+    // Collapse exact (name, spec) duplicates only, so distinct sources for the
+    // same package both survive (SD006 still flags the unsafe one).
     let mut seen = std::collections::HashSet::new();
-    out.retain(|d| seen.insert(d.name.clone()));
+    out.retain(|d| seen.insert((d.name.clone(), d.spec.clone())));
     out
 }
 

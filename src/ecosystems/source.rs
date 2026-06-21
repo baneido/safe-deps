@@ -169,7 +169,10 @@ fn is_path_spec(s: &str) -> bool {
 /// Whether an `http(s)://` spec is actually a Git URL (its path ends in `.git`,
 /// ignoring any `#committish`).
 fn is_git_http_url(s: &str) -> bool {
-    s.split('#').next().unwrap_or(s).ends_with(".git")
+    // Strip a `#committish` and/or `?query` before testing the `.git` suffix, so
+    // a tarball URL with a `?file=…git` query is not misread as Git.
+    let path = s.split(['#', '?']).next().unwrap_or(s);
+    path.ends_with(".git")
 }
 
 /// Whether a Python spec is itself a bare URL or path (no `name @` prefix).
@@ -210,7 +213,15 @@ fn python_git_pinned(url: &str) -> bool {
     // segment still contains `/`; a real committish never does.
     let after_scheme = url.split_once("://").map(|x| x.1).unwrap_or(url);
     match after_scheme.rsplit_once('@') {
-        Some((_, committish)) if !committish.contains('/') => is_pinned_ref(committish),
+        Some((_, committish)) if !committish.contains('/') => {
+            // Trim a trailing `#subdirectory=…` fragment or ` ; env marker` that
+            // PEP 508 allows after the committish, so a pinned ref still reads as
+            // pinned.
+            let end = committish
+                .find(['#', ';', ' ', '\t'])
+                .unwrap_or(committish.len());
+            is_pinned_ref(&committish[..end])
+        }
         _ => false,
     }
 }
@@ -370,6 +381,32 @@ mod tests {
                 floating: true,
                 ssh: false
             }
+        );
+    }
+
+    #[test]
+    fn python_committish_with_fragment_or_marker_stays_pinned() {
+        assert_eq!(
+            classify_python_source("mypkg @ git+https://h/r.git@v1.0.0#subdirectory=pkg"),
+            Git {
+                floating: false,
+                ssh: false
+            }
+        );
+        assert_eq!(
+            classify_python_source("mypkg @ git+https://h/r.git@v1.0.0 ; python_version < \"3.8\""),
+            Git {
+                floating: false,
+                ssh: false
+            }
+        );
+    }
+
+    #[test]
+    fn js_query_tarball_is_not_git() {
+        assert_eq!(
+            classify_js_source("https://example.com/dl?file=pkg.git"),
+            Tarball
         );
     }
 

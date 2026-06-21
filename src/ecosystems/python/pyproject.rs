@@ -130,6 +130,14 @@ pub fn parse(text: &str) -> Pyproject {
             }
         }
     }
+    // PEP 735 `[dependency-groups]`: each group is an array of PEP 508 strings
+    // (and `{ include-group = … }` directives, which carry no source and are
+    // skipped). Treat them as development dependencies for SD006.
+    if let Some(groups) = value.get("dependency-groups").and_then(|g| g.as_table()) {
+        for group in groups.values() {
+            dev_dependencies.extend(collect_string_array(Some(group)));
+        }
+    }
     let has_dependencies = !dependencies.is_empty()
         || !optional_dependencies.is_empty()
         || !dev_dependencies.is_empty();

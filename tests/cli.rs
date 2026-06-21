@@ -949,3 +949,57 @@ extra-index-url = [\"https://pypi.internal/simple\"]
     let sd007 = findings_of(&check_json(&ws, &[]), "SD007");
     assert_eq!(sd007.len(), 1, "expected dedup to one finding: {:?}", sd007);
 }
+
+// --- Phase 3 review follow-ups (036-jp) --------------------------------------
+
+#[test]
+fn sd006_keeps_unsafe_requirements_source_over_safe_pyproject() {
+    // pyproject declares a safe `foo`; requirements declares the unsafe git
+    // `foo`. Name-only dedup would drop the git one — it must be flagged.
+    let ws = workspace(&[
+        (
+            "pyproject.toml",
+            "[project]\nname = \"x\"\ndependencies = [\"foo>=1\"]\n",
+        ),
+        ("requirements.txt", "foo @ git+https://h/r.git\n"),
+        ("uv.lock", ""),
+    ]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{:?}", sd006);
+    assert_eq!(sd006[0]["location"]["file"], "requirements.txt");
+}
+
+#[test]
+fn sd006_dev_requirements_editable_path_is_not_flagged() {
+    // A local editable path in requirements-dev.txt is the intended dev pattern.
+    let ws = workspace(&[("requirements-dev.txt", "-e ./tools/mylib\n")]);
+    assert!(findings_of(&check_json(&ws, &[]), "SD006").is_empty());
+}
+
+#[test]
+fn sd006_flags_pep735_dependency_group_git() {
+    let pyproject = "\
+[project]
+name = \"x\"
+dependencies = [\"requests>=2\"]
+[dependency-groups]
+dev = [\"internal @ git+https://h/r.git\"]
+";
+    let ws = workspace(&[("pyproject.toml", pyproject), ("uv.lock", "")]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{:?}", sd006);
+    assert!(sd006[0]["message"].as_str().unwrap().contains("internal"));
+}
+
+#[test]
+fn sd005_flags_bun_trusted_wildcard_in_package_json() {
+    // Bun reads trustedDependencies from package.json, not bunfig.toml.
+    let ws = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "d", "dependencies": { "a": "^1" }, "trustedDependencies": ["*"] }"#,
+        ),
+        ("bun.lock", ""),
+    ]);
+    assert_eq!(findings_of(&check_json(&ws, &[]), "SD005").len(), 1);
+}

@@ -328,10 +328,19 @@ fn build_install_settings(
             settings.yarn_generation = Some(yarn::detect_generation(ctx, dir, has_yml, has_v1));
         }
         PackageManager::Bun => {
+            // Bun reads `trustedDependencies` from package.json; an older bunfig
+            // form is also accepted. Merge both sources.
+            if let Some(pj) = package_json {
+                settings
+                    .trusted_dependencies
+                    .extend(pj.trusted_dependencies.iter().cloned());
+            }
             let bunfig = project_join(dir, "bunfig.toml");
             if has_file_in(ctx, dir, "bunfig.toml") {
                 if let Ok(bunfig_settings) = bun::load_bunfig(ctx, &bunfig) {
-                    settings.trusted_dependencies = bunfig_settings.trusted_dependencies;
+                    settings
+                        .trusted_dependencies
+                        .extend(bunfig_settings.trusted_dependencies);
                 }
             }
         }
