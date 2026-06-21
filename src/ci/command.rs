@@ -264,17 +264,21 @@ pub fn is_install(inv: &Invocation) -> bool {
 /// ordinary command substitution (`$(…)`, backticks) is parsed acceptably and is
 /// not flagged, to keep the signal low-noise.
 pub fn uncertainty(command: &str) -> Option<&'static str> {
-    // Heredoc / here-string (`<<`, `<<-`, `<<<`): the tokenizer treats `<` as a
-    // redirection separator and cannot capture the heredoc body.
-    if command.contains("<<") {
+    // Heredoc / here-string and process substitution use the `<`/`>` redirection
+    // operators the segmenter consumes, so scan a "skeleton" with quoted spans
+    // and `$((…))` arithmetic removed — this avoids matching `<<`/`<(` inside a
+    // string literal (`echo "a << b"`) or a left-shift (`$((1<<2))`).
+    let skeleton = strip_quoted(&strip_arithmetic(command));
+    if has_heredoc(&skeleton) {
         return Some("heredoc / here-string");
     }
-    // Process substitution (`<(…)`, `>(…)`): split on the `<`/`>` separator.
-    if command.contains("<(") || command.contains(">(") {
+    if skeleton.contains("<(") || skeleton.contains(">(") {
         return Some("process substitution");
     }
-    // Shell function definition (`function f { … }` or `f() { … }`): the
-    // tokenizer does not model the body, so its commands are not seen.
+    // Shell function definitions are command-position constructs, so check the
+    // quote-aware segments rather than the raw string: this flags `function f {`
+    // and `f() { … }` but not a `function`/`()` that appears inside an argument
+    // (`echo "a function"`), a comment, or a flag value (`--only function`).
     if is_function_definition(command) {
         return Some("shell function definition");
     }
@@ -282,19 +286,89 @@ pub fn uncertainty(command: &str) -> Option<&'static str> {
 }
 
 /// Whether `command` declares a shell function, in either the `function name`
-/// keyword form or the POSIX `name() {` form.
+/// keyword form or the POSIX `name() {` form, at the start of any statement.
 fn is_function_definition(command: &str) -> bool {
-    if command
-        .split([' ', '\t', ';', '&', '(', ')'])
-        .any(|t| t == "function")
-    {
-        return true;
+    segments(command).iter().any(|seg| {
+        seg.first().is_some_and(|first| {
+            // `function name …`
+            first == "function"
+                // `name()` — the function name token ends in an empty `()` pair.
+                // (Process/command substitution put `(` mid-token or after `<`/`$`,
+                // so their first segment token does not end in `()`.)
+                || (first.len() > 2 && first.ends_with("()"))
+        })
+    })
+}
+
+/// Removes `$((…))` arithmetic spans, where a `<<` is a left-shift rather than a
+/// heredoc. Approximate (matches the first `))`), which is sufficient here.
+fn strip_arithmetic(command: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut rest = command;
+    while let Some(start) = rest.find("$((") {
+        out.push_str(&rest[..start]);
+        rest = match rest[start..].find("))") {
+            Some(end) => &rest[start + end + 2..],
+            None => &rest[start + 3..],
+        };
     }
-    // `name() {`: an empty `()` pair followed (after optional whitespace) by `{`.
-    // This excludes empty command substitution `$()`, which is not followed by
-    // `{`, and process substitution, whose parens are not empty.
-    if let Some(idx) = command.find("()") {
-        return command[idx + 2..].trim_start().starts_with('{');
+    out.push_str(rest);
+    out
+}
+
+/// Removes single- and double-quoted spans (and their quote characters), so a
+/// `<<`/`<(` inside a string literal is not mistaken for a real operator.
+fn strip_quoted(command: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut quote: Option<char> = None;
+    for c in command.chars() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if c == '\'' || c == '"' {
+                    quote = Some(c);
+                } else {
+                    out.push(c);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether `skeleton` (quotes/arithmetic already stripped) contains a heredoc
+/// (`<<DELIM`, `<<-DELIM`) or here-string (`<<<`). A bare `<<` followed by a
+/// digit/operator (a left-shift the arithmetic strip missed) is not a heredoc.
+fn has_heredoc(skeleton: &str) -> bool {
+    let chars: Vec<char> = skeleton.chars().collect();
+    let mut i = 0;
+    while i + 1 < chars.len() {
+        if chars[i] == '<' && chars[i + 1] == '<' {
+            // Here-string `<<<`.
+            if chars.get(i + 2) == Some(&'<') {
+                return true;
+            }
+            let mut j = i + 2;
+            if chars.get(j) == Some(&'-') {
+                j += 1;
+            }
+            while matches!(chars.get(j), Some(' ') | Some('\t')) {
+                j += 1;
+            }
+            // A heredoc delimiter starts with a word char or quote/backslash.
+            if let Some(&d) = chars.get(j) {
+                if d.is_alphabetic() || d == '_' || d == '"' || d == '\'' || d == '\\' {
+                    return true;
+                }
+            }
+            i += 2;
+            continue;
+        }
+        i += 1;
     }
     false
 }
@@ -358,6 +432,20 @@ mod tests {
         assert_eq!(uncertainty("echo $(date) > log"), None);
         assert_eq!(uncertainty("VERSION=`git rev-parse HEAD` make"), None);
         assert_eq!(uncertainty("pip install -r requirements.txt"), None);
+    }
+
+    #[test]
+    fn does_not_false_positive_on_the_word_function_or_quoted_or_shift() {
+        // `function`/`()` only count at command position, not inside arguments,
+        // flag values, or comment lines (block scalars emit comments verbatim).
+        assert_eq!(uncertainty("echo \"this function checks the build\""), None);
+        assert_eq!(uncertainty("firebase deploy --only function"), None);
+        assert_eq!(uncertainty("# helper function to install deps"), None);
+        assert_eq!(uncertainty("python -c \"def f(): pass\""), None);
+        // `<<` inside quotes or as an arithmetic left-shift is not a heredoc.
+        assert_eq!(uncertainty("echo \"value << shifted\""), None);
+        assert_eq!(uncertainty("echo $((1 << 2))"), None);
+        assert_eq!(uncertainty("RESULT=$((x<<y)) make"), None);
     }
 
     #[test]
