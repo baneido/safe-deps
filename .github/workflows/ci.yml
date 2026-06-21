@@ -28,13 +28,10 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
           components: rustfmt, clippy
-      - name: Cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -56,12 +53,8 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
-        with:
-          toolchain: stable
-      - name: Cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
       - name: Test
         run: cargo test --locked
 
@@ -73,10 +66,11 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
+          # audit/deny don't compile the crate, so the build cache buys nothing.
+          cache: "false"
       - name: Install cargo-audit and cargo-deny
         uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
         with:
@@ -91,24 +85,23 @@ jobs:
   coverage:
     name: coverage (informational)
     runs-on: ubuntu-latest
-    # Coverage is reported, not gated: a drop should not block a PR yet.
-    continue-on-error: true
+    # Coverage is informational: no threshold is set, so a coverage *drop* never
+    # fails the job. It is intentionally NOT continue-on-error, though, so that
+    # genuine breakage (a failing test or the coverage tooling erroring out) is
+    # surfaced as a red check instead of being hidden behind a green job.
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
           components: llvm-tools-preview
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
         with:
           tool: cargo-llvm-cov@0.6.21
-      - name: Cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Coverage summary
         run: cargo llvm-cov --locked --workspace --summary-only
 
@@ -146,12 +139,8 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
-        with:
-          toolchain: stable
-      - name: Cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
       - name: Release build
         run: cargo build --release --locked
       - name: Smoke run
