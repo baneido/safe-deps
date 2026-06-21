@@ -104,7 +104,8 @@ struct CargoManifest {
     has_dependencies: bool,
     kind: ProjectKind,
     /// Non-registry dependencies (git/path) and `[patch]`/`[replace]`
-    /// redirects, for SD006. Empty for `detect`-only parses where it is unused.
+    /// redirects, for SD006. Computed on every manifest parse but only consumed
+    /// via `facts`; the value produced during `detect` is discarded.
     dependencies: Vec<Dependency>,
 }
 

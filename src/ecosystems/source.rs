@@ -173,14 +173,19 @@ pub fn classify_cargo_dependency(value: &toml::Value) -> DependencySource {
         return DependencySource::Path;
     }
     if let Some(git) = table.get("git").and_then(|v| v.as_str()) {
-        // Cargo pins a git dependency only via an explicit commit `rev` or a
-        // release `tag`; a `branch` (or no ref at all, which tracks the default
-        // branch) is floating.
-        let pinned = table.contains_key("rev") || table.contains_key("tag");
-        let ssh = git.starts_with("ssh://") || git.starts_with("git@") || git.contains("git+ssh");
+        // Pinned by a commit `rev`, or by a `tag` that names an immutable
+        // release (a version tag or SHA). A `branch`, an arbitrary moving tag
+        // (`latest`, `nightly`), or no ref at all tracks a moving target — same
+        // pinned/floating test the JS/Python classifiers use. Cargo `git =`
+        // fields are full URLs, so SSH is just the `ssh://` scheme.
+        let pinned = table.contains_key("rev")
+            || table
+                .get("tag")
+                .and_then(|v| v.as_str())
+                .is_some_and(is_pinned_ref);
         return DependencySource::Git {
             floating: !pinned,
-            ssh,
+            ssh: git.starts_with("ssh://"),
         };
     }
     DependencySource::Registry
@@ -192,15 +197,23 @@ pub fn classify_cargo_dependency(value: &toml::Value) -> DependencySource {
 /// still proxy-resolved and checksummed.
 pub fn classify_go_replace_target(target: &str) -> DependencySource {
     let t = target.trim();
-    if t.starts_with("./")
+    let is_local = t.starts_with("./")
         || t.starts_with("../")
         || t.starts_with('/')
         || t.starts_with(".\\")
         || t.starts_with("..\\")
-    {
-        return DependencySource::Path;
+        || is_windows_abs_path(t);
+    if is_local {
+        DependencySource::Path
+    } else {
+        DependencySource::Registry
     }
-    DependencySource::Registry
+}
+
+/// Whether a path is a Windows drive-absolute path like `C:\dev` or `C:/dev`.
+fn is_windows_abs_path(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
 }
 
 fn is_path_spec(s: &str) -> bool {
@@ -363,6 +376,14 @@ mod tests {
                 ssh: false
             }
         );
+        // A moving (non-version) tag is floating, matching the JS/Python rule.
+        assert_eq!(
+            cargo("x = { git = \"https://h/r.git\", tag = \"latest\" }"),
+            Git {
+                floating: true,
+                ssh: false
+            }
+        );
         assert_eq!(
             cargo("x = { git = \"ssh://git@h/r.git\" }"),
             Git {
@@ -370,6 +391,12 @@ mod tests {
                 ssh: true
             }
         );
+    }
+
+    #[test]
+    fn go_windows_absolute_replace_is_path() {
+        assert_eq!(classify_go_replace_target("C:\\dev\\local"), Path);
+        assert_eq!(classify_go_replace_target("D:/dev/local"), Path);
     }
 
     #[test]

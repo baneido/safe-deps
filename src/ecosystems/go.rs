@@ -90,8 +90,6 @@ impl Analyzer for GoAnalyzer {
     }
 }
 
-/// Counts required modules in a `go.mod`, across both the block form
-/// (`require ( … )`) and single-line `require path version` directives.
 /// Extracts SD006-relevant dependencies from `replace` directives. A `replace`
 /// to a local filesystem path is unsafe (it is ignored outside the main module,
 /// so consumers cannot resolve it); module-to-module replacements and ordinary
@@ -158,6 +156,8 @@ fn push_replace(spec: &str, file: &Path, out: &mut Vec<Dependency>) {
     });
 }
 
+/// Counts required modules in a `go.mod`, across both the block form
+/// (`require ( … )`) and single-line `require path version` directives.
 fn parse_requires(text: &str) -> usize {
     let mut count = 0;
     let mut in_block = false;
