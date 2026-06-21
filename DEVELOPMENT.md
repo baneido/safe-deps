@@ -55,9 +55,9 @@ transport. `check` never touches the network — keep it that way.
   `src/rules/`. The normalized cross-package-manager settings struct is
   `InstallSettings` in `ecosystems/mod.rs`; `None`/empty means "not declared",
   distinct from an explicit unsafe value.
-- `src/ecosystems/` has four analyzers (`javascript/`, `python/`, `cargo/`,
-  `go/`) registered in `ecosystems::analyzers()`, each implementing the
-  `Analyzer` trait (`detect` + `facts`).
+- `src/ecosystems/` has four analyzers (`javascript`, `python`, `cargo`, `go`)
+  registered in `ecosystems::analyzers()`, each implementing the `Analyzer`
+  trait (`detect` + `facts`).
 - `src/ci/` parses CI workflows into `CiFacts` (run commands with file/line plus
   `env`) via pluggable providers (GitHub Actions, GitLab CI, CircleCI). These
   feed the CI-derived rules (SD002/SD008/SD009). `ci/command.rs` is a pragmatic
@@ -69,8 +69,8 @@ transport. `check` never touches the network — keep it that way.
 
 A **Finding** is a policy issue in the target repo (rule id, severity,
 confidence, remediation). A **Diagnostic** is a limitation of the linter run
-itself (unparseable file, expired/unused suppression, complex-shell uncertainty).
-Parse failures emit warning Diagnostics and analysis continues;
+itself (unparseable file, expired/unused suppression). Parse failures emit
+warning Diagnostics and analysis continues;
 `--strict-parser-errors` escalates a run with any parse failure to exit code 4.
 
 ### Determinism and exit codes
