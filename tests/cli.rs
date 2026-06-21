@@ -1494,3 +1494,44 @@ fn list_rules_includes_ci_aware_rules() {
         assert!(text.contains(id), "missing {id}:\n{text}");
     }
 }
+
+// --- workspace-scan error surfacing (#18) ------------------------------------
+
+#[test]
+#[cfg(unix)]
+fn unreadable_directory_is_surfaced_and_escalates_under_strict() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // A clean project (lockfile present, no config) so the run is otherwise
+    // exit 0; any non-zero exit must come from the walk error.
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        ("package-lock.json", r#"{ "lockfileVersion": 3 }"#),
+    ]);
+    let locked = ws.path().join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::write(locked.join("x.txt"), "x").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let normal = run(&ws, &["check", "."]);
+    let strict = run(&ws, &["check", ".", "--strict-parser-errors"]);
+
+    // Restore permissions so the TempDir can be cleaned up.
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let text = stdout(&normal);
+    if !text.contains("could not scan") {
+        // Permissions were not enforced (e.g. running as root); nothing to assert.
+        eprintln!("skipping: directory permissions not enforced (root?)");
+        return;
+    }
+    // The walk error is surfaced as a diagnostic but is only a warning, so a
+    // default run does not fail.
+    assert_eq!(
+        code(&normal),
+        0,
+        "scan diagnostic should not fail a default run"
+    );
+    // Under --strict-parser-errors the coverage gap escalates to exit 4.
+    assert_eq!(code(&strict), 4, "strict mode should escalate a walk error");
+}

@@ -288,7 +288,10 @@ fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
     .map_err(CliError::internal)?;
 
     // Surface lockfile read/parse failures so an unparsed lockfile is not read
-    // as a clean result.
+    // as a clean result, plus any directory-walk failures from scanning.
+    report
+        .diagnostics
+        .extend(ctx.scan_diagnostics.iter().map(|d| d.message.clone()));
     report.diagnostics.extend(collected.diagnostics);
 
     if offline_unchecked > 0 {
