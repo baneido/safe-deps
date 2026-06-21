@@ -80,40 +80,67 @@ pub fn segments(command: &str) -> Vec<Vec<String>> {
     segments
 }
 
-/// The leaf program name of a segment, with any path prefix removed
-/// (`/usr/bin/npm` -> `npm`). Returns `None` for an empty segment or a leading
-/// environment assignment such as `CI=true` (which is skipped to the program).
-pub fn program(tokens: &[String]) -> Option<&str> {
-    for tok in tokens {
-        // Skip leading `VAR=value` environment-prefix assignments.
-        if tok.contains('=') && !tok.starts_with('-') {
+/// Command wrappers that prefix the real program (`sudo npm ci`,
+/// `env FOO=1 pip install`, `xvfb-run -a pytest`). They are skipped so the
+/// underlying package manager is still recognized.
+const WRAPPERS: &[&str] = &[
+    "sudo",
+    "doas",
+    "env",
+    "command",
+    "nice",
+    "ionice",
+    "xvfb-run",
+    "time",
+    "exec",
+    "setsid",
+    "stdbuf",
+    "caffeinate",
+];
+
+fn leaf(token: &str) -> &str {
+    token.rsplit(['/', '\\']).next().unwrap_or(token)
+}
+
+fn is_env_assignment(token: &str) -> bool {
+    token.contains('=') && !token.starts_with('-')
+}
+
+/// The index of the real program token, skipping leading `VAR=value` env
+/// assignments and wrapper commands (with their dashed flags).
+fn effective_start(tokens: &[String]) -> Option<usize> {
+    let mut idx = 0;
+    loop {
+        while idx < tokens.len() && is_env_assignment(&tokens[idx]) {
+            idx += 1;
+        }
+        let tok = tokens.get(idx)?;
+        if WRAPPERS.contains(&leaf(tok)) {
+            idx += 1;
+            while idx < tokens.len() && tokens[idx].starts_with('-') {
+                idx += 1;
+            }
             continue;
         }
-        let name = tok.rsplit(['/', '\\']).next().unwrap_or(tok.as_str());
-        return Some(name);
+        return Some(idx);
     }
-    None
+}
+
+/// The leaf program name of a segment, with any path prefix removed
+/// (`/usr/bin/npm` -> `npm`), skipping leading env assignments and wrapper
+/// commands. Returns `None` for an empty segment.
+pub fn program(tokens: &[String]) -> Option<&str> {
+    effective_start(tokens).map(|s| leaf(&tokens[s]))
 }
 
 /// The first non-flag token after the program, e.g. the `install` in
-/// `npm install --foo`. Environment-prefix assignments before the program are
-/// skipped. Flags (`-x`, `--y`) are not treated as subcommands.
+/// `npm install --foo` (also seeing through wrappers like `sudo npm install`).
 pub fn subcommand(tokens: &[String]) -> Option<&str> {
-    let mut seen_program = false;
-    for tok in tokens {
-        if !seen_program {
-            if tok.contains('=') && !tok.starts_with('-') {
-                continue;
-            }
-            seen_program = true;
-            continue;
-        }
-        if tok.starts_with('-') {
-            continue;
-        }
-        return Some(tok.as_str());
-    }
-    None
+    let start = effective_start(tokens)?;
+    tokens[start + 1..]
+        .iter()
+        .find(|t| !t.starts_with('-'))
+        .map(|t| t.as_str())
 }
 
 /// Whether a segment carries `flag` as enabled — either bare (`--frozen`) or
@@ -157,26 +184,19 @@ pub struct Invocation {
     pub sub: Option<String>,
 }
 
-/// The positional (non-flag) arguments of a segment after the program, with
-/// leading `VAR=value` environment prefixes and the program token removed.
-fn positionals(tokens: &[String]) -> Vec<&str> {
-    let mut seen_program = false;
-    let mut out = Vec::new();
-    for tok in tokens {
-        if tok.starts_with('-') {
-            continue;
-        }
-        if !seen_program {
-            // Skip `VAR=value` env prefixes that precede the program.
-            if tok.contains('=') {
-                continue;
-            }
-            seen_program = true;
-            continue;
-        }
-        out.push(tok.as_str());
-    }
-    out
+/// The positional (non-flag) arguments of a segment after the program (skipping
+/// env prefixes and wrappers). For `npm install left-pad` this is
+/// `["install", "left-pad"]`; SD002 uses the count to tell a full install from
+/// adding a specific package.
+pub fn positionals(tokens: &[String]) -> Vec<&str> {
+    let Some(start) = effective_start(tokens) else {
+        return Vec::new();
+    };
+    tokens[start + 1..]
+        .iter()
+        .filter(|t| !t.starts_with('-'))
+        .map(|t| t.as_str())
+        .collect()
 }
 
 /// Normalizes a segment into an [`Invocation`], or `None` if the program is not
@@ -257,6 +277,20 @@ mod tests {
         let s = seg("CI=true /usr/local/bin/pnpm install");
         assert_eq!(program(&s[0]), Some("pnpm"));
         assert_eq!(subcommand(&s[0]), Some("install"));
+    }
+
+    #[test]
+    fn sees_through_wrapper_commands() {
+        for cmd in [
+            "sudo pip install --break-system-packages requests",
+            "env PIP_NO_INPUT=1 pip install --break-system-packages requests",
+            "sudo -H pip install --break-system-packages requests",
+        ] {
+            let s = seg(cmd);
+            assert_eq!(program(&s[0]), Some("pip"), "{cmd}");
+            assert_eq!(subcommand(&s[0]), Some("install"), "{cmd}");
+            assert!(has_flag(&s[0], "--break-system-packages"), "{cmd}");
+        }
     }
 
     #[test]

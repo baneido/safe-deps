@@ -778,6 +778,15 @@ fn ci_dangerous_force_flag_reports_sd009() {
 }
 
 #[test]
+fn ci_clean_install_has_no_sd009() {
+    // A safe install (no dangerous flags) must produce no SD009 finding.
+    let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "npm ci");
+    let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);
+    write(ws.path(), ".github/workflows/ci.yml", &workflow);
+    assert!(findings_for(&check_json(&ws, &[]), "SD009").is_empty());
+}
+
+#[test]
 fn ci_install_without_audit_reports_sd008() {
     let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "npm ci");
     let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);

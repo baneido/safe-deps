@@ -202,7 +202,6 @@ pub struct RuleInput<'a> {
 /// rules (e.g. SD002, SD009) use this so a single unsafe CI command produces one
 /// finding regardless of how many projects the workspace contains.
 pub struct WorkspaceInput<'a> {
-    pub projects: &'a [ProjectFacts],
     pub ci: &'a CiFacts,
     pub profile: Profile,
     pub policy: &'a Policy,

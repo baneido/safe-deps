@@ -36,6 +36,26 @@ struct SarifLog {
 struct SarifRun {
     tool: SarifTool,
     results: Vec<SarifResult>,
+    /// Linter-run notes (parse failures, expired suppressions). SARIF carries
+    /// these on the invocation, separate from findings.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    invocations: Vec<SarifInvocation>,
+}
+
+#[derive(Serialize)]
+struct SarifInvocation {
+    #[serde(rename = "executionSuccessful")]
+    execution_successful: bool,
+    #[serde(rename = "toolExecutionNotifications")]
+    tool_execution_notifications: Vec<SarifNotification>,
+}
+
+#[derive(Serialize)]
+struct SarifNotification {
+    level: &'static str,
+    message: SarifText,
+    #[serde(rename = "locations", skip_serializing_if = "Vec::is_empty")]
+    locations: Vec<SarifLocation>,
 }
 
 #[derive(Serialize)]
@@ -145,6 +165,19 @@ impl SarifLog {
             .map(|f| sarif_result(f, index_of(f.rule_id.as_str())))
             .collect();
 
+        // Surface linter-run diagnostics on the invocation, matching the text
+        // and JSON reporters which both include them.
+        let notifications: Vec<SarifNotification> =
+            report.diagnostics.iter().map(sarif_notification).collect();
+        let invocations = if notifications.is_empty() {
+            Vec::new()
+        } else {
+            vec![SarifInvocation {
+                execution_successful: true,
+                tool_execution_notifications: notifications,
+            }]
+        };
+
         SarifLog {
             schema: SCHEMA,
             version: "2.1.0",
@@ -158,8 +191,39 @@ impl SarifLog {
                     },
                 },
                 results,
+                invocations,
             }],
         }
+    }
+}
+
+fn sarif_notification(d: &crate::diagnostics::Diagnostic) -> SarifNotification {
+    use crate::diagnostics::DiagnosticLevel;
+    let level = match d.level {
+        DiagnosticLevel::Error => "error",
+        DiagnosticLevel::Warning => "warning",
+        DiagnosticLevel::Info => "note",
+    };
+    let locations = d
+        .location
+        .as_ref()
+        .map(|p| {
+            vec![SarifLocation {
+                physical_location: SarifPhysicalLocation {
+                    artifact_location: SarifArtifactLocation {
+                        uri: p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"),
+                    },
+                    region: None,
+                },
+            }]
+        })
+        .unwrap_or_default();
+    SarifNotification {
+        level,
+        message: SarifText {
+            text: d.message.clone(),
+        },
+        locations,
     }
 }
 
@@ -213,6 +277,27 @@ mod tests {
         let mut r = Report::new(PathBuf::from("."), Profile::Balanced, "0.1.0");
         r.findings.push(finding);
         r
+    }
+
+    #[test]
+    fn diagnostics_are_emitted_as_invocation_notifications() {
+        let mut r = Report::new(PathBuf::from("."), Profile::Balanced, "0.1.0");
+        r.diagnostics.push(crate::diagnostics::Diagnostic::warn_at(
+            "could not parse pkg/package.json",
+            PathBuf::from("pkg/package.json"),
+        ));
+        let bytes = SarifReporter.format(&r).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let note = &v["runs"][0]["invocations"][0]["toolExecutionNotifications"][0];
+        assert_eq!(note["level"], "warning");
+        assert!(note["message"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("could not parse"));
+        assert_eq!(
+            note["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "pkg/package.json"
+        );
     }
 
     #[test]

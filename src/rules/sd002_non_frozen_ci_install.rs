@@ -61,15 +61,20 @@ fn classify(tokens: &[String], profile: Profile) -> Option<Hit> {
     let sub = inv.sub.as_deref();
     match inv.pm {
         PackageManager::Npm => match sub {
-            // `npm add` rewrites the manifest/lockfile, so `npm ci` is not a
-            // substitute; only the resolving install forms are flagged here.
-            Some("install") | Some("i") if !is_global(tokens) => Some(Hit {
-                pm: PackageManager::Npm,
-                severity: Severity::Error,
-                confidence: Confidence::High,
-                message: format!("`npm {}` resolves dependencies in CI", sub.unwrap()),
-                remediation: "use `npm ci`, which installs strictly from package-lock.json.",
-            }),
+            // Only a *full* resolving install is flagged. `npm install <pkg>`
+            // (a positional arg beyond the subcommand) adds a specific package
+            // and rewrites the manifest/lockfile like `npm add`, for which
+            // `npm ci` is not a substitute — so it is exempt, same as global
+            // installs.
+            Some("install") | Some("i") if !is_global(tokens) && !adds_specific_package(tokens) => {
+                Some(Hit {
+                    pm: PackageManager::Npm,
+                    severity: Severity::Error,
+                    confidence: Confidence::High,
+                    message: format!("`npm {}` resolves dependencies in CI", sub.unwrap()),
+                    remediation: "use `npm ci`, which installs strictly from package-lock.json.",
+                })
+            }
             _ => None,
         },
         // Bare `yarn` is equivalent to `yarn install`.
@@ -177,6 +182,13 @@ fn is_global(tokens: &[String]) -> bool {
     command::has_any_flag(tokens, &["-g", "--global", "--location=global"])
 }
 
+/// Whether the install names a specific package (a positional beyond the
+/// subcommand), e.g. `npm install left-pad` — which adds a dependency rather
+/// than resolving the whole tree.
+fn adds_specific_package(tokens: &[String]) -> bool {
+    command::positionals(tokens).len() > 1
+}
+
 fn make_finding(cmd: &CiCommand, hit: Hit) -> Finding {
     let ecosystem = hit.pm.ecosystem();
     Finding {
@@ -210,6 +222,9 @@ mod tests {
         assert!(one("npm ci", Profile::Balanced).is_none());
         // `npm add` is not a non-frozen reinstall; `npm ci` is no substitute.
         assert!(one("npm add left-pad", Profile::Balanced).is_none());
+        // `npm install <pkg>` adds a specific package (like `npm add`); exempt.
+        assert!(one("npm install --no-save eslint", Profile::Balanced).is_none());
+        assert!(one("npm i left-pad", Profile::Balanced).is_none());
     }
 
     #[test]

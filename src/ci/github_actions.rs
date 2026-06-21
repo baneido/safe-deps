@@ -56,13 +56,19 @@ fn extract_run_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
     let mut i = 0;
     while i < lines.len() {
         let raw = lines[i];
-        let Some((key_indent, value)) = run_key_value(raw) else {
+        let Some((key_indent, key, value)) = mapping_key(raw) else {
             i += 1;
             continue;
         };
         if is_block_scalar_indicator(value) {
-            // Consume the block: following lines indented deeper than the key.
+            // Consume the whole block scalar for ANY key, but only emit commands
+            // for `run:`. This prevents an inner `run:`-looking line inside a
+            // non-run block (e.g. a github-script `with.script: |`) from being
+            // mis-parsed as a CI command.
+            let is_run = key == "run";
             let mut block_indent: Option<usize> = None;
+            // Buffer for joining backslash-continued lines into one command.
+            let mut pending: Option<(u32, String)> = None;
             let mut j = i + 1;
             while j < lines.len() {
                 let line = lines[j];
@@ -74,28 +80,34 @@ fn extract_run_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
                 if indent <= key_indent {
                     break;
                 }
-                let bi = *block_indent.get_or_insert(indent);
-                let content = dedent(line, bi);
-                let trimmed = content.trim_end();
-                if !trimmed.trim().is_empty() {
-                    commands.push(CiCommand {
-                        file: relative.to_path_buf(),
-                        line: (j as u32) + 1,
-                        command: trimmed.to_string(),
-                    });
+                if is_run {
+                    let bi = *block_indent.get_or_insert(indent);
+                    let content = dedent(line, bi).trim_end();
+                    if !content.trim().is_empty() {
+                        push_run_line(&mut commands, &mut pending, relative, j, content);
+                    }
                 }
                 j += 1;
             }
-            i = j;
-        } else {
-            // Inline scalar on the same line as `run:`.
-            let command = clean_inline_scalar(value);
-            if !command.is_empty() {
+            if let Some((line_no, command)) = pending.take() {
                 commands.push(CiCommand {
                     file: relative.to_path_buf(),
-                    line: (i as u32) + 1,
+                    line: line_no,
                     command,
                 });
+            }
+            i = j;
+        } else {
+            if key == "run" {
+                // Inline scalar on the same line as `run:`.
+                let command = clean_inline_scalar(value);
+                if !command.is_empty() {
+                    commands.push(CiCommand {
+                        file: relative.to_path_buf(),
+                        line: (i as u32) + 1,
+                        command,
+                    });
+                }
             }
             i += 1;
         }
@@ -103,30 +115,73 @@ fn extract_run_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
     commands
 }
 
-/// If `line` is a `run:` mapping key, returns `(key_column, value_after_colon)`,
-/// where `key_column` is the column at which the `run` key begins. Handles an
-/// optional `- ` sequence marker (`- run: …`); for that form the key column is
-/// the column of `run`, not of the `-`, so sibling step keys (which align with
-/// `run`) are correctly treated as outside the block scalar.
-fn run_key_value(line: &str) -> Option<(usize, &str)> {
+/// Appends a block-scalar content line to `commands`, joining shell line
+/// continuations (`\` at end of line) so a command and its flags stay together.
+fn push_run_line(
+    commands: &mut Vec<CiCommand>,
+    pending: &mut Option<(u32, String)>,
+    relative: &Path,
+    line_idx: usize,
+    content: &str,
+) {
+    let line_no = (line_idx as u32) + 1;
+    if let Some(rest) = content.strip_suffix('\\') {
+        let piece = rest.trim();
+        match pending {
+            Some((_, acc)) => {
+                acc.push(' ');
+                acc.push_str(piece);
+            }
+            None => *pending = Some((line_no, piece.to_string())),
+        }
+        return;
+    }
+    let piece = content.trim();
+    match pending.take() {
+        Some((start, mut acc)) => {
+            acc.push(' ');
+            acc.push_str(piece);
+            commands.push(CiCommand {
+                file: relative.to_path_buf(),
+                line: start,
+                command: acc,
+            });
+        }
+        None => commands.push(CiCommand {
+            file: relative.to_path_buf(),
+            line: line_no,
+            command: piece.to_string(),
+        }),
+    }
+}
+
+/// If `line` is a block-mapping key (`key: value`, optionally introduced by a
+/// `- ` sequence marker), returns `(key_column, key, value_after_colon)`.
+/// `key_column` is the column at which the key begins — for the `- key:` form
+/// it is the column of the key, not of the `-`, so sibling keys (which align
+/// with the key) are correctly treated as outside a block scalar.
+fn mapping_key(line: &str) -> Option<(usize, &str, &str)> {
     let indent = leading_spaces(line);
-    let after_indent = &line[indent..];
     let mut key_column = indent;
-    let mut rest = after_indent;
-    // Allow a sequence marker introducing the mapping (`- run: …`). The key
-    // column advances past `- ` and any extra spaces before the key.
+    let mut rest = &line[indent..];
     if let Some(stripped) = rest.strip_prefix("- ") {
         let trimmed = stripped.trim_start();
         key_column += rest.len() - trimmed.len();
         rest = trimmed;
     }
-    let value = rest.strip_prefix("run:")?;
-    // The next char after `run` must be `:` (handled) and then space or EOL,
-    // so we don't match keys like `runs:` or `running:`.
+    let colon = rest.find(':')?;
+    let key = &rest[..colon];
+    // A bare key only: no whitespace (so command lines like `npm i` or a flow
+    // `echo a: b` content are not mistaken for keys; block content is consumed
+    // separately and never reaches here).
+    if key.is_empty() || key.chars().any(|c| c.is_whitespace()) {
+        return None;
+    }
+    let value = &rest[colon + 1..];
     if !(value.is_empty() || value.starts_with([' ', '\t'])) {
         return None;
     }
-    Some((key_column, value.trim_start()))
+    Some((key_column, key, value.trim_start()))
 }
 
 /// Whether a scalar value introduces a YAML block scalar (`|` or `>` with
@@ -282,6 +337,28 @@ mod tests {
         let text = "jobs:\n  build:\n    runs-on: ubuntu-latest\n";
         let cmds = extract_run_commands(&PathBuf::from("w.yml"), text);
         assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn run_inside_a_non_run_block_scalar_is_not_a_command() {
+        // A github-script `script: |` block containing a `run:`-looking line
+        // must be consumed, not parsed as a CI command.
+        let text = "steps:\n  - uses: actions/github-script@v7\n    with:\n      script: |\n        run: npm install --force\n        core.info('hi')\n  - run: npm ci\n";
+        let cmds = extract_run_commands(&PathBuf::from("w.yml"), text);
+        assert_eq!(cmds.len(), 1, "got: {cmds:?}");
+        assert_eq!(cmds[0].command, "npm ci");
+    }
+
+    #[test]
+    fn backslash_continuation_lines_are_joined() {
+        let text =
+            "steps:\n  - run: |\n      pip install \\\n        --break-system-packages requests\n";
+        let cmds = extract_run_commands(&PathBuf::from("w.yml"), text);
+        assert_eq!(cmds.len(), 1, "got: {cmds:?}");
+        assert_eq!(
+            cmds[0].command,
+            "pip install --break-system-packages requests"
+        );
     }
 
     #[test]

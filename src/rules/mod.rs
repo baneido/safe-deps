@@ -98,7 +98,6 @@ pub fn analyze(ctx: &WorkspaceContext, profile: Profile, ci_facts: &CiFacts) -> 
     // Workspace-scoped rules (CI-derived) run exactly once so a single unsafe
     // command is not duplicated across every project in a monorepo.
     let ws_input = WorkspaceInput {
-        projects: &facts_list,
         ci: ci_facts,
         profile,
         policy: &ctx.config.policy,
