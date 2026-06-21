@@ -1,0 +1,107 @@
+# Dependabot configuration for safe-deps.
+#
+# safe-deps is itself a supply-chain security linter, so this config is meant to
+# be exemplary. The hardening below targets the realistic threats of automated
+# dependency updates:
+#
+#   * Compromised / typosquatted releases — a `cooldown` window delays adopting
+#     freshly published versions, giving the ecosystem time to detect and yank a
+#     malicious package before it reaches our lockfiles. This is the single most
+#     important defense against the "publish-and-auto-merge" attack pattern.
+#   * Review fatigue -> rubber-stamping — updates are grouped and rate-limited so
+#     a human can meaningfully review each PR instead of mass-merging.
+#   * Unpinned GitHub Actions — every `uses:` in this repo is pinned to a 40-char
+#     commit SHA with a `# vX.Y.Z` comment. Dependabot preserves that style and
+#     only bumps the SHA (refreshing the comment); it never rewrites an immutable
+#     SHA pin back into a mutable tag.
+#
+# NOTE: Dependabot *security* updates (advisory-driven) and Dependabot alerts are
+# enabled in the repository's Security settings, not in this file. Keep them on —
+# they are the reactive complement to the proactive cooldown below, and `cooldown`
+# does not apply to security updates, so urgent patches are never delayed.
+
+version: 2
+
+updates:
+  # ---- Rust crate dependencies (Cargo.toml / Cargo.lock) --------------------
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 5
+    # Wait before adopting newly published versions; longer for higher-risk bumps.
+    cooldown:
+      default-days: 7
+      semver-patch-days: 3
+      semver-minor-days: 7
+      semver-major-days: 14
+    commit-message:
+      prefix: build       # `include: scope` appends "(deps)" -> build(deps): ...
+      include: scope
+    labels:
+      - dependencies
+      - rust
+    groups:
+      # Bundle low-risk minor/patch bumps into one reviewable PR; majors stay
+      # individual so breaking changes get scrutinized on their own.
+      cargo-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  # ---- npm dev tooling (markdownlint-cli2, cspell) --------------------------
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+      semver-patch-days: 3
+      semver-minor-days: 7
+      semver-major-days: 14
+    commit-message:
+      prefix: build       # dev deps -> build(deps-dev): ... via `include: scope`
+      include: scope
+    labels:
+      - dependencies
+      - javascript
+    groups:
+      npm-dev-minor-and-patch:
+        applies-to: version-updates
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+
+  # ---- GitHub Actions (workflows + composite actions) -----------------------
+  # Dependabot scans .github/workflows/*.yml AND .github/actions/**/action.yml,
+  # so the pinned actions in the setup-rust composite action are covered too.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci          # ci(deps): bump <action> ...
+      include: scope
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      github-actions:
+        applies-to: version-updates
+        patterns:
+          - "*"
