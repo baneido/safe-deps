@@ -53,7 +53,8 @@ cargo deny check          # licenses + advisories (see deny.toml)
 ```
 
 Documentation and Markdown are linted separately — run these when you touch any
-`*.md` or `docs/`:
+`*.md` or `docs/`. They also run in CI (the `docs lint` job), so a failure here
+blocks the PR:
 
 ```bash
 npm ci
