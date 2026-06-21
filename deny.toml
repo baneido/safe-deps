@@ -1,0 +1,33 @@
+# cargo-deny configuration for the production CI gate.
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# Uses the RUSTSEC advisory database (fetched fresh each run). Vulnerabilities,
+# unmaintained, unsound, and yanked crates are denied by default. No ignores are
+# needed: the unmaintained `serde_yaml` was replaced by the maintained
+# `serde_yaml_ng` fork (#23), and the transitive `unsafe-libyaml` is past
+# RUSTSEC-2023-0075.
+ignore = []
+
+[licenses]
+# Every current (and transitive) dependency is permissively licensed. Keep this
+# list tight so a new copyleft/unknown license is caught in review.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Defaults: surface multiple versions of the same crate as a warning, not an
+# error, so a routine transitive-dependency bump does not break CI.
+multiple-versions = "warn"
+
+[sources]
+# Only the public crates.io registry is permitted; unknown registries and git
+# sources are denied.
+unknown-registry = "deny"
+unknown-git = "deny"

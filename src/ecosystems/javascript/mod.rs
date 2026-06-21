@@ -96,7 +96,7 @@ fn detect_package_manager(
 
 fn has_file_in(ctx: &WorkspaceContext, dir: &Path, name: &str) -> bool {
     let target = project_join(dir, name);
-    ctx.files.iter().any(|f| f.relative == target)
+    ctx.contains(&target)
 }
 
 /// Finds the nearest ancestor workspace root and returns its package manager.
@@ -190,7 +190,7 @@ fn lockfile_in_dir(ctx: &WorkspaceContext, dir: &Path, manager: PackageManager) 
         .iter()
         .filter_map(|name| {
             let path = project_join(dir, name);
-            if ctx.files.iter().any(|f| f.relative == path) {
+            if ctx.contains(&path) {
                 Some(path)
             } else {
                 None
@@ -204,7 +204,7 @@ fn build_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFacts
     let dir = &project.root;
     let pj_path = project_join(dir, "package.json");
 
-    let manifest = if ctx.files.iter().any(|f| f.relative == pj_path) {
+    let manifest = if ctx.contains(&pj_path) {
         Some(FileFact {
             relative: pj_path.clone(),
         })
@@ -287,7 +287,7 @@ fn collect_configs(ctx: &WorkspaceContext, dir: &Path, manager: PackageManager) 
         .iter()
         .filter_map(|name| {
             let path = project_join(dir, name);
-            if ctx.files.iter().any(|f| f.relative == path) {
+            if ctx.contains(&path) {
                 Some(FileFact { relative: path })
             } else {
                 None

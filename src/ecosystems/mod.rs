@@ -15,7 +15,10 @@ pub mod javascript;
 pub mod python;
 pub mod source;
 
-pub use source::{Dependency, DependencyGroup, DependencySource};
+pub use source::{
+    classify_cargo_dependency, classify_go_replace_target, Dependency, DependencyGroup,
+    DependencySource,
+};
 
 /// Whether a URL uses the plaintext `http` scheme. URL schemes are
 /// case-insensitive (RFC 3986), so `HTTP://` is treated the same as `http://`.
@@ -46,9 +49,10 @@ pub(crate) fn is_proper_ancestor(ancestor: &std::path::Path, descendant: &std::p
     descendant.starts_with(ancestor) && descendant != ancestor
 }
 
-/// Whether the workspace contains a file at the given relative path.
+/// Whether the workspace contains a file at the given relative path. O(1) via
+/// the workspace path index.
 pub(crate) fn contains_file(ctx: &WorkspaceContext, relative: &std::path::Path) -> bool {
-    ctx.files.iter().any(|f| f.relative == relative)
+    ctx.contains(relative)
 }
 
 /// Validates the syntax of a structured manifest/config file and returns a

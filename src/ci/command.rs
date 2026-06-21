@@ -223,6 +223,8 @@ pub fn invocation(tokens: &[String]) -> Option<Invocation> {
         // `python -m pip <sub>` (the `-m` flag is filtered out, so `pip` is the
         // first positional). Plain `python script.py` is not a manager.
         "python" | "python3" if pos.first() == Some(&"pip") => (Pip, pos.get(1).copied()),
+        "cargo" => (Cargo, pos.first().copied()),
+        "go" => (Go, pos.first().copied()),
         _ => return None,
     };
     Some(Invocation {

@@ -8,7 +8,23 @@
 
 use std::path::Path;
 
-use crate::ci::{redact_env_value, CiCommand, EnvAssignment};
+use crate::ci::yaml::{dedent, is_block_scalar_indicator, leading_spaces, mapping_key};
+use crate::ci::{redact_env_value, CiCommand, CiProvider, EnvAssignment, ParsedCi};
+
+/// The GitHub Actions provider (`.github/workflows/*.yml|yaml`).
+pub struct GithubActions;
+
+impl CiProvider for GithubActions {
+    fn name(&self) -> &'static str {
+        "GitHub Actions"
+    }
+    fn matches(&self, relative: &Path) -> bool {
+        is_workflow_file(relative)
+    }
+    fn parse(&self, relative: &Path, text: &str) -> ParsedCi {
+        parse(relative, text)
+    }
+}
 
 /// Whether a workspace-relative path is a GitHub Actions workflow file
 /// (`.github/workflows/*.yml` or `*.yaml`).
@@ -33,16 +49,9 @@ pub fn is_workflow_file(relative: &Path) -> bool {
     in_workflows && ext_ok
 }
 
-/// The result of parsing one workflow file.
-#[derive(Debug, Default)]
-pub struct WorkflowParse {
-    pub commands: Vec<CiCommand>,
-    pub env: Vec<EnvAssignment>,
-}
-
 /// Parses a workflow file's text into CI facts.
-pub fn parse(relative: &Path, text: &str) -> WorkflowParse {
-    WorkflowParse {
+pub fn parse(relative: &Path, text: &str) -> ParsedCi {
+    ParsedCi {
         commands: extract_run_commands(relative, text),
         env: extract_env(text),
     }
@@ -157,55 +166,6 @@ fn push_run_line(
     }
 }
 
-/// If `line` is a block-mapping key (`key: value`, optionally introduced by a
-/// `- ` sequence marker), returns `(key_column, key, value_after_colon)`.
-/// `key_column` is the column at which the key begins — for the `- key:` form
-/// it is the column of the key, not of the `-`, so sibling keys (which align
-/// with the key) are correctly treated as outside a block scalar.
-fn mapping_key(line: &str) -> Option<(usize, &str, &str)> {
-    let indent = leading_spaces(line);
-    let mut key_column = indent;
-    let mut rest = &line[indent..];
-    if let Some(stripped) = rest.strip_prefix("- ") {
-        let trimmed = stripped.trim_start();
-        key_column += rest.len() - trimmed.len();
-        rest = trimmed;
-    }
-    let colon = rest.find(':')?;
-    let key = &rest[..colon];
-    // A bare key only: no whitespace (so command lines like `npm i` or a flow
-    // `echo a: b` content are not mistaken for keys; block content is consumed
-    // separately and never reaches here).
-    if key.is_empty() || key.chars().any(|c| c.is_whitespace()) {
-        return None;
-    }
-    let value = &rest[colon + 1..];
-    if !(value.is_empty() || value.starts_with([' ', '\t'])) {
-        return None;
-    }
-    Some((key_column, key, value.trim_start()))
-}
-
-/// Whether a scalar value introduces a YAML block scalar (`|` or `>` with
-/// optional chomping/indentation indicators such as `|-`, `>2`). A trailing
-/// comment (`| # note`) is permitted and ignored.
-fn is_block_scalar_indicator(value: &str) -> bool {
-    let v = value.trim();
-    // A YAML comment requires whitespace before `#`; strip it before checking.
-    let v = match v.find(" #") {
-        Some(idx) => v[..idx].trim_end(),
-        None => v,
-    };
-    let mut chars = v.chars();
-    match chars.next() {
-        Some('|') | Some('>') => {
-            // Remaining chars may only be chomping/indent indicators.
-            chars.all(|c| c == '+' || c == '-' || c.is_ascii_digit())
-        }
-        _ => false,
-    }
-}
-
 /// Strips a YAML comment and surrounding quotes from an inline scalar value.
 fn clean_inline_scalar(value: &str) -> String {
     let v = value.trim();
@@ -258,22 +218,6 @@ fn unquote_scalar(v: &str) -> Option<String> {
         i += 1;
     }
     None
-}
-
-fn leading_spaces(line: &str) -> usize {
-    line.chars().take_while(|c| *c == ' ').count()
-}
-
-fn dedent(line: &str, n: usize) -> &str {
-    let mut idx = 0;
-    for (count, (byte_idx, c)) in line.char_indices().enumerate() {
-        if count >= n || c != ' ' {
-            idx = byte_idx;
-            return &line[idx..];
-        }
-        idx = byte_idx + c.len_utf8();
-    }
-    &line[idx..]
 }
 
 /// Extracts workflow-, job-, and step-level `env` assignments structurally.

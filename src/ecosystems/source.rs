@@ -156,6 +156,68 @@ pub fn classify_python_source(spec: &str) -> DependencySource {
     DependencySource::Registry
 }
 
+/// Classifies a Cargo dependency value from `Cargo.toml`. The value is either a
+/// version string (`"1.0"`, a registry requirement) or an inline table that may
+/// carry `path`, `git` (+ `rev`/`tag`/`branch`), or `workspace`.
+pub fn classify_cargo_dependency(value: &toml::Value) -> DependencySource {
+    if value.is_str() {
+        return DependencySource::Registry;
+    }
+    let Some(table) = value.as_table() else {
+        return DependencySource::Registry;
+    };
+    if table.get("workspace").and_then(|v| v.as_bool()) == Some(true) {
+        return DependencySource::Workspace;
+    }
+    if table.contains_key("path") {
+        return DependencySource::Path;
+    }
+    if let Some(git) = table.get("git").and_then(|v| v.as_str()) {
+        // Pinned by a commit `rev`, or by a `tag` that names an immutable
+        // release (a version tag or SHA). A `branch`, an arbitrary moving tag
+        // (`latest`, `nightly`), or no ref at all tracks a moving target — same
+        // pinned/floating test the JS/Python classifiers use. Cargo `git =`
+        // fields are full URLs, so SSH is just the `ssh://` scheme.
+        let pinned = table.contains_key("rev")
+            || table
+                .get("tag")
+                .and_then(|v| v.as_str())
+                .is_some_and(is_pinned_ref);
+        return DependencySource::Git {
+            floating: !pinned,
+            ssh: git.starts_with("ssh://"),
+        };
+    }
+    DependencySource::Registry
+}
+
+/// Classifies the right-hand side of a Go `replace` directive. A local
+/// filesystem path is unsafe (replace directives are ignored outside the main
+/// module, so consumers cannot resolve it); a replacement to another module is
+/// still proxy-resolved and checksummed.
+pub fn classify_go_replace_target(target: &str) -> DependencySource {
+    let t = target.trim();
+    let is_local = t.starts_with("./")
+        || t.starts_with("../")
+        || t.starts_with('/')
+        || t.starts_with(".\\")
+        || t.starts_with("..\\")
+        // Windows UNC share, e.g. `\\server\share\mod`.
+        || t.starts_with("\\\\")
+        || is_windows_abs_path(t);
+    if is_local {
+        DependencySource::Path
+    } else {
+        DependencySource::Registry
+    }
+}
+
+/// Whether a path is a Windows drive-absolute path like `C:\dev` or `C:/dev`.
+fn is_windows_abs_path(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
+}
+
 fn is_path_spec(s: &str) -> bool {
     s.starts_with("file:")
         || s.starts_with("link:")
@@ -273,6 +335,84 @@ fn is_github_shorthand(s: &str) -> bool {
 mod tests {
     use super::DependencySource::*;
     use super::*;
+
+    fn cargo(toml_value: &str) -> DependencySource {
+        classify_cargo_dependency(&toml::from_str::<toml::Value>(toml_value).unwrap()["x"])
+    }
+
+    #[test]
+    fn cargo_registry_and_workspace_are_safe() {
+        assert_eq!(cargo("x = \"1.0\""), Registry);
+        assert_eq!(cargo("x = { version = \"1.0\" }"), Registry);
+        assert_eq!(cargo("x = { workspace = true }"), Workspace);
+    }
+
+    #[test]
+    fn cargo_path_and_git_classification() {
+        assert_eq!(cargo("x = { path = \"../x\" }"), Path);
+        assert_eq!(
+            cargo("x = { git = \"https://h/r.git\" }"),
+            Git {
+                floating: true,
+                ssh: false
+            }
+        );
+        assert_eq!(
+            cargo("x = { git = \"https://h/r.git\", branch = \"main\" }"),
+            Git {
+                floating: true,
+                ssh: false
+            }
+        );
+        assert_eq!(
+            cargo("x = { git = \"https://h/r.git\", rev = \"abc123\" }"),
+            Git {
+                floating: false,
+                ssh: false
+            }
+        );
+        assert_eq!(
+            cargo("x = { git = \"https://h/r.git\", tag = \"v1.0\" }"),
+            Git {
+                floating: false,
+                ssh: false
+            }
+        );
+        // A moving (non-version) tag is floating, matching the JS/Python rule.
+        assert_eq!(
+            cargo("x = { git = \"https://h/r.git\", tag = \"latest\" }"),
+            Git {
+                floating: true,
+                ssh: false
+            }
+        );
+        assert_eq!(
+            cargo("x = { git = \"ssh://git@h/r.git\" }"),
+            Git {
+                floating: true,
+                ssh: true
+            }
+        );
+    }
+
+    #[test]
+    fn go_windows_absolute_replace_is_path() {
+        assert_eq!(classify_go_replace_target("C:\\dev\\local"), Path);
+        assert_eq!(classify_go_replace_target("D:/dev/local"), Path);
+        // UNC share path.
+        assert_eq!(classify_go_replace_target("\\\\server\\share\\mod"), Path);
+    }
+
+    #[test]
+    fn go_replace_target_classification() {
+        assert_eq!(classify_go_replace_target("../local"), Path);
+        assert_eq!(classify_go_replace_target("./local"), Path);
+        assert_eq!(classify_go_replace_target("/abs/path"), Path);
+        assert_eq!(
+            classify_go_replace_target("github.com/fork/x v1.2.3"),
+            Registry
+        );
+    }
 
     #[test]
     fn js_registry_specs() {

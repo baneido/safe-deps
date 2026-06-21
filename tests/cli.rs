@@ -265,28 +265,21 @@ fn config_file_fail_on_none_overrides_default() {
 }
 
 #[test]
-fn config_discovered_relative_to_target_not_cwd() {
-    // The default `safe-deps.toml` must be discovered relative to the analysis
-    // target, not the process working directory. Run from an unrelated cwd and
-    // point `check` at the workspace by absolute path; the workspace config
-    // (fail_on = none) must still apply.
+fn config_is_discovered_relative_to_the_target_path() {
+    // Regression: safe-deps.toml must be discovered in the analyzed directory,
+    // not the process CWD. Running `check sub` from a CWD that has no config
+    // must still pick up sub/safe-deps.toml.
     let ws = workspace(&[
-        ("package.json", NPM_DEPS),
-        (".npmrc", "strict-ssl=false\n"),
-        ("safe-deps.toml", "fail_on = \"none\"\n"),
+        ("sub/package.json", NPM_DEPS),
+        ("sub/safe-deps.toml", "profile = \"strict\"\n"),
     ]);
-    let elsewhere = TempDir::new().unwrap();
-    let out = bin()
-        .current_dir(elsewhere.path())
-        .args(["check"])
-        .arg(ws.path())
-        .output()
-        .unwrap();
+    // CWD is the tempdir root (no safe-deps.toml here); analyze ./sub.
+    let out = run(&ws, &["check", "sub", "--format", "json"]);
+    let report: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{}", stdout(&out)));
     assert_eq!(
-        out.status.code().unwrap(),
-        0,
-        "target-relative safe-deps.toml (fail_on=none) should be discovered from any cwd: {}",
-        String::from_utf8_lossy(&out.stdout)
+        report["profile"], "strict",
+        "config in the target dir must be applied: {report}"
     );
 }
 
@@ -358,6 +351,26 @@ fn invalid_config_is_usage_error() {
     ]);
     let out = run(&ws, &["check", "."]);
     assert_eq!(code(&out), 2);
+}
+
+#[test]
+fn invalid_application_root_glob_is_usage_error() {
+    // A malformed root glob must be a loud config error (exit 2), not a silent
+    // disable of the application_roots/library_roots policy.
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        (
+            "safe-deps.toml",
+            "[policy]\napplication_roots = [\"apps/*\", \"[bad\"]\n",
+        ),
+    ]);
+    let out = run(&ws, &["check", "."]);
+    assert_eq!(code(&out), 2, "{}", stdout(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("application_roots"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 // --- suppressions ------------------------------------------------------------
@@ -1526,4 +1539,184 @@ fn list_rules_includes_ci_aware_rules() {
     for id in ["SD002", "SD008", "SD009"] {
         assert!(text.contains(id), "missing {id}:\n{text}");
     }
+}
+
+// --- SD006 for Cargo / Go (#21) ----------------------------------------------
+
+#[test]
+fn sd006_flags_cargo_git_and_path_deps_but_not_registry() {
+    let manifest = "\
+[package]
+name = \"app\"
+[dependencies]
+serde = \"1\"
+internal = { git = \"https://h/r.git\", branch = \"main\" }
+local = { path = \"../local\" }
+pinned = { git = \"https://h/r.git\", rev = \"abc1234\" }
+";
+    let ws = workspace(&[("Cargo.toml", manifest), ("Cargo.lock", "version = 3\n")]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    let msgs: String = sd006
+        .iter()
+        .map(|f| f["message"].as_str().unwrap())
+        .collect();
+    // floating git `internal` and production path `local` are flagged.
+    assert!(msgs.contains("internal"), "{msgs}");
+    assert!(msgs.contains("local"), "{msgs}");
+    // registry `serde` and rev-pinned `pinned` are not.
+    assert!(!msgs.contains("serde"), "{msgs}");
+    assert!(!msgs.contains("pinned"), "{msgs}");
+}
+
+#[test]
+fn sd006_flags_cargo_patch_redirect() {
+    let manifest = "\
+[package]
+name = \"app\"
+[dependencies]
+serde = \"1\"
+[patch.crates-io]
+serde = { git = \"https://h/serde.git\" }
+";
+    let ws = workspace(&[("Cargo.toml", manifest), ("Cargo.lock", "version = 3\n")]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{sd006:?}");
+    assert!(sd006[0]["message"].as_str().unwrap().contains("serde"));
+}
+
+#[test]
+fn sd006_cargo_registry_only_is_clean() {
+    let manifest = "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n";
+    let ws = workspace(&[("Cargo.toml", manifest), ("Cargo.lock", "version = 3\n")]);
+    assert!(findings_of(&check_json(&ws, &[]), "SD006").is_empty());
+}
+
+#[test]
+fn sd006_flags_go_local_path_replace() {
+    let go_mod = "\
+module example.com/m
+
+go 1.21
+
+require github.com/x/y v1.2.3
+
+replace github.com/x/y => ../local/y
+";
+    let ws = workspace(&[
+        ("go.mod", go_mod),
+        ("go.sum", "github.com/x/y v1.2.3 h1:abc=\n"),
+    ]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{sd006:?}");
+    assert!(sd006[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("github.com/x/y"));
+}
+
+#[test]
+fn sd006_go_normal_requires_are_clean() {
+    let go_mod = "module m\ngo 1.21\nrequire github.com/x/y v1.2.3\n";
+    let ws = workspace(&[
+        ("go.mod", go_mod),
+        ("go.sum", "github.com/x/y v1.2.3 h1:abc=\n"),
+    ]);
+    assert!(findings_of(&check_json(&ws, &[]), "SD006").is_empty());
+}
+
+// --- workspace-scan error surfacing (#18) ------------------------------------
+
+#[test]
+#[cfg(unix)]
+fn unreadable_directory_is_surfaced_and_escalates_under_strict() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // A clean project (lockfile present, no config) so the run is otherwise
+    // exit 0; any non-zero exit must come from the walk error.
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        ("package-lock.json", r#"{ "lockfileVersion": 3 }"#),
+    ]);
+    let locked = ws.path().join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::write(locked.join("x.txt"), "x").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let normal = run(&ws, &["check", "."]);
+    let strict = run(&ws, &["check", ".", "--strict-parser-errors"]);
+
+    // Restore permissions so the TempDir can be cleaned up.
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let text = stdout(&normal);
+    if !text.contains("could not scan") {
+        // Permissions were not enforced (e.g. running as root); nothing to assert.
+        eprintln!("skipping: directory permissions not enforced (root?)");
+        return;
+    }
+    // The walk error is surfaced as a diagnostic but is only a warning, so a
+    // default run does not fail.
+    assert_eq!(
+        code(&normal),
+        0,
+        "scan diagnostic should not fail a default run"
+    );
+    // Under --strict-parser-errors the coverage gap escalates to exit 4.
+    assert_eq!(code(&strict), 4, "strict mode should escalate a walk error");
+}
+
+// --- CI provider plugins: GitLab CI / CircleCI + Cargo/Go (#22) ---------------
+
+#[test]
+fn gitlab_ci_non_frozen_install_reports_sd002() {
+    let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);
+    write(
+        ws.path(),
+        ".gitlab-ci.yml",
+        "build:\n  script:\n    - npm install\n",
+    );
+    let report = check_json(&ws, &[]);
+    let sd002 = findings_for(&report, "SD002");
+    assert_eq!(sd002.len(), 1, "{report}");
+    assert_eq!(sd002[0]["location"]["file"], ".gitlab-ci.yml");
+}
+
+#[test]
+fn circleci_non_frozen_install_reports_sd002() {
+    let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);
+    write(
+        ws.path(),
+        ".circleci/config.yml",
+        "jobs:\n  build:\n    steps:\n      - run: npm install\n",
+    );
+    let report = check_json(&ws, &[]);
+    let sd002 = findings_for(&report, "SD002");
+    assert_eq!(sd002.len(), 1, "{report}");
+    assert_eq!(sd002[0]["location"]["file"], ".circleci/config.yml");
+}
+
+#[test]
+fn ci_cargo_build_without_locked_reports_sd002() {
+    let manifest = "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n";
+    let ws = workspace(&[("Cargo.toml", manifest), ("Cargo.lock", "version = 3\n")]);
+    write(
+        ws.path(),
+        ".github/workflows/ci.yml",
+        "jobs:\n  build:\n    steps:\n      - run: cargo build\n",
+    );
+    let sd002 = findings_for(&check_json(&ws, &[]), "SD002");
+    assert_eq!(sd002.len(), 1);
+    assert_eq!(sd002[0]["package_manager"], "cargo");
+}
+
+#[test]
+fn ci_cargo_build_locked_is_clean() {
+    let manifest = "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n";
+    let ws = workspace(&[("Cargo.toml", manifest), ("Cargo.lock", "version = 3\n")]);
+    write(
+        ws.path(),
+        ".github/workflows/ci.yml",
+        "jobs:\n  build:\n    steps:\n      - run: cargo build --locked\n",
+    );
+    assert!(findings_for(&check_json(&ws, &[]), "SD002").is_empty());
 }
