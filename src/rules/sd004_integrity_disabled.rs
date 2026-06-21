@@ -91,7 +91,11 @@ deployment requirements that lack --require-hashes."
                     Confidence::Medium,
                 ));
             }
-            PackageManager::Pnpm | PackageManager::Bun | PackageManager::Uv => {
+            PackageManager::Pnpm
+            | PackageManager::Bun
+            | PackageManager::Uv
+            | PackageManager::Cargo
+            | PackageManager::Go => {
                 // No static integrity-disable signal for Phase 1. CI command
                 // flags such as pnpm --update-checksums and Bun lockfile-skip
                 // env vars are handled in Phase 2.

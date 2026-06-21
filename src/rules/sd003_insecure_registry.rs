@@ -114,7 +114,7 @@ allow-insecure-host. Local test exceptions should be scoped narrowly."
                     ));
                 }
             }
-            PackageManager::Bun => {}
+            PackageManager::Bun | PackageManager::Cargo | PackageManager::Go => {}
         }
 
         findings

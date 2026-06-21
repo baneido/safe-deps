@@ -149,6 +149,8 @@ fn classify(tokens: &[String], profile: Profile) -> Option<Hit> {
         },
         // pip, pip3, `python -m pip`, and `uv pip` all normalize to pip here.
         PackageManager::Pip => classify_pip(tokens, profile, sub),
+        // Cargo/Go are not gated by SD002 (no npm-style non-frozen install).
+        PackageManager::Cargo | PackageManager::Go => None,
     }
 }
 

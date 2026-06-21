@@ -245,6 +245,9 @@ pub fn is_install(inv: &Invocation) -> bool {
         Yarn => matches!(sub, None | Some("install") | Some("add")),
         Pip => matches!(sub, Some("install")),
         Uv => matches!(sub, Some("sync") | Some("install")),
+        // Cargo/Go are not recognized as CI install invocations (no npm-style
+        // resolving install is gated here).
+        Cargo | Go => false,
     }
 }
 
