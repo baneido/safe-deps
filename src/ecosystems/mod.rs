@@ -13,6 +13,9 @@ pub mod cargo;
 pub mod go;
 pub mod javascript;
 pub mod python;
+pub mod source;
+
+pub use source::{Dependency, DependencyGroup, DependencySource};
 
 /// Whether a URL uses the plaintext `http` scheme. URL schemes are
 /// case-insensitive (RFC 3986), so `HTTP://` is treated the same as `http://`.
@@ -224,6 +227,11 @@ pub struct InstallSettings {
 
     // bun (bunfig.toml)
     pub trusted_dependencies: Vec<String>,
+
+    // pnpm (pnpm-workspace.yaml or package.json `pnpm` field)
+    /// `dangerouslyAllowAllBuilds`: runs every dependency's build/postinstall
+    /// script, bypassing the build allowlist (pnpm 10.9+). `None` when not set.
+    pub pnpm_allow_all_builds: Option<bool>,
 }
 
 /// Normalized facts about a detected project, consumed by rules.
@@ -236,6 +244,9 @@ pub struct ProjectFacts {
     /// Whether the manifest declares any runtime or dev dependencies. Used by
     /// SD001 to avoid flagging empty manifests.
     pub has_manifest_dependencies: bool,
+    /// Declared dependencies with their source classification, for SD006. Empty
+    /// when the manifest declares none or could not be parsed.
+    pub dependencies: Vec<Dependency>,
     pub install_settings: InstallSettings,
     /// Whether a parent workspace root provides a covering lockfile for this
     /// project. Avoids false positives in monorepos.

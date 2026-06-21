@@ -176,6 +176,7 @@ mod tests {
             },
             configs: Vec::new(),
             has_manifest_dependencies: true,
+            dependencies: Vec::new(),
             install_settings: InstallSettings::default(),
             covered_by_workspace_lockfile: false,
             has_legacy_bun_lockfile: false,

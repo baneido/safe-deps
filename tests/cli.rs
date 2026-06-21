@@ -839,6 +839,309 @@ fn findings_for(report: &Value, rule: &str) -> Vec<Value> {
         .collect()
 }
 
+// --- supply-chain hardening rules (Phase 3) ----------------------------------
+
+const NPM_LOCK_OK: &str = r#"{ "lockfileVersion": 3 }"#;
+
+fn findings_of(report: &Value, rule: &str) -> Vec<Value> {
+    findings_for(report, rule)
+}
+
+#[test]
+fn sd006_flags_unsafe_js_sources_but_not_registry() {
+    let pkg = r#"{
+      "name": "demo",
+      "dependencies": {
+        "floating": "github:user/repo#main",
+        "tarball": "https://example.com/x.tgz",
+        "localpath": "file:../local",
+        "registry": "^1.2.3"
+      }
+    }"#;
+    let ws = workspace(&[("package.json", pkg), ("package-lock.json", NPM_LOCK_OK)]);
+    let report = check_json(&ws, &[]);
+    let sd006 = findings_of(&report, "SD006");
+    assert_eq!(sd006.len(), 3, "expected 3 SD006: {report}");
+    let msgs: String = sd006
+        .iter()
+        .map(|f| f["message"].as_str().unwrap())
+        .collect();
+    assert!(msgs.contains("floating"));
+    assert!(msgs.contains("tarball"));
+    assert!(msgs.contains("localpath"));
+    assert!(!msgs.contains("registry"));
+}
+
+#[test]
+fn sd006_pinned_git_sha_is_safe() {
+    let pkg = r#"{ "name": "d", "dependencies": {
+        "pinned": "github:user/repo#3a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b" } }"#;
+    let ws = workspace(&[("package.json", pkg), ("package-lock.json", NPM_LOCK_OK)]);
+    let report = check_json(&ws, &[]);
+    assert!(findings_of(&report, "SD006").is_empty(), "{report}");
+}
+
+#[test]
+fn sd006_dev_path_is_allowed_but_prod_path_flagged() {
+    let pkg = r#"{ "name": "d",
+        "dependencies": { "prod": "file:../prod" },
+        "devDependencies": { "dev": "file:../dev" } }"#;
+    let ws = workspace(&[("package.json", pkg), ("package-lock.json", NPM_LOCK_OK)]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1);
+    assert!(sd006[0]["message"].as_str().unwrap().contains("prod"));
+}
+
+#[test]
+fn sd006_policy_opts_out_of_git_and_path() {
+    let pkg = r#"{ "name": "d", "dependencies": {
+        "g": "github:u/r#main", "p": "file:../p" } }"#;
+    let ws = workspace(&[
+        ("package.json", pkg),
+        ("package-lock.json", NPM_LOCK_OK),
+        (
+            "safe-deps.toml",
+            "[policy]\nallow_git_dependencies = true\nallow_local_path_dependencies = true\n",
+        ),
+    ]);
+    assert!(findings_of(&check_json(&ws, &[]), "SD006").is_empty());
+}
+
+#[test]
+fn sd006_flags_python_git_dependency() {
+    let pyproject = "\
+[project]
+name = \"x\"
+dependencies = [\"requests>=2\", \"internal @ git+https://h/r.git\"]
+";
+    let ws = workspace(&[("pyproject.toml", pyproject), ("uv.lock", "")]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{:?}", sd006);
+    assert!(sd006[0]["message"].as_str().unwrap().contains("internal"));
+}
+
+#[test]
+fn sd005_flags_pnpm_dangerously_allow_all_builds() {
+    let ws = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "d", "dependencies": { "a": "^1" } }"#,
+        ),
+        ("pnpm-lock.yaml", ""),
+        (
+            "pnpm-workspace.yaml",
+            "packages:\n  - 'pkgs/*'\ndangerouslyAllowAllBuilds: true\n",
+        ),
+    ]);
+    let sd005 = findings_of(&check_json(&ws, &[]), "SD005");
+    assert_eq!(sd005.len(), 1, "{:?}", sd005);
+    assert_eq!(sd005[0]["severity"], "error");
+    assert_eq!(sd005[0]["location"]["file"], "pnpm-workspace.yaml");
+}
+
+#[test]
+fn sd005_pnpm_without_flag_is_clean() {
+    let ws = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "d", "dependencies": { "a": "^1" } }"#,
+        ),
+        ("pnpm-lock.yaml", ""),
+        ("pnpm-workspace.yaml", "packages:\n  - 'pkgs/*'\n"),
+    ]);
+    assert!(findings_of(&check_json(&ws, &[]), "SD005").is_empty());
+}
+
+#[test]
+fn sd005_bun_trusted_wildcard_flagged_named_is_safe() {
+    let wildcard = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "d", "dependencies": { "a": "^1" } }"#,
+        ),
+        ("bun.lock", ""),
+        ("bunfig.toml", "[install]\ntrustedDependencies = [\"*\"]\n"),
+    ]);
+    assert_eq!(findings_of(&check_json(&wildcard, &[]), "SD005").len(), 1);
+
+    let named = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "d", "dependencies": { "a": "^1" } }"#,
+        ),
+        ("bun.lock", ""),
+        (
+            "bunfig.toml",
+            "[install]\ntrustedDependencies = [\"esbuild\"]\n",
+        ),
+    ]);
+    assert!(findings_of(&check_json(&named, &[]), "SD005").is_empty());
+}
+
+#[test]
+fn sd007_uv_index_config_is_profile_gated() {
+    let pyproject = "\
+[project]
+name = \"x\"
+dependencies = [\"requests>=2\"]
+[tool.uv]
+extra-index-url = [\"https://pypi.internal/simple\"]
+index-strategy = \"unsafe-best-match\"
+";
+    let ws = workspace(&[("pyproject.toml", pyproject), ("uv.lock", "")]);
+    let sd007 = findings_of(&check_json(&ws, &[]), "SD007");
+    assert_eq!(sd007.len(), 2, "{:?}", sd007);
+    assert!(sd007.iter().all(|f| f["severity"] == "warning"));
+    // Strict profile escalates to error and fails the run.
+    let out = run(&ws, &["check", ".", "--profile", "strict"]);
+    assert_eq!(code(&out), 1);
+    let strict = check_json(&ws, &["--profile", "strict"]);
+    assert!(findings_of(&strict, "SD007")
+        .iter()
+        .all(|f| f["severity"] == "error"));
+}
+
+#[test]
+fn sd007_pip_extra_index_url_in_requirements() {
+    let ws = workspace(&[(
+        "requirements.txt",
+        "requests==2.0 --hash=sha256:abc\n--extra-index-url https://pypi.internal/simple\n",
+    )]);
+    let sd007 = findings_of(&check_json(&ws, &[]), "SD007");
+    assert_eq!(sd007.len(), 1, "{:?}", sd007);
+    assert!(sd007[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("extra index"));
+}
+
+#[test]
+fn list_rules_includes_supply_chain_rules() {
+    let ws = workspace(&[]);
+    let text = stdout(&run(&ws, &["list-rules"]));
+    for id in ["SD005", "SD006", "SD007"] {
+        assert!(text.contains(id), "missing {id}:\n{text}");
+    }
+}
+
+#[test]
+fn sd006_flags_uv_dev_dependency_source() {
+    let pyproject = "\
+[project]
+name = \"x\"
+dependencies = [\"requests>=2\"]
+[tool.uv]
+dev-dependencies = [\"internal @ git+https://h/r.git\"]
+";
+    let ws = workspace(&[("pyproject.toml", pyproject), ("uv.lock", "")]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{:?}", sd006);
+    assert!(sd006[0]["message"].as_str().unwrap().contains("internal"));
+}
+
+#[test]
+fn sd006_points_at_the_requirements_file_it_came_from() {
+    let ws = workspace(&[(
+        "requirements-dev.txt",
+        "pytest==7.0\ntooling @ git+https://h/r.git\n",
+    )]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{:?}", sd006);
+    assert_eq!(sd006[0]["location"]["file"], "requirements-dev.txt");
+}
+
+#[test]
+fn sd007_does_not_duplicate_when_index_declared_twice() {
+    // extra-index-url in both pyproject [tool.uv] and uv.toml must yield one.
+    let pyproject = "\
+[project]
+name = \"x\"
+dependencies = [\"requests>=2\"]
+[tool.uv]
+extra-index-url = [\"https://pypi.internal/simple\"]
+";
+    let ws = workspace(&[
+        ("pyproject.toml", pyproject),
+        ("uv.lock", ""),
+        (
+            "uv.toml",
+            "extra-index-url = [\"https://pypi.internal/simple\"]\n",
+        ),
+    ]);
+    let sd007 = findings_of(&check_json(&ws, &[]), "SD007");
+    assert_eq!(sd007.len(), 1, "expected dedup to one finding: {:?}", sd007);
+}
+
+// --- Phase 3 review follow-ups (036-jp) --------------------------------------
+
+#[test]
+fn sd006_keeps_unsafe_requirements_source_over_safe_pyproject() {
+    // pyproject declares a safe `foo`; requirements declares the unsafe git
+    // `foo`. Name-only dedup would drop the git one — it must be flagged.
+    let ws = workspace(&[
+        (
+            "pyproject.toml",
+            "[project]\nname = \"x\"\ndependencies = [\"foo>=1\"]\n",
+        ),
+        ("requirements.txt", "foo @ git+https://h/r.git\n"),
+        ("uv.lock", ""),
+    ]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{:?}", sd006);
+    assert_eq!(sd006[0]["location"]["file"], "requirements.txt");
+}
+
+#[test]
+fn sd006_dev_requirements_editable_path_is_not_flagged() {
+    // A local editable path in requirements-dev.txt is the intended dev pattern.
+    let ws = workspace(&[("requirements-dev.txt", "-e ./tools/mylib\n")]);
+    assert!(findings_of(&check_json(&ws, &[]), "SD006").is_empty());
+}
+
+#[test]
+fn sd006_flags_pep735_dependency_group_git() {
+    let pyproject = "\
+[project]
+name = \"x\"
+dependencies = [\"requests>=2\"]
+[dependency-groups]
+dev = [\"internal @ git+https://h/r.git\"]
+";
+    let ws = workspace(&[("pyproject.toml", pyproject), ("uv.lock", "")]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{:?}", sd006);
+    assert!(sd006[0]["message"].as_str().unwrap().contains("internal"));
+}
+
+#[test]
+fn sd005_flags_bun_trusted_wildcard_in_package_json() {
+    // Bun reads trustedDependencies from package.json, not bunfig.toml.
+    let ws = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "d", "dependencies": { "a": "^1" }, "trustedDependencies": ["*"] }"#,
+        ),
+        ("bun.lock", ""),
+    ]);
+    assert_eq!(findings_of(&check_json(&ws, &[]), "SD005").len(), 1);
+}
+
+#[test]
+fn sd006_floating_ssh_git_remediation_covers_both() {
+    // A dep that is both floating and SSH must get a remediation that addresses
+    // both, so following it actually clears the finding.
+    let ws = workspace(&[(
+        "package.json",
+        r#"{ "name": "d", "dependencies": { "internal": "git+ssh://git@host/org/repo.git#main" } }"#,
+    )]);
+    let report = check_json(&ws, &[]);
+    let sd006 = findings_of(&report, "SD006");
+    assert_eq!(sd006.len(), 1, "{report}");
+    let rem = sd006[0]["remediation"].as_str().unwrap();
+    assert!(rem.contains("SHA"), "{rem}");
+    assert!(rem.contains("https"), "{rem}");
+}
+
 const WORKFLOW_NPM_INSTALL: &str = "\
 name: ci
 on: [push]

@@ -72,6 +72,8 @@ impl Analyzer for GoAnalyzer {
             configs: Vec::new(),
             has_manifest_dependencies,
             install_settings: InstallSettings::default(),
+            // SD006 dependency-source classification is JS/Python only for now.
+            dependencies: Vec::new(),
             // Each module keeps its own go.sum. A workspace `go.work.sum`
             // supplements (does not replace) a module's checksums, so a module
             // missing its own go.sum is still flagged.

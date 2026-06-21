@@ -87,6 +87,8 @@ impl Analyzer for CargoAnalyzer {
             configs: Vec::new(),
             has_manifest_dependencies: parsed.has_dependencies,
             install_settings: InstallSettings::default(),
+            // SD006 dependency-source classification is JS/Python only for now.
+            dependencies: Vec::new(),
             covered_by_workspace_lockfile: covered_by_workspace(ctx, dir),
             has_legacy_bun_lockfile: false,
             parse_diagnostics,
