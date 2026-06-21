@@ -2,7 +2,7 @@
   "name": "safe-deps",
   "version": "0.0.0",
   "private": true,
-  "description": "Design-stage package-management security linter.",
+  "description": "Package-management security linter (Rust CLI; Phases 1–5 implemented).",
   "license": "MIT",
   "scripts": {
     "lint:markdown": "markdownlint-cli2 \"*.md\" \"docs/**/*.md\"",
