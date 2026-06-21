@@ -67,7 +67,8 @@ mod tests {
 
     #[test]
     fn malformed_input_counts_zero_requires() {
-        // Garbage must yield no requires rather than panic.
+        // Malformed input must not panic; this fragment degrades to a zero
+        // count (the trailing `require (` opens a block that never adds rows).
         let garbage = "}{ not really go.mod (((\nreplace =>\nrequire (\n";
         assert_eq!(parse_requires(garbage), 0);
     }

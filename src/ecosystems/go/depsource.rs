@@ -109,14 +109,18 @@ mod tests {
 
     #[test]
     fn replace_prefixed_module_path_is_not_a_directive() {
-        // A line beginning with "replace" but not the directive (no boundary).
-        let text = "module m\nreplacement.example/x v1.0.0\n";
+        // A line beginning with "replace" but not the directive (no keyword
+        // boundary). The `=> ./local` target means push_replace WOULD emit a
+        // Path dependency if the boundary guard were missing, so this input
+        // actually exercises that guard rather than short-circuiting earlier.
+        let text = "module m\nreplacement.example/x => ./local\n";
         assert!(dependencies(text, Path::new("go.mod")).is_empty());
     }
 
     #[test]
     fn malformed_input_is_tolerated() {
-        // Garbage must yield no dependencies rather than panic.
+        // Malformed input must not panic; this fragment degrades to no
+        // dependencies (the empty `replace =>` has no name/target).
         let garbage = "}{ not really go.mod (((\nreplace =>\nrequire (\n";
         assert!(dependencies(garbage, Path::new("go.mod")).is_empty());
     }
