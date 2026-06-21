@@ -8,6 +8,12 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Added `proptest`-based robustness tests for the ecosystem analyzers: property
+  tests assert the offline pipeline never panics and is deterministic on random
+  and semi-structured manifest content, plus targeted fixtures for edge cases
+  (invalid-but-tolerated manifests, hash pins, mixed `uv.toml`, Unicode names,
+  deep nesting, and a many-project monorepo).
+
 - Replaced the unmaintained `serde_yaml` dependency with the maintained
   `serde_yaml_ng` fork (imported under the same name; no API changes).
 - Added package-manager security best-practices research.
