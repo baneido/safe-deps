@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::ci::CiFacts;
+use crate::ci;
 use crate::config::{self, Config, FailLevel, OutputFormat, ResolvedConfig};
 use crate::ecosystems::PackageManager;
 use crate::filesystem::{scan, ScanOptions};
@@ -150,7 +150,14 @@ fn run_check(args: CheckArgs) -> Result<u8, CliError> {
         );
     }
 
-    let ci_facts = CiFacts::empty();
+    let ci_facts = ci::extract(&ctx);
+    if args.verbose {
+        eprintln!(
+            "extracted {} CI command(s) and {} env assignment(s)",
+            ci_facts.commands.len(),
+            ci_facts.env.len()
+        );
+    }
     let mut result = rules::analyze(&ctx, resolved.profile, &ci_facts);
 
     if let Some(pm) = ecosystem_filter(args.ecosystem.as_deref())? {
