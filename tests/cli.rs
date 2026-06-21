@@ -711,6 +711,95 @@ fn suppression_path_matches_nested_member() {
     assert!(!rule_ids(&report).contains(&"SD001".to_string()));
 }
 
+// --- audit mode (Phase 5) ----------------------------------------------------
+
+const CARGO_LOCK_LEFTPAD: &str = r#"
+[[package]]
+name = "left-pad"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+
+// A cache entry that `audit --offline` will read without any network. The
+// cache key mirrors PackageCoordinate::cache_key (non-alphanumeric -> '_').
+const CACHED_ADVISORY: &str = r#"{
+  "fetched": 9999999999,
+  "advisories": [
+    { "id": "RUSTSEC-2099-0001", "aliases": ["CVE-2099-1"],
+      "summary": "left-pad is doomed", "severity": "HIGH",
+      "package": { "ecosystem": "crates.io", "name": "left-pad", "version": "1.0.0" } }
+  ]
+}"#;
+
+/// Seeds the OSV cache for left-pad@1.0.0 under `<ws>/cache`, computing the
+/// filename from the same public key logic the binary uses.
+fn seed_leftpad_cache(ws: &TempDir) {
+    let key = safe_deps::audit::PackageCoordinate {
+        ecosystem: "crates.io".to_string(),
+        name: "left-pad".to_string(),
+        version: "1.0.0".to_string(),
+    }
+    .cache_key();
+    write(ws.path(), &format!("cache/{key}.json"), CACHED_ADVISORY);
+}
+
+#[test]
+fn audit_offline_reports_cached_advisory_and_exits_one() {
+    let ws = workspace(&[("Cargo.lock", CARGO_LOCK_LEFTPAD)]);
+    seed_leftpad_cache(&ws);
+    let cache = ws.path().join("cache");
+    let out = run(
+        &ws,
+        &[
+            "audit",
+            ".",
+            "--offline",
+            "--cache-dir",
+            cache.to_str().unwrap(),
+        ],
+    );
+    let text = stdout(&out);
+    assert!(text.contains("RUSTSEC-2099-0001"), "{text}");
+    assert!(text.contains("left-pad@1.0.0"), "{text}");
+    assert_eq!(code(&out), 1, "vulnerabilities present should exit 1");
+}
+
+#[test]
+fn audit_respects_advisory_ignore_by_alias() {
+    let ws = workspace(&[
+        ("Cargo.lock", CARGO_LOCK_LEFTPAD),
+        (
+            "safe-deps.toml",
+            "[[advisory_ignores]]\nid = \"CVE-2099-1\"\nreason = \"patched downstream\"\n",
+        ),
+    ]);
+    seed_leftpad_cache(&ws);
+    let cache = ws.path().join("cache");
+    let out = run(
+        &ws,
+        &[
+            "audit",
+            ".",
+            "--offline",
+            "--cache-dir",
+            cache.to_str().unwrap(),
+        ],
+    );
+    let text = stdout(&out);
+    assert!(text.contains("Ignored"), "{text}");
+    assert_eq!(code(&out), 0, "an ignored advisory should not fail the run");
+}
+
+#[test]
+fn audit_offline_without_cache_notes_unchecked_packages() {
+    let ws = workspace(&[("Cargo.lock", CARGO_LOCK_LEFTPAD)]);
+    let out = run(&ws, &["audit", ".", "--offline", "--no-cache"]);
+    let text = stdout(&out);
+    assert!(text.contains("No known vulnerabilities"), "{text}");
+    // An offline cache miss must not read as a clean bill of health.
+    assert!(text.contains("not in the cache were not checked"), "{text}");
+}
+
 // --- additional ecosystems + JUnit (Phase 4) ---------------------------------
 
 #[test]
@@ -1215,6 +1304,67 @@ fn ci_install_without_audit_reports_sd008() {
     // Warnings do not fail the run by default.
     let out = run(&ws, &["check", "."]);
     assert_eq!(code(&out), 0);
+}
+
+#[test]
+fn audit_json_format() {
+    let ws = workspace(&[("Cargo.lock", CARGO_LOCK_LEFTPAD)]);
+    seed_leftpad_cache(&ws);
+    let cache = ws.path().join("cache");
+    let out = run(
+        &ws,
+        &[
+            "audit",
+            ".",
+            "--offline",
+            "--format",
+            "json",
+            "--cache-dir",
+            cache.to_str().unwrap(),
+        ],
+    );
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{}", stdout(&out)));
+    assert_eq!(v["advisories"][0]["id"], "RUSTSEC-2099-0001");
+    assert_eq!(v["packages_audited"], 1);
+}
+
+#[test]
+fn audit_invalid_advisory_ignore_is_config_error() {
+    let ws = workspace(&[
+        ("Cargo.lock", CARGO_LOCK_LEFTPAD),
+        ("safe-deps.toml", "[[advisory_ignores]]\nid = \"CVE-1\"\n"),
+    ]);
+    let out = run(&ws, &["audit", ".", "--offline", "--no-cache"]);
+    assert_eq!(
+        code(&out),
+        2,
+        "missing reason should be a usage/config error"
+    );
+}
+
+// --- Phase 5 review follow-ups (036-jp) --------------------------------------
+
+#[test]
+fn audit_malformed_lockfile_is_not_silently_clean() {
+    let ws = workspace(&[("Cargo.lock", "this is not valid toml {{{")]);
+    let out = run(&ws, &["audit", ".", "--offline", "--no-cache"]);
+    let text = stdout(&out);
+    assert!(text.contains("could not parse"), "{text}");
+}
+
+#[test]
+fn audit_format_honors_env_var() {
+    let ws = workspace(&[("Cargo.lock", CARGO_LOCK_LEFTPAD)]);
+    let out = bin()
+        .current_dir(ws.path())
+        .env("SAFE_DEPS_FORMAT", "json")
+        .args(["audit", ".", "--offline", "--no-cache"])
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("expected JSON via SAFE_DEPS_FORMAT: {e}\n{}", stdout(&out)));
+    assert!(v.get("advisories").is_some());
 }
 
 #[test]

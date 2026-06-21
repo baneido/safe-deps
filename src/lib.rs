@@ -3,6 +3,7 @@
 //! Phase 1 scope: workspace scanning, config loading, ecosystem detection for
 //! npm/Yarn/pnpm/Bun/pip/uv, rules SD001-SD004, and text/JSON output.
 
+pub mod audit;
 pub mod ci;
 pub mod cli;
 pub mod config;

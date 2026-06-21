@@ -54,6 +54,13 @@ rules::analyze (rules/mod.rs) → Findings + Diagnostics
 reporter_for (report/)        → bytes (text or json)
 ```
 
+`safe-deps audit` (`audit/`) is a **separate, explicitly-networked** pipeline that
+bypasses rules/report: `scan → audit::collect (lockfile coordinates) →
+VulnerabilitySource (OSV over the `HttpTransport`, default `curl`) → audit::render`.
+Network access lives **only** in the transport; `check` never touches it. Keep it
+that way — do not route `audit` through `rules::analyze`, and do not add network
+calls to the `check` path.
+
 **Parsers produce facts; rules turn facts into findings.** Never put policy/severity
 decisions in `ecosystems/` parser code — they belong in `rules/`. The normalized
 cross-package-manager settings struct is `InstallSettings` in `ecosystems/mod.rs`;

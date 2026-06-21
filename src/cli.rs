@@ -33,12 +33,50 @@ pub struct Cli {
 pub enum Command {
     /// Run the linter (default when no subcommand is given).
     Check(CheckArgs),
+    /// Query a vulnerability database (OSV) for known advisories. Unlike
+    /// `check`, this is an explicit network operation.
+    Audit(AuditArgs),
     /// Explain a rule in detail.
     Explain(ExplainArgs),
     /// List all available rules.
     ListRules,
     /// Write a minimal commented safe-deps.toml.
     Init,
+}
+
+#[derive(Args, Default)]
+pub struct AuditArgs {
+    /// Path to analyze, defaults to the current directory.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+
+    /// Config path. Defaults to ./safe-deps.toml when present.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Output format: text or json.
+    #[arg(long)]
+    pub format: Option<String>,
+
+    /// Use only the local cache; make no network requests.
+    #[arg(long)]
+    pub offline: bool,
+
+    /// Do not read or write the on-disk cache.
+    #[arg(long)]
+    pub no_cache: bool,
+
+    /// Cache directory (defaults to the per-user cache dir).
+    #[arg(long)]
+    pub cache_dir: Option<PathBuf>,
+
+    /// Cache freshness in seconds (default 86400 = 24h).
+    #[arg(long = "cache-ttl", default_value_t = 86_400)]
+    pub cache_ttl: u64,
+
+    /// Ignore .gitignore while scanning for lockfiles.
+    #[arg(long)]
+    pub no_gitignore: bool,
 }
 
 #[derive(Args, Default)]
@@ -118,6 +156,7 @@ pub fn run() -> ExitCode {
         ..Default::default()
     })) {
         Command::Check(args) => run_check(args),
+        Command::Audit(args) => run_audit_cmd(args),
         Command::Explain(args) => run_explain(&args.rule_id),
         Command::ListRules => run_list_rules(),
         Command::Init => run_init(),
@@ -201,6 +240,93 @@ fn run_check(args: CheckArgs) -> Result<u8, CliError> {
     } else {
         Ok(0)
     }
+}
+
+fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
+    let config = load_config(args.config.as_deref())?;
+    let scan_options = ScanOptions {
+        no_gitignore: args.no_gitignore,
+        ..Default::default()
+    };
+    let ctx = scan(&args.path, config.clone(), &scan_options).map_err(CliError::internal)?;
+
+    let collected = crate::audit::collect::collect(&ctx);
+    let coords = collected.coordinates;
+
+    let cache = if args.no_cache {
+        None
+    } else {
+        let dir = args
+            .cache_dir
+            .clone()
+            .unwrap_or_else(crate::audit::cache::Cache::default_dir);
+        Some(crate::audit::cache::Cache::new(dir, args.cache_ttl))
+    };
+
+    // In offline mode only cached coordinates are actually checked; count the
+    // misses so an offline gap is not mistaken for a clean bill of health.
+    let offline_unchecked = if args.offline {
+        coords
+            .iter()
+            .filter(|c| !cache.as_ref().is_some_and(|cache| cache.contains(c)))
+            .count()
+    } else {
+        0
+    };
+
+    let source =
+        crate::audit::osv::OsvSource::new(crate::audit::osv::CurlTransport, cache, args.offline);
+
+    let mut report = crate::audit::run_audit(
+        &coords,
+        &source,
+        &config.advisory_ignores,
+        config::today_ymd(),
+    )
+    .map_err(CliError::internal)?;
+
+    // Surface lockfile read/parse failures so an unparsed lockfile is not read
+    // as a clean result.
+    report.diagnostics.extend(collected.diagnostics);
+
+    if offline_unchecked > 0 {
+        report.packages_audited = coords.len().saturating_sub(offline_unchecked);
+        report.diagnostics.push(format!(
+            "offline: {offline_unchecked} package(s) not in the cache were not checked"
+        ));
+    }
+
+    // Resolve format with the same precedence as `check` (CLI flag, then config,
+    // then the SAFE_DEPS_FORMAT env var); audit supports text and json.
+    let format = resolve_value(
+        args.format.as_deref(),
+        config.format,
+        config::env::FORMAT,
+        OutputFormat::Text,
+        config::parse_format,
+    )?;
+    let as_json = match format {
+        OutputFormat::Json => true,
+        OutputFormat::Text => false,
+        other => {
+            return Err(CliError::usage(format!(
+                "audit does not support '{}' output; use text or json",
+                other.as_str()
+            )))
+        }
+    };
+    let text = if as_json {
+        crate::audit::render_json(&report).map_err(CliError::internal)?
+    } else {
+        crate::audit::render_text(&report)
+    };
+    std::io::Write::write_all(&mut std::io::stdout(), text.as_bytes())
+        .map_err(CliError::internal)?;
+    if !as_json && !text.ends_with('\n') {
+        println!();
+    }
+
+    Ok(if report.has_findings() { 1 } else { 0 })
 }
 
 fn run_explain(rule_id: &str) -> Result<u8, CliError> {
@@ -396,6 +522,12 @@ require_audit_in_ci = true
 # rule = \"SD006\"
 # path = \"tools/dev-fixtures/package.json\"
 # reason = \"Fixture intentionally uses a git dependency\"
+# expires = \"2026-12-31\"
+
+# Advisory ignores apply to `safe-deps audit` (the networked OSV mode).
+# [[advisory_ignores]]
+# id = \"RUSTSEC-2024-0001\"
+# reason = \"Not reachable; tracked in TICKET-123\"
 # expires = \"2026-12-31\"
 ";
 
