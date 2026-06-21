@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded runs for the same ref so a quick succession of pushes does
+# not pile up redundant CI.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -51,7 +57,9 @@ jobs:
       - name: Install cargo-audit and cargo-deny
         uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
         with:
-          tool: cargo-audit,cargo-deny
+          # Pin tool versions so the gate matches what deny.toml was validated
+          # against; a future cargo-deny can change its config schema or defaults.
+          tool: cargo-audit@0.22.2,cargo-deny@0.19.9
       - name: Audit (RUSTSEC advisories)
         run: cargo audit
       - name: Deny (advisories / licenses / bans / sources)
