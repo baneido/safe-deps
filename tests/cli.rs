@@ -1308,6 +1308,41 @@ fn ci_npm_ci_is_frozen_and_clears_sd002() {
     assert!(findings_for(&report, "SD002").is_empty(), "{report}");
 }
 
+const WORKFLOW_HEREDOC: &str = "\
+name: ci
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          cat <<EOF > config.txt
+          key=value
+          EOF
+";
+
+#[test]
+fn ci_complex_shell_emits_uncertainty_diagnostic() {
+    let ws = workspace(&[(".github/workflows/ci.yml", WORKFLOW_HEREDOC)]);
+    let report = check_json(&ws, &[]);
+    let diags = report["diagnostics"].as_array().unwrap();
+    let diag = diags
+        .iter()
+        .find(|d| {
+            d["message"]
+                .as_str()
+                .unwrap()
+                .contains("complex-shell-not-fully-parsed")
+        })
+        .unwrap_or_else(|| panic!("expected uncertainty diagnostic, got: {diags:?}"));
+    assert_eq!(diag["level"], "info");
+    assert_eq!(diag["location"], ".github/workflows/ci.yml");
+    // Informational only: it is not a parse failure, so --strict-parser-errors
+    // does not escalate the exit code.
+    let out = run(&ws, &["check", ".", "--strict-parser-errors"]);
+    assert_eq!(code(&out), 0);
+}
+
 #[test]
 fn ci_dangerous_force_flag_reports_sd009() {
     // `npm ci --force` is frozen (no SD002) but --force is a dangerous bypass.

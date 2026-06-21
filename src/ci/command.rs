@@ -253,6 +253,52 @@ pub fn is_install(inv: &Invocation) -> bool {
     }
 }
 
+/// Detects shell constructs the pragmatic tokenizer cannot fully or accurately
+/// parse, returning a short human-readable reason. The tokenizer still produces
+/// a best-effort segmentation; this exposes the uncertainty so a reduced-
+/// confidence parse is not mistaken for a clean one (surfaced as the
+/// `complex-shell-not-fully-parsed` diagnostic).
+///
+/// It deliberately flags only uncommon, genuinely ambiguous constructs that can
+/// cause a command to be mis-segmented (and so mis-classified by the CI rules);
+/// ordinary command substitution (`$(…)`, backticks) is parsed acceptably and is
+/// not flagged, to keep the signal low-noise.
+pub fn uncertainty(command: &str) -> Option<&'static str> {
+    // Heredoc / here-string (`<<`, `<<-`, `<<<`): the tokenizer treats `<` as a
+    // redirection separator and cannot capture the heredoc body.
+    if command.contains("<<") {
+        return Some("heredoc / here-string");
+    }
+    // Process substitution (`<(…)`, `>(…)`): split on the `<`/`>` separator.
+    if command.contains("<(") || command.contains(">(") {
+        return Some("process substitution");
+    }
+    // Shell function definition (`function f { … }` or `f() { … }`): the
+    // tokenizer does not model the body, so its commands are not seen.
+    if is_function_definition(command) {
+        return Some("shell function definition");
+    }
+    None
+}
+
+/// Whether `command` declares a shell function, in either the `function name`
+/// keyword form or the POSIX `name() {` form.
+fn is_function_definition(command: &str) -> bool {
+    if command
+        .split([' ', '\t', ';', '&', '(', ')'])
+        .any(|t| t == "function")
+    {
+        return true;
+    }
+    // `name() {`: an empty `()` pair followed (after optional whitespace) by `{`.
+    // This excludes empty command substitution `$()`, which is not followed by
+    // `{`, and process substitution, whose parens are not empty.
+    if let Some(idx) = command.find("()") {
+        return command[idx + 2..].trim_start().starts_with('{');
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,6 +328,36 @@ mod tests {
         let s = seg("CI=true /usr/local/bin/pnpm install");
         assert_eq!(program(&s[0]), Some("pnpm"));
         assert_eq!(subcommand(&s[0]), Some("install"));
+    }
+
+    #[test]
+    fn flags_uncertain_shell_constructs() {
+        assert_eq!(
+            uncertainty("cat <<EOF\nhi\nEOF"),
+            Some("heredoc / here-string")
+        );
+        assert_eq!(
+            uncertainty("grep foo <<<\"$bar\""),
+            Some("heredoc / here-string")
+        );
+        assert_eq!(uncertainty("diff <(a) <(b)"), Some("process substitution"));
+        assert_eq!(
+            uncertainty("deploy() { npm ci; }"),
+            Some("shell function definition")
+        );
+        assert_eq!(
+            uncertainty("function deploy { npm ci; }"),
+            Some("shell function definition")
+        );
+    }
+
+    #[test]
+    fn ordinary_commands_are_not_flagged() {
+        // Command substitution and plain pipelines are parsed acceptably.
+        assert_eq!(uncertainty("npm ci && npm test"), None);
+        assert_eq!(uncertainty("echo $(date) > log"), None);
+        assert_eq!(uncertainty("VERSION=`git rev-parse HEAD` make"), None);
+        assert_eq!(uncertainty("pip install -r requirements.txt"), None);
     }
 
     #[test]

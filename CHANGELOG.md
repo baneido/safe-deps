@@ -8,6 +8,10 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Added a `complex-shell-not-fully-parsed` info diagnostic that flags CI `run`
+  commands using constructs the pragmatic tokenizer cannot fully parse (heredocs,
+  process substitution, shell functions), so reduced-confidence CI rule coverage
+  is surfaced rather than silent. Informational only — it is not a parse failure.
 - Replaced the unmaintained `serde_yaml` dependency with the maintained
   `serde_yaml_ng` fork (imported under the same name; no API changes).
 - Added package-manager security best-practices research.

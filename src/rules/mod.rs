@@ -84,6 +84,25 @@ pub fn analyze(ctx: &WorkspaceContext, profile: Profile, ci_facts: &CiFacts) -> 
         }
     }
 
+    // Surface CI commands the pragmatic shell tokenizer cannot fully parse
+    // (heredocs, process substitution, shell functions). These are informational
+    // — the command is still analyzed best-effort, so they are NOT counted as
+    // parse failures — but they flag where CI-derived rule coverage (SD002,
+    // SD008, SD009) may be incomplete. `ci.commands` is sorted by (file, line),
+    // so emission is deterministic.
+    for cmd in &ci_facts.commands {
+        if let Some(reason) = crate::ci::command::uncertainty(&cmd.command) {
+            diagnostics.push(Diagnostic {
+                level: DiagnosticLevel::Info,
+                message: format!(
+                    "complex-shell-not-fully-parsed: {reason} at line {}; CI rule coverage for this command may be incomplete",
+                    cmd.line
+                ),
+                location: Some(cmd.file.clone()),
+            });
+        }
+    }
+
     let rules = all_rules();
 
     // Project-scoped rules run once per detected project.
