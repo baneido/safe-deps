@@ -12,9 +12,10 @@ unreleased and not yet tagged.
   (Linux and macOS on x86-64 + arm64, Windows on x86-64) to GitHub Releases with
   SHA-256 checksums, a cosign-signed `SHA256SUMS` manifest, and a CycloneDX SBOM.
   README documents downloading and verifying them.
-- Corrected the MSRV to **1.86** (dependencies require it; the previous `1.80`
-  and `1.85` did not build) and added an `msrv` CI job that pins it. Added
-  crates.io metadata (`readme`/`keywords`/`categories`) toward a future publish.
+- Corrected the MSRV from `1.80` to **1.86** (dependencies require it; any
+  toolchain older than 1.86 fails to build) and added an `msrv` CI job that pins
+  it. Added crates.io metadata (`readme`/`keywords`/`categories`) toward a future
+  publish.
 - `safe-deps audit` now uses an in-process HTTP client (`ureq` + rustls/`ring`)
   by default, so the binary no longer depends on the system `curl` and works on
   minimal containers and Windows out of the box. The previous curl transport is
