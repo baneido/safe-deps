@@ -87,6 +87,22 @@ fn parsed_cleanly(json: &serde_json::Value) -> bool {
         .unwrap_or(true)
 }
 
+fn has_diagnostic_message(json: &serde_json::Value, needle: &str) -> bool {
+    json["diagnostics"].as_array().is_some_and(|ds| {
+        ds.iter()
+            .any(|d| d["message"].as_str().is_some_and(|m| m.contains(needle)))
+    })
+}
+
+fn finding_count(json: &serde_json::Value, rule_id: &str) -> usize {
+    json["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule_id"] == rule_id)
+        .count()
+}
+
 // --- property tests ----------------------------------------------------------
 
 /// Content strategy: a mix of bounded arbitrary text (malformed manifests),
@@ -140,11 +156,14 @@ proptest! {
 
 #[test]
 fn malformed_manifest_yields_diagnostic_not_panic() {
-    // Trailing comma => invalid JSON; the analyzer must emit a parse diagnostic
+    // Broken table header => invalid TOML; the analyzer must emit a parse diagnostic
     // and continue rather than crash.
     let dir = workspace(&[("Cargo.toml", "[package\nname = ")]);
     let json = report_json(dir.path());
-    assert!(json["diagnostics"].is_array());
+    assert!(
+        has_diagnostic_message(&json, "could not parse Cargo.toml"),
+        "malformed Cargo.toml should produce a parse diagnostic: {json}"
+    );
 }
 
 #[test]
@@ -157,6 +176,15 @@ fn package_json_with_non_bool_private_field_is_tolerated() {
     )]);
     let json = report_json(dir.path());
     assert!(json["findings"].is_array());
+    assert!(
+        parsed_cleanly(&json),
+        "lenient package.json field types should not produce parse diagnostics: {json}"
+    );
+    assert_eq!(
+        finding_count(&json, "SD001"),
+        1,
+        "dependencies should still be extracted and checked for SD001: {json}"
+    );
 }
 
 #[test]
