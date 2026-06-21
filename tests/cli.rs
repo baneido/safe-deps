@@ -1003,3 +1003,19 @@ fn sd005_flags_bun_trusted_wildcard_in_package_json() {
     ]);
     assert_eq!(findings_of(&check_json(&ws, &[]), "SD005").len(), 1);
 }
+
+#[test]
+fn sd006_floating_ssh_git_remediation_covers_both() {
+    // A dep that is both floating and SSH must get a remediation that addresses
+    // both, so following it actually clears the finding.
+    let ws = workspace(&[(
+        "package.json",
+        r#"{ "name": "d", "dependencies": { "internal": "git+ssh://git@host/org/repo.git#main" } }"#,
+    )]);
+    let report = check_json(&ws, &[]);
+    let sd006 = findings_of(&report, "SD006");
+    assert_eq!(sd006.len(), 1, "{report}");
+    let rem = sd006[0]["remediation"].as_str().unwrap();
+    assert!(rem.contains("SHA"), "{rem}");
+    assert!(rem.contains("https"), "{rem}");
+}

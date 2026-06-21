@@ -54,12 +54,20 @@ fn classify(dep: &Dependency, policy: &Policy) -> Option<(String, &'static str)>
                 return None;
             }
             if *floating {
+                // A dependency can be both floating and SSH; the remediation
+                // must address both, otherwise pinning the SHA leaves the SSH
+                // source flagged on the next run.
+                let remediation = if *ssh {
+                    "pin the Git dependency to a specific commit SHA and prefer an https URL (or a registry release)."
+                } else {
+                    "pin the Git dependency to a specific commit SHA, or publish a registry release."
+                };
                 Some((
                     format!(
                         "dependency `{}` uses a floating Git ref (`{}`); it can change without notice",
                         dep.name, dep.spec
                     ),
-                    "pin the Git dependency to a specific commit SHA, or publish a registry release.",
+                    remediation,
                 ))
             } else if *ssh {
                 Some((
