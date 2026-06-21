@@ -157,6 +157,12 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
                 "suppression requires both `rule` and `path`".to_string(),
             ));
         }
+        // The path is compiled into a glob at match time; an invalid one would
+        // otherwise be silently dropped and never suppress anything.
+        validate_glob(
+            &format!("suppression for rule {} `path`", supp.rule),
+            &supp.path,
+        )?;
         if let Some(expires) = &supp.expires {
             if parse_iso_date(expires).is_none() {
                 return Err(ConfigError::Invalid(format!(
@@ -187,7 +193,34 @@ pub fn validate(config: &Config) -> Result<(), ConfigError> {
             }
         }
     }
+    // Reject every config-supplied glob loudly. Otherwise a single bad pattern
+    // is silently dropped: project-root globs would disable the
+    // application_roots/library_roots severity adjustment, and workspace globs
+    // would otherwise surface only as an internal (exit 3) scan error rather
+    // than a config (exit 2) error.
+    for (field, patterns) in [
+        (
+            "[policy] application_roots",
+            &config.policy.application_roots,
+        ),
+        ("[policy] library_roots", &config.policy.library_roots),
+        ("[workspace] exclude", &config.workspace.exclude),
+        ("[workspace] include", &config.workspace.include),
+    ] {
+        for pattern in patterns {
+            validate_glob(field, pattern)?;
+        }
+    }
     Ok(())
+}
+
+/// Returns `ConfigError::Invalid` if `pattern` is not a compilable glob. Used to
+/// reject malformed config globs at load time instead of letting them be
+/// silently dropped where they are compiled.
+fn validate_glob(field: &str, pattern: &str) -> Result<(), ConfigError> {
+    globset::Glob::new(pattern)
+        .map(|_| ())
+        .map_err(|err| ConfigError::Invalid(format!("{field} has invalid glob '{pattern}': {err}")))
 }
 
 /// Today's date as `(year, month, day)` in UTC, for expiry comparisons.
@@ -336,6 +369,59 @@ mod tests {
         assert_eq!(parse_fail_on("none").unwrap(), FailLevel::None);
         assert!(parse_format("yaml").is_err());
         assert!(parse_fail_on("fatal").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_root_glob() {
+        // A single bad pattern must fail loudly rather than silently disabling
+        // the whole root set.
+        let mut config = Config::default();
+        config.policy.application_roots = vec!["apps/*".to_string(), "[bad".to_string()];
+        match validate(&config) {
+            Err(ConfigError::Invalid(msg)) => {
+                assert!(msg.contains("application_roots"), "{msg}");
+                assert!(msg.contains("[bad"), "{msg}");
+            }
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_valid_root_globs() {
+        let mut config = Config::default();
+        config.policy.application_roots = vec!["apps/*".to_string()];
+        config.policy.library_roots = vec!["libs/**".to_string(), "tools/*/lib".to_string()];
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_workspace_glob() {
+        let mut config = Config::default();
+        config.workspace.exclude = vec!["[bad".to_string()];
+        match validate(&config) {
+            Err(ConfigError::Invalid(msg)) => assert!(msg.contains("[workspace] exclude"), "{msg}"),
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_invalid_suppression_path_glob() {
+        let config = Config {
+            suppressions: vec![Suppression {
+                rule: "SD001".to_string(),
+                path: "[bad".to_string(),
+                reason: "test".to_string(),
+                expires: None,
+                line: None,
+                package_manager: None,
+                ecosystem: None,
+            }],
+            ..Config::default()
+        };
+        match validate(&config) {
+            Err(ConfigError::Invalid(msg)) => assert!(msg.contains("suppression"), "{msg}"),
+            other => panic!("expected Invalid, got {other:?}"),
+        }
     }
 
     #[test]
