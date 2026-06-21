@@ -50,7 +50,7 @@ pub struct AuditArgs {
     #[arg(default_value = ".")]
     pub path: PathBuf,
 
-    /// Config path. Defaults to ./safe-deps.toml when present.
+    /// Config path. Defaults to <target>/safe-deps.toml when present.
     #[arg(long)]
     pub config: Option<PathBuf>,
 
@@ -85,7 +85,7 @@ pub struct CheckArgs {
     #[arg(default_value = ".")]
     pub path: PathBuf,
 
-    /// Config path. Defaults to ./safe-deps.toml when present.
+    /// Config path. Defaults to <target>/safe-deps.toml when present.
     #[arg(long)]
     pub config: Option<PathBuf>,
 
@@ -243,7 +243,7 @@ fn run_check(args: CheckArgs) -> Result<u8, CliError> {
 }
 
 fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
-    let config = load_config(args.config.as_deref())?;
+    let config = load_config(args.config.as_deref(), &args.path)?;
     let scan_options = ScanOptions {
         no_gitignore: args.no_gitignore,
         ..Default::default()
@@ -363,7 +363,7 @@ fn run_init() -> Result<u8, CliError> {
 }
 
 fn resolve_config(args: &CheckArgs) -> Result<ResolvedConfig, CliError> {
-    let config = load_config(args.config.as_deref())?;
+    let config = load_config(args.config.as_deref(), &args.path)?;
     let profile = resolve_value(
         args.profile.as_deref(),
         config.profile,
@@ -392,13 +392,16 @@ fn resolve_config(args: &CheckArgs) -> Result<ResolvedConfig, CliError> {
     })
 }
 
-fn load_config(explicit: Option<&Path>) -> Result<Config, CliError> {
+fn load_config(explicit: Option<&Path>, workspace_root: &Path) -> Result<Config, CliError> {
     if let Some(path) = explicit {
         return Ok(config::load(path)?);
     }
-    let default = Path::new("safe-deps.toml");
+    // Discover the default config relative to the analysis target, not the
+    // process working directory. `safe-deps check /path/to/repo` must pick up
+    // `/path/to/repo/safe-deps.toml` regardless of where it is invoked from.
+    let default = workspace_root.join("safe-deps.toml");
     if default.is_file() {
-        return Ok(config::load(default)?);
+        return Ok(config::load(&default)?);
     }
     Ok(Config::default())
 }

@@ -265,6 +265,32 @@ fn config_file_fail_on_none_overrides_default() {
 }
 
 #[test]
+fn config_discovered_relative_to_target_not_cwd() {
+    // The default `safe-deps.toml` must be discovered relative to the analysis
+    // target, not the process working directory. Run from an unrelated cwd and
+    // point `check` at the workspace by absolute path; the workspace config
+    // (fail_on = none) must still apply.
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        (".npmrc", "strict-ssl=false\n"),
+        ("safe-deps.toml", "fail_on = \"none\"\n"),
+    ]);
+    let elsewhere = TempDir::new().unwrap();
+    let out = bin()
+        .current_dir(elsewhere.path())
+        .args(["check"])
+        .arg(ws.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code().unwrap(),
+        0,
+        "target-relative safe-deps.toml (fail_on=none) should be discovered from any cwd: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
 fn config_rule_level_override_downgrades_severity() {
     let ws = workspace(&[
         ("package.json", NPM_DEPS),
