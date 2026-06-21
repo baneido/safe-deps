@@ -837,3 +837,27 @@ fn audit_invalid_advisory_ignore_is_config_error() {
         "missing reason should be a usage/config error"
     );
 }
+
+// --- Phase 5 review follow-ups (036-jp) --------------------------------------
+
+#[test]
+fn audit_malformed_lockfile_is_not_silently_clean() {
+    let ws = workspace(&[("Cargo.lock", "this is not valid toml {{{")]);
+    let out = run(&ws, &["audit", ".", "--offline", "--no-cache"]);
+    let text = stdout(&out);
+    assert!(text.contains("could not parse"), "{text}");
+}
+
+#[test]
+fn audit_format_honors_env_var() {
+    let ws = workspace(&[("Cargo.lock", CARGO_LOCK_LEFTPAD)]);
+    let out = bin()
+        .current_dir(ws.path())
+        .env("SAFE_DEPS_FORMAT", "json")
+        .args(["audit", ".", "--offline", "--no-cache"])
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("expected JSON via SAFE_DEPS_FORMAT: {e}\n{}", stdout(&out)));
+    assert!(v.get("advisories").is_some());
+}

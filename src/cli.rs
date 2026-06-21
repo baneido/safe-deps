@@ -243,7 +243,8 @@ fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
     };
     let ctx = scan(&args.path, config.clone(), &scan_options).map_err(CliError::internal)?;
 
-    let coords = crate::audit::collect::collect(&ctx);
+    let collected = crate::audit::collect::collect(&ctx);
+    let coords = collected.coordinates;
 
     let cache = if args.no_cache {
         None
@@ -277,6 +278,10 @@ fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
     )
     .map_err(CliError::internal)?;
 
+    // Surface lockfile read/parse failures so an unparsed lockfile is not read
+    // as a clean result.
+    report.diagnostics.extend(collected.diagnostics);
+
     if offline_unchecked > 0 {
         report.packages_audited = coords.len().saturating_sub(offline_unchecked);
         report.diagnostics.push(format!(
@@ -284,12 +289,15 @@ fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
         ));
     }
 
-    // Resolve format with the same precedence as `check` (CLI flag, then
-    // config), validating the value; audit supports text and json.
-    let format = match args.format.as_deref() {
-        Some(s) => config::parse_format(s)?,
-        None => config.format.unwrap_or(OutputFormat::Text),
-    };
+    // Resolve format with the same precedence as `check` (CLI flag, then config,
+    // then the SAFE_DEPS_FORMAT env var); audit supports text and json.
+    let format = resolve_value(
+        args.format.as_deref(),
+        config.format,
+        config::env::FORMAT,
+        OutputFormat::Text,
+        config::parse_format,
+    )?;
     let as_json = match format {
         OutputFormat::Json => true,
         OutputFormat::Text => false,

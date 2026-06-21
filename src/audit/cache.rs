@@ -50,9 +50,11 @@ impl Cache {
         serde_json::from_str(&text).ok()
     }
 
-    /// Whether a cache entry exists for `coord` (regardless of freshness).
+    /// Whether a usable cache entry exists for `coord` (regardless of
+    /// freshness). Loads it rather than testing existence so a truncated or
+    /// corrupt file counts as a miss, consistent with `get_any`/`get_fresh`.
     pub fn contains(&self, coord: &PackageCoordinate) -> bool {
-        self.path(coord).exists()
+        self.load(coord).is_some()
     }
 
     /// Returns cached advisories only if they are within the TTL. An entry

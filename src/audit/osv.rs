@@ -132,19 +132,37 @@ impl<T: HttpTransport> VulnerabilitySource for OsvSource<T> {
     }
 }
 
+/// OSV's `querybatch` accepts at most 1000 queries per request.
+const MAX_BATCH: usize = 1000;
+
 impl<T: HttpTransport> OsvSource<T> {
     fn fetch(&self, coords: &[PackageCoordinate]) -> Result<Vec<Advisory>, AuditError> {
+        // Chunk against OSV's per-request query cap so a large monorepo does not
+        // overflow the batch and fail.
+        let mut out = Vec::new();
+        for chunk in coords.chunks(MAX_BATCH) {
+            out.extend(self.fetch_chunk(chunk)?);
+        }
+        Ok(out)
+    }
+
+    fn fetch_chunk(&self, coords: &[PackageCoordinate]) -> Result<Vec<Advisory>, AuditError> {
         let body = querybatch_body(coords);
         let response = self.transport.post_json(QUERYBATCH_URL, &body)?;
         let ids_per_coord = parse_querybatch(&response, coords.len())?;
 
-        // Fetch each unique vulnerability's details once.
+        // Fetch each unique vulnerability's details once. A transient failure on
+        // one detail page must not abort the whole audit; fall back to the bare
+        // id and keep going.
         let mut details: BTreeMap<String, VulnDetail> = BTreeMap::new();
         for ids in &ids_per_coord {
             for id in ids {
                 if !details.contains_key(id) {
-                    let raw = self.transport.get(&format!("{VULN_URL}{id}"))?;
-                    details.insert(id.clone(), parse_vuln_detail(&raw, id));
+                    let detail = match self.transport.get(&format!("{VULN_URL}{id}")) {
+                        Ok(raw) => parse_vuln_detail(&raw, id),
+                        Err(_) => parse_vuln_detail("{}", id),
+                    };
+                    details.insert(id.clone(), detail);
                 }
             }
         }
@@ -346,6 +364,34 @@ mod tests {
         assert_eq!(advisories[0].id, "RUSTSEC-1");
         assert_eq!(advisories[0].package.name, "vuln-pkg");
         assert_eq!(advisories[0].severity.as_deref(), Some("9.8"));
+    }
+
+    #[test]
+    fn detail_fetch_failure_is_non_fatal() {
+        // A transient failure on the vuln-detail GET must not abort the audit;
+        // the advisory is still reported (with the id as its summary).
+        struct FailingGet {
+            batch: String,
+        }
+        impl HttpTransport for FailingGet {
+            fn post_json(&self, _u: &str, _b: &str) -> Result<String, AuditError> {
+                Ok(self.batch.clone())
+            }
+            fn get(&self, _u: &str) -> Result<String, AuditError> {
+                Err(AuditError::Transport("boom".into()))
+            }
+        }
+        let source = OsvSource::new(
+            FailingGet {
+                batch: r#"{"results":[{"vulns":[{"id":"RUSTSEC-1"}]}]}"#.into(),
+            },
+            None,
+            false,
+        );
+        let advisories = source.query(&[coord("vuln-pkg")]).unwrap();
+        assert_eq!(advisories.len(), 1);
+        assert_eq!(advisories[0].id, "RUSTSEC-1");
+        assert_eq!(advisories[0].summary, "RUSTSEC-1");
     }
 
     #[test]

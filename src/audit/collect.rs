@@ -11,32 +11,53 @@ use crate::audit::PackageCoordinate;
 use crate::filesystem::{files_named, read_text, WorkspaceContext};
 
 /// Collects deduplicated, deterministically-ordered coordinates from every
-/// supported lockfile in the workspace.
-pub fn collect(ctx: &WorkspaceContext) -> Vec<PackageCoordinate> {
+/// supported lockfile in the workspace, plus diagnostics for any lockfile that
+/// could not be read or parsed (so an audit never silently reports "clean" for
+/// a file it never analyzed).
+#[derive(Debug, Default)]
+pub struct Collected {
+    pub coordinates: Vec<PackageCoordinate>,
+    pub diagnostics: Vec<String>,
+}
+
+pub fn collect(ctx: &WorkspaceContext) -> Collected {
     let mut set: BTreeSet<(String, String, String)> = BTreeSet::new();
+    let mut diagnostics = Vec::new();
 
     for lock in files_named(ctx, "Cargo.lock") {
-        if let Ok(text) = read_text(ctx, &lock) {
-            for c in cargo_lock_coordinates(&text) {
-                set.insert((c.ecosystem, c.name, c.version));
+        match read_text(ctx, &lock) {
+            Ok(text) if toml::from_str::<toml::Value>(&text).is_ok() => {
+                for c in cargo_lock_coordinates(&text) {
+                    set.insert((c.ecosystem, c.name, c.version));
+                }
             }
+            Ok(_) => diagnostics.push(format!("could not parse {}", lock.display())),
+            Err(e) => diagnostics.push(format!("could not read {}: {e}", lock.display())),
         }
     }
     for lock in files_named(ctx, "package-lock.json") {
-        if let Ok(text) = read_text(ctx, &lock) {
-            for c in npm_lock_coordinates(&text) {
-                set.insert((c.ecosystem, c.name, c.version));
+        match read_text(ctx, &lock) {
+            Ok(text) if serde_json::from_str::<serde_json::Value>(&text).is_ok() => {
+                for c in npm_lock_coordinates(&text) {
+                    set.insert((c.ecosystem, c.name, c.version));
+                }
             }
+            Ok(_) => diagnostics.push(format!("could not parse {}", lock.display())),
+            Err(e) => diagnostics.push(format!("could not read {}: {e}", lock.display())),
         }
     }
 
-    set.into_iter()
-        .map(|(ecosystem, name, version)| PackageCoordinate {
-            ecosystem,
-            name,
-            version,
-        })
-        .collect()
+    Collected {
+        coordinates: set
+            .into_iter()
+            .map(|(ecosystem, name, version)| PackageCoordinate {
+                ecosystem,
+                name,
+                version,
+            })
+            .collect(),
+        diagnostics,
+    }
 }
 
 /// Parses `[[package]]` entries from a `Cargo.lock`, keeping only crates.io
@@ -84,6 +105,7 @@ pub fn npm_lock_coordinates(text: &str) -> Vec<PackageCoordinate> {
         return Vec::new();
     };
     let mut out = Vec::new();
+    let has_packages = value.get("packages").is_some();
 
     // v2/v3: a flat `packages` map keyed by install path.
     if let Some(packages) = value.get("packages").and_then(|p| p.as_object()) {
@@ -114,9 +136,13 @@ pub fn npm_lock_coordinates(text: &str) -> Vec<PackageCoordinate> {
         }
     }
 
-    // v1: a nested `dependencies` tree keyed by package name.
-    if let Some(deps) = value.get("dependencies").and_then(|d| d.as_object()) {
-        collect_npm_v1(deps, &mut out);
+    // v1: a nested `dependencies` tree keyed by package name. A v2 lockfile
+    // carries this for backward-compat *alongside* `packages`; only read it when
+    // `packages` is absent so packages are not collected twice.
+    if !has_packages {
+        if let Some(deps) = value.get("dependencies").and_then(|d| d.as_object()) {
+            collect_npm_v1(deps, &mut out);
+        }
     }
 
     out
@@ -127,10 +153,18 @@ fn collect_npm_v1(
     out: &mut Vec<PackageCoordinate>,
 ) {
     for (name, entry) in deps {
+        // Skip git/file-resolved entries (the v2/v3 path applies the same guard).
+        let non_registry_resolved =
+            entry
+                .get("resolved")
+                .and_then(|r| r.as_str())
+                .is_some_and(|r| {
+                    r.starts_with("git+") || r.starts_with("git:") || r.starts_with("file:")
+                });
         if let Some(version) = entry.get("version").and_then(|v| v.as_str()) {
             // Skip non-registry refs: git/file URLs and `npm:` aliases all carry
             // `:` or `/`, which a plain registry version never does.
-            if is_registry_version(version) {
+            if !non_registry_resolved && is_registry_version(version) {
                 out.push(npm_coord(name, version));
             }
         }
@@ -202,6 +236,20 @@ source = "git+https://github.com/x/y"
         assert!(names.contains(&"@scope/util"));
         assert!(!names.contains(&"linked"));
         assert!(!names.contains(&"root"));
+    }
+
+    #[test]
+    fn npm_v2_does_not_double_count_packages_and_dependencies() {
+        // A v2 lockfile carries both `packages` and a legacy `dependencies`
+        // tree; the same package must be returned once, not twice.
+        let text = r#"{
+          "lockfileVersion": 2,
+          "packages": { "node_modules/left-pad": { "version": "1.3.0" } },
+          "dependencies": { "left-pad": { "version": "1.3.0" } }
+        }"#;
+        let coords = npm_lock_coordinates(text);
+        assert_eq!(coords.len(), 1, "{coords:?}");
+        assert_eq!(coords[0].name, "left-pad");
     }
 
     #[test]
