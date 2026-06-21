@@ -18,6 +18,10 @@ allow = [
     "BSL-1.0",
     "Unicode-3.0",
     "Unlicense",
+    # Added with the native HTTP stack (`ureq` + `rustls`/`ring`, issue #41):
+    "ISC",                 # ring, rustls-webpki, untrusted
+    "BSD-3-Clause",        # subtle (constant-time crypto primitives)
+    "CDLA-Permissive-2.0", # webpki-roots (Mozilla CA bundle data)
 ]
 confidence-threshold = 0.8
 
