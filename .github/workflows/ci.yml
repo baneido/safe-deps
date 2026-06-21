@@ -116,12 +116,18 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-      - name: Install actionlint
-        uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
-        with:
-          tool: actionlint@1.7.7
       - name: actionlint
-        run: actionlint -color
+        # actionlint is a Go tool (not a crate), so install it from the pinned
+        # release with a checksum rather than via install-action.
+        run: |
+          set -euo pipefail
+          version=1.7.7
+          sha256=023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+          url="https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz"
+          curl -fsSL -o actionlint.tar.gz "$url"
+          echo "${sha256}  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz actionlint
+          ./actionlint -color
       - name: zizmor (informational)
         # Workflow security scanner. Informational for now: surface findings
         # without blocking. Runs offline so it needs no token.

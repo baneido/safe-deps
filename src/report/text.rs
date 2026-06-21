@@ -25,7 +25,7 @@ fn render(out: &mut Vec<u8>, report: &Report) -> Result<(), ReportError> {
         out,
         "profile: {}  path: {}",
         report.profile.as_str(),
-        report.path.display()
+        crate::report::display_path(&report.path)
     )
     .map_err(write_err)?;
     writeln!(out, "findings: {}", findings.len()).map_err(write_err)?;
@@ -49,7 +49,7 @@ fn render(out: &mut Vec<u8>, report: &Report) -> Result<(), ReportError> {
             let loc = diag
                 .location
                 .as_ref()
-                .map(|p| p.display().to_string())
+                .map(|p| crate::report::display_path(p))
                 .unwrap_or_else(|| "-".to_string());
             writeln!(out, "  [{level}] {loc}: {}", diag.message).map_err(write_err)?;
         }
@@ -84,13 +84,13 @@ fn render_by_severity(
                 .location
                 .as_ref()
                 .map(|l| {
-                    let base = l.file.display().to_string();
+                    let base = crate::report::display_path(&l.file);
                     match l.line {
                         Some(line) => format!("{base}:{line}"),
                         None => base,
                     }
                 })
-                .unwrap_or_else(|| finding.project_root.display().to_string());
+                .unwrap_or_else(|| crate::report::display_path(&finding.project_root));
             writeln!(
                 out,
                 "  {id} [{pm}] {loc} (confidence: {conf})",

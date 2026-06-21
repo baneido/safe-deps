@@ -48,6 +48,15 @@ pub fn reporter_for(format: OutputFormat) -> Box<dyn Reporter> {
     }
 }
 
+/// Renders a path for report output with separators normalized to `/`, so the
+/// emitted paths are identical on Windows and Unix (and match the `/`-written
+/// paths in fixtures, SARIF URIs, and suppression globs). `display()`/
+/// `to_string_lossy()` would otherwise yield backslashes on Windows.
+pub(crate) fn display_path(path: &std::path::Path) -> String {
+    path.to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/")
+}
+
 /// Sorts findings deterministically: severity desc, confidence desc, project
 /// path, rule id, file path, line.
 pub fn sort_findings(findings: &mut [Finding]) {

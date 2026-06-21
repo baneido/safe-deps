@@ -211,7 +211,7 @@ fn sarif_notification(d: &crate::diagnostics::Diagnostic) -> SarifNotification {
             vec![SarifLocation {
                 physical_location: SarifPhysicalLocation {
                     artifact_location: SarifArtifactLocation {
-                        uri: p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"),
+                        uri: crate::report::display_path(p),
                     },
                     region: None,
                 },
