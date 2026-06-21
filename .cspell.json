@@ -23,6 +23,8 @@
     "deps",
     "Gradle",
     "globset",
+    "heredoc",
+    "heredocs",
     "insta",
     "lockfile",
     "lockfiles",
