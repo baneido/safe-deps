@@ -74,3 +74,54 @@ fn push_replace(spec: &str, file: &Path, out: &mut Vec<Dependency>) {
         file: file.to_path_buf(),
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn replace_to_local_path_is_an_unsafe_dependency() {
+        let text =
+            "module m\n\nrequire github.com/x/y v1.0.0\n\nreplace github.com/x/y => ./vendor/y\n";
+        let deps = dependencies(text, Path::new("go.mod"));
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "github.com/x/y");
+        assert_eq!(deps[0].spec, "./vendor/y");
+        assert!(matches!(deps[0].source, DependencySource::Path));
+    }
+
+    #[test]
+    fn replace_to_module_is_not_emitted() {
+        // A module-to-module replacement is proxy-resolved and checksummed (safe).
+        let text = "module m\nreplace github.com/x/y => github.com/z/y v1.4.0\n";
+        assert!(dependencies(text, Path::new("go.mod")).is_empty());
+    }
+
+    #[test]
+    fn replace_block_form_strips_comments_and_versions() {
+        let text = "module m\n\nreplace (\n\tgithub.com/a/b v1.0.0 => ../local/b // dev only\n\tgithub.com/c/d => github.com/e/d v1.0.0\n)\n";
+        let deps = dependencies(text, Path::new("go.mod"));
+        assert_eq!(deps.len(), 1, "only the local-path replace is unsafe");
+        assert_eq!(deps[0].name, "github.com/a/b");
+        assert_eq!(deps[0].spec, "../local/b");
+    }
+
+    #[test]
+    fn replace_prefixed_module_path_is_not_a_directive() {
+        // A line beginning with "replace" but not the directive (no keyword
+        // boundary). The `=> ./local` target means push_replace WOULD emit a
+        // Path dependency if the boundary guard were missing, so this input
+        // actually exercises that guard rather than short-circuiting earlier.
+        let text = "module m\nreplacement.example/x => ./local\n";
+        assert!(dependencies(text, Path::new("go.mod")).is_empty());
+    }
+
+    #[test]
+    fn malformed_input_is_tolerated() {
+        // Malformed input must not panic; this fragment degrades to no
+        // dependencies (the empty `replace =>` has no name/target).
+        let garbage = "}{ not really go.mod (((\nreplace =>\nrequire (\n";
+        assert!(dependencies(garbage, Path::new("go.mod")).is_empty());
+    }
+}

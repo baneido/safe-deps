@@ -253,4 +253,37 @@ mod tests {
         assert_eq!(parse(r#"{"private":"false"}"#).private, Some(false));
         assert_eq!(parse(r#"{"name":"x"}"#).private, None);
     }
+
+    #[test]
+    fn lenient_bool_tolerates_other_shapes() {
+        // Numbers, null, objects, and arrays are treated as "not declared"
+        // (None) instead of aborting the manifest parse.
+        assert_eq!(parse(r#"{"private":1}"#).private, None);
+        assert_eq!(parse(r#"{"private":null}"#).private, None);
+        assert_eq!(parse(r#"{"private":{}}"#).private, None);
+        assert_eq!(parse(r#"{"private":[]}"#).private, None);
+        // Surrounding whitespace and case are normalized for string bools.
+        assert_eq!(parse(r#"{"private":" TRUE "}"#).private, Some(true));
+        // A non-true/false string is "not declared", not an error.
+        assert_eq!(parse(r#"{"private":"yes"}"#).private, None);
+    }
+
+    #[test]
+    fn package_manager_hint_trailing_at_has_no_version() {
+        // `yarn@` (trailing separator, empty version) is still a known manager.
+        let hint = PackageManagerHint::parse("yarn@").unwrap();
+        assert_eq!(hint.manager, crate::ecosystems::PackageManager::Yarn);
+        assert!(hint.version.is_none());
+    }
+
+    #[test]
+    fn unicode_and_very_long_specs_do_not_panic() {
+        // Non-ASCII names and a very long version spec must parse without panic.
+        let long = "^".repeat(5000);
+        let text = format!(r#"{{"dependencies":{{"pkg-日本語":"{long}","emoji-📦":"1.0.0"}}}}"#);
+        let pj = parse(&text);
+        assert!(pj.has_dependencies());
+        let deps = pj.dependencies(std::path::Path::new("package.json"));
+        assert_eq!(deps.len(), 2);
+    }
 }

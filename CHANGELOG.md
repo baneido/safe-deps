@@ -16,6 +16,11 @@ unreleased and not yet tagged.
   toolchain older than 1.86 fails to build) and added an `msrv` CI job that pins
   it. Added crates.io metadata (`readme`/`keywords`/`categories`) toward a future
   publish.
+- Added `proptest`-based robustness tests for the ecosystem analyzers: property
+  tests assert the offline pipeline never panics and is deterministic on random
+  and semi-structured manifest content, plus targeted fixtures for edge cases
+  (invalid-but-tolerated manifests, hash pins, mixed `uv.toml`, Unicode names,
+  deep nesting, and a many-project monorepo).
 - `safe-deps audit` now uses an in-process HTTP client (`ureq` + rustls/`ring`)
   by default, so the binary no longer depends on the system `curl` and works on
   minimal containers and Windows out of the box. The previous curl transport is
