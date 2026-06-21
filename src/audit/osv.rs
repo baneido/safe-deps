@@ -10,7 +10,11 @@
 
 use std::collections::BTreeMap;
 #[cfg(feature = "curl-transport")]
+use std::ffi::OsString;
+#[cfg(feature = "curl-transport")]
 use std::io::Write;
+#[cfg(feature = "curl-transport")]
+use std::path::{Path, PathBuf};
 #[cfg(feature = "curl-transport")]
 use std::process::{Command, Stdio};
 
@@ -53,7 +57,7 @@ pub fn default_transport() -> UreqTransport {
 /// is disabled).
 #[cfg(all(not(feature = "native-http"), feature = "curl-transport"))]
 pub fn default_transport() -> CurlTransport {
-    CurlTransport
+    CurlTransport::new()
 }
 
 /// In-process transport using the `ureq` HTTP client (rustls/`ring` TLS). No
@@ -137,14 +141,112 @@ fn read_body(resp: ureq::Response) -> Result<String, AuditError> {
     Ok(buf)
 }
 
-/// Fallback transport: invokes the system `curl`.
+/// Environment variable that pins the exact `curl` binary to invoke. When set to
+/// a non-empty value it is used verbatim, regardless of `PATH` or the trusted
+/// directories below — an explicit operator override (its correctness is the
+/// operator's responsibility; a bad value surfaces as a spawn error naming the
+/// path).
 #[cfg(feature = "curl-transport")]
-pub struct CurlTransport;
+const CURL_OVERRIDE_ENV: &str = "SAFE_DEPS_CURL";
+
+/// Absolute directories searched (in order) before `PATH`. Preferring these
+/// means a poisoned or attacker-prepended `PATH` entry cannot shadow the system
+/// `curl` on a normal host.
+#[cfg(all(feature = "curl-transport", not(windows)))]
+const TRUSTED_DIRS: &[&str] = &["/usr/bin", "/bin", "/usr/local/bin", "/opt/homebrew/bin"];
+#[cfg(all(feature = "curl-transport", windows))]
+const TRUSTED_DIRS: &[&str] = &[r"C:\Windows\System32"];
+
+/// Platform binary name.
+#[cfg(all(feature = "curl-transport", not(windows)))]
+const CURL_BIN: &str = "curl";
+#[cfg(all(feature = "curl-transport", windows))]
+const CURL_BIN: &str = "curl.exe";
+
+/// Resolves the `curl` binary to a concrete path, independently of how the
+/// ambient `PATH` is ordered. Pure (env values and an existence predicate are
+/// injected) so the policy is unit-testable without touching the real
+/// filesystem or process environment.
+///
+/// Order: (1) the `SAFE_DEPS_CURL` override, used verbatim; (2) the first
+/// trusted directory that contains `curl`; (3) the first **absolute** `PATH`
+/// entry that contains `curl` (relative entries such as `.` are skipped so the
+/// working directory can never supply the binary). Falls back to the bare name
+/// so a host with `curl` in an unusual location still works exactly as a plain
+/// `Command::new("curl")` would — resolution only ever *improves* on that.
+#[cfg(feature = "curl-transport")]
+fn resolve_curl_from(
+    override_var: Option<OsString>,
+    path_var: Option<OsString>,
+    exists: &dyn Fn(&Path) -> bool,
+) -> PathBuf {
+    if let Some(pinned) = override_var.filter(|v| !v.is_empty()) {
+        return PathBuf::from(pinned);
+    }
+    for dir in TRUSTED_DIRS {
+        let candidate = Path::new(dir).join(CURL_BIN);
+        if exists(&candidate) {
+            return candidate;
+        }
+    }
+    if let Some(path_var) = path_var {
+        for dir in std::env::split_paths(&path_var) {
+            if !dir.is_absolute() {
+                continue;
+            }
+            let candidate = dir.join(CURL_BIN);
+            if exists(&candidate) {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from(CURL_BIN)
+}
+
+/// Resolves `curl` against the real environment (see [`resolve_curl_from`]).
+#[cfg(feature = "curl-transport")]
+fn resolve_curl() -> PathBuf {
+    resolve_curl_from(
+        std::env::var_os(CURL_OVERRIDE_ENV),
+        std::env::var_os("PATH"),
+        &|p| p.exists(),
+    )
+}
+
+/// Fallback transport: invokes the system `curl`, resolved once to a concrete
+/// path so every request executes the same binary.
+#[cfg(feature = "curl-transport")]
+pub struct CurlTransport {
+    curl: PathBuf,
+}
+
+#[cfg(feature = "curl-transport")]
+impl CurlTransport {
+    /// Resolves the `curl` binary once up front (see [`resolve_curl_from`]).
+    pub fn new() -> Self {
+        Self {
+            curl: resolve_curl(),
+        }
+    }
+
+    /// The resolved `curl` binary this transport invokes. Surfaced by
+    /// `audit --verbose` so an operator can see exactly what is executed.
+    pub fn curl_path(&self) -> &Path {
+        &self.curl
+    }
+}
+
+#[cfg(feature = "curl-transport")]
+impl Default for CurlTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(feature = "curl-transport")]
 impl HttpTransport for CurlTransport {
     fn post_json(&self, url: &str, body: &str) -> Result<String, AuditError> {
-        let mut child = Command::new("curl")
+        let mut child = Command::new(&self.curl)
             .args([
                 "-sS",
                 // Fail (non-zero exit) on HTTP 4xx/5xx so an error page is never
@@ -164,7 +266,9 @@ impl HttpTransport for CurlTransport {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| AuditError::Transport(format!("could not run curl: {e}")))?;
+            .map_err(|e| {
+                AuditError::Transport(format!("could not run curl ({}): {e}", self.curl.display()))
+            })?;
         child
             .stdin
             .take()
@@ -175,12 +279,14 @@ impl HttpTransport for CurlTransport {
     }
 
     fn get(&self, url: &str) -> Result<String, AuditError> {
-        let child = Command::new("curl")
+        let child = Command::new(&self.curl)
             .args(["-sS", "--fail-with-body", "--max-time", "30", url])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| AuditError::Transport(format!("could not run curl: {e}")))?;
+            .map_err(|e| {
+                AuditError::Transport(format!("could not run curl ({}): {e}", self.curl.display()))
+            })?;
         finish(child)
     }
 }
@@ -523,5 +629,75 @@ mod tests {
         let source = OsvSource::new(transport, None, true);
         let advisories = source.query(&[coord("a")]).unwrap();
         assert!(advisories.is_empty());
+    }
+}
+
+#[cfg(all(test, feature = "curl-transport"))]
+mod curl_resolution_tests {
+    use super::*;
+    use std::path::Path;
+
+    fn trusted_curl(dir: &str) -> PathBuf {
+        Path::new(dir).join(CURL_BIN)
+    }
+
+    #[test]
+    fn override_is_used_verbatim() {
+        // An explicit operator pin wins over everything, even when it does not
+        // (yet) exist — the spawn error will name it.
+        let got = resolve_curl_from(
+            Some("/opt/pinned/curl".into()),
+            Some("/usr/bin".into()),
+            &|_| true,
+        );
+        assert_eq!(got, PathBuf::from("/opt/pinned/curl"));
+    }
+
+    #[test]
+    fn empty_override_is_ignored() {
+        let first_trusted = trusted_curl(TRUSTED_DIRS[0]);
+        let want = first_trusted.clone();
+        let got = resolve_curl_from(Some(OsString::new()), None, &move |p| p == first_trusted);
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn trusted_dir_is_preferred_over_path() {
+        // PATH lists an untrusted dir first, but a trusted dir still wins.
+        let first_trusted = trusted_curl(TRUSTED_DIRS[0]);
+        let want = first_trusted.clone();
+        let got = resolve_curl_from(None, Some("/tmp/evil".into()), &move |p| {
+            p == first_trusted || p == Path::new("/tmp/evil").join(CURL_BIN)
+        });
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn falls_back_to_absolute_path_entry() {
+        // No trusted dir has curl; an absolute PATH entry supplies it.
+        let want = Path::new("/opt/tools").join(CURL_BIN);
+        let want_cmp = want.clone();
+        let got = resolve_curl_from(None, Some("/opt/tools".into()), &move |p| p == want_cmp);
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn relative_path_entries_are_skipped() {
+        // A relative PATH entry (e.g. ".") must never resolve the binary, even
+        // if a matching file "exists" there.
+        let got = resolve_curl_from(None, Some("relbin".into()), &|p: &Path| !p.is_absolute());
+        assert_eq!(got, PathBuf::from(CURL_BIN));
+    }
+
+    #[test]
+    fn bare_name_when_nothing_resolves() {
+        let got = resolve_curl_from(None, None, &|_| false);
+        assert_eq!(got, PathBuf::from(CURL_BIN));
+    }
+
+    #[test]
+    fn transport_exposes_resolved_path() {
+        let t = CurlTransport::new();
+        assert_eq!(t.curl_path().file_name().unwrap(), Path::new(CURL_BIN));
     }
 }
