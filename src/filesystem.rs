@@ -167,7 +167,8 @@ pub fn has_file(ctx: &WorkspaceContext, relative: &str) -> bool {
 
 /// Whether the workspace contains any file whose relative path ends with the
 /// given trailing components (e.g. `["src", "package.json"]`). Indexed on the
-/// final component, so only same-basename files are checked.
+/// final component, so only same-basename files are checked. An empty `suffix`
+/// returns `false` (there is no component to anchor on).
 pub fn has_file_suffix(ctx: &WorkspaceContext, suffix: &[&str]) -> bool {
     let Some(last) = suffix.last() else {
         return false;
