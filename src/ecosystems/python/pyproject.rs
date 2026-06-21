@@ -14,7 +14,8 @@ pub struct Pyproject {
     pub dependencies: Vec<String>,
     /// Flattened `[project.optional-dependencies]` values.
     pub optional_dependencies: Vec<String>,
-    /// `[tool.uv] dev-dependencies` (array form), for SD006 source analysis.
+    /// `[tool.uv] dev-dependencies` (array or legacy table form, normalized to
+    /// PEP 508 strings), for SD006 source analysis.
     pub dev_dependencies: Vec<String>,
     pub uv: UvSettings,
 }
@@ -43,6 +44,21 @@ impl Pyproject {
             }
         }
         out
+    }
+}
+
+/// Normalizes a legacy `name = "spec"` dev-dependency table entry into a PEP 508
+/// string: a URL/VCS value becomes a `name @ url` direct reference, a version
+/// constraint is appended (`name>=1`).
+fn pep508_from_table_entry(name: &str, spec: &str) -> String {
+    let s = spec.trim();
+    let is_url = ["git+", "git://", "ssh://", "http://", "https://", "file:"]
+        .iter()
+        .any(|p| s.starts_with(p));
+    if is_url {
+        format!("{name} @ {s}")
+    } else {
+        format!("{name}{s}")
     }
 }
 
@@ -104,15 +120,19 @@ pub fn parse(text: &str) -> Pyproject {
         .get("tool")
         .and_then(|t| t.get("uv"))
         .and_then(|u| u.get("dev-dependencies"));
-    // uv accepts either an array of PEP 508 strings or a legacy name=spec table.
-    let dev_dependencies = collect_string_array(uv_dev_dependencies);
-    let uv_dev_table = uv_dev_dependencies
-        .and_then(|d| d.as_table())
-        .is_some_and(|t| !t.is_empty());
+    // uv accepts either an array of PEP 508 strings or a legacy name=spec table;
+    // normalize both into PEP 508 strings so SD006 analyzes either form.
+    let mut dev_dependencies = collect_string_array(uv_dev_dependencies);
+    if let Some(table) = uv_dev_dependencies.and_then(|d| d.as_table()) {
+        for (name, val) in table {
+            if let Some(spec) = val.as_str() {
+                dev_dependencies.push(pep508_from_table_entry(name, spec));
+            }
+        }
+    }
     let has_dependencies = !dependencies.is_empty()
         || !optional_dependencies.is_empty()
-        || !dev_dependencies.is_empty()
-        || uv_dev_table;
+        || !dev_dependencies.is_empty();
 
     let tool_uv = value.get("tool").and_then(|t| t.get("uv"));
     let has_tool_uv = tool_uv.is_some();
@@ -211,6 +231,23 @@ mod tests {
     fn dev_dependencies_count_as_dependencies() {
         let p = parse("[tool.uv.dev-dependencies]\npytest = \"*\"\n");
         assert!(p.has_dependencies);
+    }
+
+    #[test]
+    fn dev_dependencies_table_form_is_classified() {
+        let p = parse(
+            "[tool.uv.dev-dependencies]\ninternal = \"git+https://h/r.git\"\npytest = \">=7\"\n",
+        );
+        let deps = p.classified_dependencies(std::path::Path::new("pyproject.toml"));
+        let internal = deps
+            .iter()
+            .find(|d| d.name == "internal")
+            .expect("internal dep");
+        assert!(matches!(
+            internal.source,
+            crate::ecosystems::DependencySource::Git { .. }
+        ));
+        assert!(deps.iter().any(|d| d.name == "pytest"));
     }
 
     #[test]

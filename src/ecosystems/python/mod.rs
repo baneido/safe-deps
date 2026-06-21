@@ -179,9 +179,10 @@ fn requirements_files(ctx: &WorkspaceContext) -> Vec<PathBuf> {
 /// both `pyproject.toml` (`[project]`/`[tool.uv]` dependencies) and any
 /// `requirements*.txt` in the same directory, so SD006 covers pip and uv
 /// projects alike. A pre-parsed `pyproject` is reused to avoid a second parse.
-/// Each dependency is anchored to the file it came from, and duplicates (the
-/// same package declared in both pyproject and an exported requirements file)
-/// are collapsed to the first occurrence.
+/// Each dependency is anchored to the file it came from. A package is reported
+/// once: pyproject is collected first and is authoritative, so a package that
+/// also appears in an exported `requirements.txt` (even with a different spec
+/// string) does not produce a duplicate SD006 finding.
 fn python_dependencies(
     ctx: &WorkspaceContext,
     dir: &Path,
@@ -214,8 +215,11 @@ fn python_dependencies(
             }
         }
     }
+    // Dedup by package name (pyproject collected first wins) so the same
+    // package declared in pyproject and an exported requirements file is not
+    // reported twice, regardless of differing spec strings.
     let mut seen = std::collections::HashSet::new();
-    out.retain(|d| seen.insert((d.name.clone(), d.spec.clone())));
+    out.retain(|d| seen.insert(d.name.clone()));
     out
 }
 

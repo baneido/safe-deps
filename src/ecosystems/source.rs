@@ -96,6 +96,14 @@ pub fn classify_js_source(spec: &str) -> DependencySource {
         };
     }
     if s.starts_with("http://") || s.starts_with("https://") {
+        // npm/Yarn also accept HTTPS Git URLs (`https://host/repo.git#<ref>`);
+        // classify those as Git so a pinned ref is not a false-positive tarball.
+        if is_git_http_url(s) {
+            return DependencySource::Git {
+                floating: !has_pinned_committish(s),
+                ssh: false,
+            };
+        }
         return DependencySource::Tarball;
     }
     // `user/repo` or `user/repo#ref` GitHub shorthand.
@@ -115,11 +123,17 @@ pub fn classify_python_source(spec: &str) -> DependencySource {
     if let Some(rest) = s.strip_prefix("-e ") {
         s = rest.trim();
     }
-    // PEP 508 direct reference: `name @ url`. Split on the first `@`, which is
-    // the reference marker; any committish `@ref` lives inside the URL.
-    let target = match s.find('@') {
-        Some(idx) => s[idx + 1..].trim(),
-        None => s,
+    // A bare URL/path (common with `-e`) is the target as-is; splitting it on
+    // `@` would wrongly treat SSH userinfo (`git+ssh://git@host/…`) as the
+    // PEP 508 direct-reference marker. Only a `name @ url` form is split, on its
+    // first `@` (a distribution name never contains `@`).
+    let target = if is_python_url_or_path(s) {
+        s
+    } else {
+        match s.find('@') {
+            Some(idx) => s[idx + 1..].trim(),
+            None => s,
+        }
     };
     if target.starts_with("git+") || target.starts_with("git://") {
         return DependencySource::Git {
@@ -150,6 +164,22 @@ fn is_path_spec(s: &str) -> bool {
         || s.starts_with("../")
         || s.starts_with('/')
         || s.starts_with("~/")
+}
+
+/// Whether an `http(s)://` spec is actually a Git URL (its path ends in `.git`,
+/// ignoring any `#committish`).
+fn is_git_http_url(s: &str) -> bool {
+    s.split('#').next().unwrap_or(s).ends_with(".git")
+}
+
+/// Whether a Python spec is itself a bare URL or path (no `name @` prefix).
+fn is_python_url_or_path(s: &str) -> bool {
+    s.starts_with("git+")
+        || s.starts_with("git://")
+        || s.starts_with("ssh://")
+        || s.starts_with("http://")
+        || s.starts_with("https://")
+        || is_path_spec(s)
 }
 
 /// Recognizes explicit git URL schemes (`git+https://`, `git://`, …).
@@ -321,6 +351,45 @@ mod tests {
     #[test]
     fn js_tarball() {
         assert_eq!(classify_js_source("https://example.com/pkg.tgz"), Tarball);
+    }
+
+    #[test]
+    fn js_https_git_url_is_git_not_tarball() {
+        assert_eq!(
+            classify_js_source(
+                "https://github.com/org/repo.git#3a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b"
+            ),
+            Git {
+                floating: false,
+                ssh: false
+            }
+        );
+        assert_eq!(
+            classify_js_source("https://github.com/org/repo.git#main"),
+            Git {
+                floating: true,
+                ssh: false
+            }
+        );
+    }
+
+    #[test]
+    fn python_bare_editable_ssh_url_is_git() {
+        // A bare URL (no `name @` prefix) must not be split on its SSH userinfo @.
+        assert_eq!(
+            classify_python_source("-e git+ssh://git@host/org/repo.git"),
+            Git {
+                floating: true,
+                ssh: true
+            }
+        );
+        assert_eq!(
+            classify_python_source("git+https://h/r.git@v1.0.0"),
+            Git {
+                floating: false,
+                ssh: false
+            }
+        );
     }
 
     #[test]
