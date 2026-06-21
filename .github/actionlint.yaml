@@ -1,0 +1,8 @@
+# Scope-limited lint suppressions for actionlint.
+paths:
+  .github/workflows/ci.yml:
+    ignore:
+      # `code-quality: write` is a valid GitHub permission scope (used by the
+      # native Code Quality coverage upload) that actionlint 1.7.12 does not yet
+      # know. Suppress only that one message, only in this file.
+      - 'unknown permission scope "code-quality"'
