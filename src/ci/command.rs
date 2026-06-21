@@ -116,10 +116,29 @@ pub fn subcommand(tokens: &[String]) -> Option<&str> {
     None
 }
 
-/// Whether a segment carries `flag` (exactly, or as `flag=value`).
+/// Whether a segment carries `flag` as enabled — either bare (`--frozen`) or
+/// `flag=<truthy>`. An explicit false value (`--frozen-lockfile=false`) counts
+/// as NOT present, so it does not suppress a finding the way the enabled form
+/// would.
 pub fn has_flag(tokens: &[String], flag: &str) -> bool {
     let with_eq = format!("{flag}=");
-    tokens.iter().any(|t| t == flag || t.starts_with(&with_eq))
+    tokens.iter().any(|t| {
+        if t == flag {
+            return true;
+        }
+        match t.strip_prefix(&with_eq) {
+            Some(value) => !is_falsey(value),
+            None => false,
+        }
+    })
+}
+
+/// Whether a `flag=value` value explicitly disables the flag.
+fn is_falsey(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "false" | "0" | "no" | "off"
+    )
 }
 
 /// Whether any of `flags` is present.
@@ -247,6 +266,21 @@ mod tests {
         let s2 = seg("pnpm install --frozen-lockfile=true");
         assert!(has_flag(&s2[0], "--frozen-lockfile"));
         assert!(!has_flag(&s2[0], "--immutable"));
+    }
+
+    #[test]
+    fn explicit_false_value_is_not_enabled() {
+        // `--frozen-lockfile=false` must NOT count as the protection being on,
+        // so SD002/SD009 still flag the install.
+        for falsey in ["false", "0", "no", "off"] {
+            let s = seg(&format!("pnpm install --frozen-lockfile={falsey}"));
+            assert!(
+                !has_flag(&s[0], "--frozen-lockfile"),
+                "=`{falsey}` should not be enabled"
+            );
+        }
+        let truthy = seg("uv sync --locked=true");
+        assert!(has_flag(&truthy[0], "--locked"));
     }
 
     #[test]

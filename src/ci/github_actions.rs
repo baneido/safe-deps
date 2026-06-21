@@ -152,10 +152,13 @@ fn is_block_scalar_indicator(value: &str) -> bool {
 /// Strips a YAML comment and surrounding quotes from an inline scalar value.
 fn clean_inline_scalar(value: &str) -> String {
     let v = value.trim();
-    if (v.starts_with('"') && v.ends_with('"') && v.len() >= 2)
-        || (v.starts_with('\'') && v.ends_with('\'') && v.len() >= 2)
-    {
-        return v[1..v.len() - 1].to_string();
+    // A quoted scalar runs to its matching closing quote; anything after it
+    // (e.g. ` # comment`) is not part of the value. Handle this before comment
+    // stripping so `run: "npm ci" # note` yields `npm ci`, not `"npm ci"`.
+    if let Some(quote) = v.chars().next().filter(|c| *c == '"' || *c == '\'') {
+        if let Some(end) = v[1..].find(quote) {
+            return v[1..=end].to_string();
+        }
     }
     // For unquoted scalars, ` #` begins a comment.
     if let Some(idx) = v.find(" #") {
@@ -261,6 +264,17 @@ mod tests {
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].command, "npm ci");
         assert_eq!(cmds[0].line, 2);
+    }
+
+    #[test]
+    fn quoted_inline_run_with_trailing_comment() {
+        // The quotes and the trailing comment must both be removed.
+        for q in ['"', '\''] {
+            let text = format!("steps:\n  - run: {q}npm ci{q} # frozen\n");
+            let cmds = extract_run_commands(&PathBuf::from("w.yml"), &text);
+            assert_eq!(cmds.len(), 1);
+            assert_eq!(cmds[0].command, "npm ci", "quote {q}");
+        }
     }
 
     #[test]
