@@ -9,17 +9,51 @@ not install dependencies, execute project code, or make network calls. The
 separate `safe-deps audit` command is the *only* networked mode — it explicitly
 queries a vulnerability database (OSV).
 
-> Status: the CLI is implemented (Phases 1–5) and builds from source. It is not
-> yet published to crates.io; install by building this repository. There is no
-> Rust CI workflow in this repo yet (see the roadmap below) — run
-> `cargo test`/`cargo clippy` locally before contributing.
+> Status: the CLI is implemented (Phases 1–5). It is **not yet published to
+> crates.io**; install a prebuilt binary from GitHub Releases or build from
+> source (both below). Minimum supported Rust version (MSRV): **1.86**.
 
 ## Install
+
+### Prebuilt binaries (recommended)
+
+Each tagged release publishes binaries for Linux and macOS (x86-64 and arm64)
+and Windows (x86-64) to [GitHub Releases](https://github.com/baneido/safe-deps/releases),
+with a SHA-256 checksum per archive, a signed `SHA256SUMS` manifest, and a
+CycloneDX SBOM.
+
+Download the archive for your platform, then verify it before use:
+
+```bash
+# Linux, or macOS with GNU coreutils:
+sha256sum --check --ignore-missing SHA256SUMS
+
+# macOS default tools:
+shasum -a 256 --check --ignore-missing SHA256SUMS
+
+# Windows PowerShell:
+Get-FileHash .\safe-deps-<target>.zip -Algorithm SHA256
+# Compare the hash with the matching line in SHA256SUMS or the .sha256 file.
+
+# Verify the manifest signature with cosign (keyless; no key to manage).
+cosign verify-blob \
+  --bundle SHA256SUMS.cosign.bundle \
+  --certificate-identity-regexp '^https://github\.com/baneido/safe-deps/\.github/workflows/release\.yml@refs/tags/v.*$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+```
+
+Then extract the archive and put `safe-deps` on your `PATH`.
+
+### From source
 
 ```bash
 cargo build --release        # binary at target/release/safe-deps
 cargo run -- check .         # or run directly from source
 ```
+
+`cargo install --path .` installs it into `~/.cargo/bin`. A crates.io release is
+planned; until then use the binaries or a source build.
 
 ## Usage
 
