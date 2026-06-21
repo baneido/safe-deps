@@ -9,17 +9,44 @@ not install dependencies, execute project code, or make network calls. The
 separate `safe-deps audit` command is the *only* networked mode — it explicitly
 queries a vulnerability database (OSV).
 
-> Status: the CLI is implemented (Phases 1–5) and builds from source. It is not
-> yet published to crates.io; install by building this repository. There is no
-> Rust CI workflow in this repo yet (see the roadmap below) — run
-> `cargo test`/`cargo clippy` locally before contributing.
+> Status: the CLI is implemented (Phases 1–5). It is **not yet published to
+> crates.io**; install a prebuilt binary from GitHub Releases or build from
+> source (both below). Minimum supported Rust version (MSRV): **1.85**.
 
 ## Install
+
+### Prebuilt binaries (recommended)
+
+Each tagged release publishes binaries for Linux, macOS, and Windows
+(x86-64 and arm64) to [GitHub Releases](https://github.com/baneido/safe-deps/releases),
+with a SHA-256 checksum per archive, a signed `SHA256SUMS` manifest, and a
+CycloneDX SBOM.
+
+Download the archive for your platform, then verify it before use:
+
+```bash
+# Verify the checksum (run from the directory holding the archive + SHA256SUMS).
+sha256sum --check --ignore-missing SHA256SUMS
+
+# Verify the manifest signature with cosign (keyless; no key to manage).
+cosign verify-blob \
+  --bundle SHA256SUMS.cosign.bundle \
+  --certificate-identity-regexp '^https://github\.com/baneido/safe-deps/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+```
+
+Then extract the archive and put `safe-deps` on your `PATH`.
+
+### From source
 
 ```bash
 cargo build --release        # binary at target/release/safe-deps
 cargo run -- check .         # or run directly from source
 ```
+
+`cargo install --path .` installs it into `~/.cargo/bin`. A crates.io release is
+planned; until then use the binaries or a source build.
 
 ## Usage
 

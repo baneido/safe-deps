@@ -1,0 +1,118 @@
+name: Release
+
+# Tag-triggered release: build per-target binaries, publish them to a GitHub
+# Release with SHA-256 checksums, sign a consolidated checksum manifest with
+# cosign (keyless), and attach a CycloneDX SBOM.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never cancel an in-flight release; a partial release is worse than a queued
+  # one.
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write # create the release and upload assets
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - name: Build and upload binary
+        uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
+        with:
+          bin: safe-deps
+          target: ${{ matrix.target }}
+          # Archive named `safe-deps-<target>.{tar.gz,zip}`, with a per-archive
+          # `.sha256` checksum file uploaded alongside it.
+          archive: $bin-$target
+          checksum: sha256
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  sign:
+    name: sign checksums
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # upload the signed manifest
+      id-token: write # cosign keyless signing via GitHub OIDC
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Consolidate and sign checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir checksums
+          cd checksums
+          # Gather every per-archive checksum the build matrix uploaded.
+          gh release download "$TAG" --repo "$REPO" --pattern '*.sha256'
+          cat ./*.sha256 | sort -k2 > SHA256SUMS
+          # Keyless signature (cert + signature + transparency-log proof bundle).
+          cosign sign-blob --yes --bundle SHA256SUMS.cosign.bundle SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS SHA256SUMS.cosign.bundle \
+            --repo "$REPO" --clobber
+
+  sbom:
+    name: sbom
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # upload the SBOM
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+        with:
+          toolchain: stable
+      - name: Install cargo-cyclonedx
+        uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
+        with:
+          tool: cargo-cyclonedx@0.5.7
+      - name: Generate and upload SBOM
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cargo cyclonedx --format json --override-filename safe-deps.sbom
+          gh release upload "$TAG" safe-deps.sbom.json --repo "$REPO" --clobber

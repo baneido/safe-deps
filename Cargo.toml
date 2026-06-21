@@ -2,10 +2,16 @@
 name = "safe-deps"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.80"
+# Real MSRV: dependencies (clap, indexmap, globset, …) require Rust 1.85 (they
+# declare rust-version 1.85 and use edition 2024), so 1.80 does not build. The
+# `msrv` CI job pins this version.
+rust-version = "1.85"
 license = "MIT"
 description = "Static linter for package-management security practices."
 repository = "https://github.com/baneido/safe-deps"
+readme = "README.md"
+keywords = ["security", "supply-chain", "linter", "dependencies", "ci"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "safe-deps"

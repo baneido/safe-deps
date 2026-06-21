@@ -8,6 +8,13 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Added a tag-triggered release workflow that publishes per-target binaries
+  (Linux/macOS/Windows, x86-64 + arm64) to GitHub Releases with SHA-256
+  checksums, a cosign-signed `SHA256SUMS` manifest, and a CycloneDX SBOM. README
+  documents downloading and verifying them.
+- Corrected the MSRV to **1.85** (dependencies require it; the previous `1.80`
+  did not build) and added an `msrv` CI job that pins it. Added crates.io
+  metadata (`readme`/`keywords`/`categories`) toward a future publish.
 - Replaced the unmaintained `serde_yaml` dependency with the maintained
   `serde_yaml_ng` fork (imported under the same name; no API changes).
 - Added package-manager security best-practices research.

@@ -64,3 +64,21 @@ jobs:
         run: cargo audit
       - name: Deny (advisories / licenses / bans / sources)
         run: cargo deny check
+
+  msrv:
+    name: msrv (1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install Rust 1.85 (MSRV)
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
+        with:
+          # Keep in sync with `rust-version` in Cargo.toml.
+          toolchain: "1.85"
+      - name: Cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Build and test on the MSRV
+        run: cargo test --locked

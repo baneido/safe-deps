@@ -29,6 +29,7 @@
     "lychee",
     "markdownlint",
     "miette",
+    "MSRV",
     "monorepo",
     "monorepos",
     "mypy",
