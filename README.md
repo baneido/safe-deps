@@ -25,13 +25,20 @@ CycloneDX SBOM.
 Download the archive for your platform, then verify it before use:
 
 ```bash
-# Verify the checksum (run from the directory holding the archive + SHA256SUMS).
+# Linux, or macOS with GNU coreutils:
 sha256sum --check --ignore-missing SHA256SUMS
+
+# macOS default tools:
+shasum -a 256 --check --ignore-missing SHA256SUMS
+
+# Windows PowerShell:
+Get-FileHash .\safe-deps-<target>.zip -Algorithm SHA256
+# Compare the hash with the matching line in SHA256SUMS or the .sha256 file.
 
 # Verify the manifest signature with cosign (keyless; no key to manage).
 cosign verify-blob \
   --bundle SHA256SUMS.cosign.bundle \
-  --certificate-identity-regexp '^https://github\.com/baneido/safe-deps/' \
+  --certificate-identity-regexp '^https://github\.com/baneido/safe-deps/\.github/workflows/release\.yml@refs/tags/v.*$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS
 ```
@@ -160,6 +167,12 @@ OSV for known advisories, and caches results on disk (default TTL 24h; HTTP via
 the system `curl`). `--offline` uses only the cache. `check` never touches the
 network.
 
+## Contributing
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to report issues and land a change.
+- [DEVELOPMENT.md](DEVELOPMENT.md) — build, test, and architecture.
+- [RELEASING.md](RELEASING.md) — the release checklist (maintainers).
+
 ## Design documents
 
 - [Security best practices research](docs/security-best-practices.md)
@@ -185,3 +198,5 @@ Cargo/Go, and additional ecosystems (Composer, Bundler, Gradle/Maven, NuGet).
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE).
+Third-party dependency licenses are catalogued in
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).

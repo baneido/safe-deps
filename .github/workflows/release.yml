@@ -137,5 +137,8 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # cargo-cyclonedx 0.5.7 has no --locked flag; guard the lockfile
+          # explicitly before generating the SBOM.
+          cargo metadata --locked --format-version 1 >/dev/null
           cargo cyclonedx --format json --override-filename safe-deps.sbom
           gh release upload "$TAG" safe-deps.sbom.json --repo "$REPO" --clobber
