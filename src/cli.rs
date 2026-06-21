@@ -5,15 +5,12 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::ci;
+use crate::check_runner::{self, CheckRequest};
 use crate::config::{self, Config, FailLevel, OutputFormat, ResolvedConfig};
 use crate::ecosystems::PackageManager;
 use crate::filesystem::{scan, ScanOptions};
-use crate::report::{reporter_for, Report};
 use crate::rule::{Profile, RuleId};
-use crate::rules::{self, all_rules};
-
-const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");
+use crate::rules::all_rules;
 
 #[derive(Parser)]
 #[command(
@@ -172,76 +169,38 @@ pub fn run() -> ExitCode {
     }
 }
 
+/// Resolves config and arg filters into a [`CheckRequest`], then hands the
+/// pipeline to `check_runner`. All argument interpretation/validation lives
+/// here; the orchestration does not.
 fn run_check(args: CheckArgs) -> Result<u8, CliError> {
     let resolved = resolve_config(&args)?;
 
-    let config = resolved.config.clone();
-    let scan_options = ScanOptions {
-        no_gitignore: args.no_gitignore,
-        includes: args.includes.clone(),
-        excludes: args.excludes.clone(),
+    // Validate the ecosystem filter (a bad value is a usage error) and normalize
+    // rule ids so `--rule sd3` and `--rule SD003` both match (mirroring
+    // `explain`); without normalization a short/lowercase id silently drops
+    // every finding and the run exits 0.
+    let ecosystem = ecosystem_filter(args.ecosystem.as_deref())?;
+    let rules: std::collections::HashSet<String> =
+        args.rules.iter().map(|s| normalize_rule_id(s).0).collect();
+
+    let request = CheckRequest {
+        path: args.path,
+        scan_options: ScanOptions {
+            no_gitignore: args.no_gitignore,
+            includes: args.includes,
+            excludes: args.excludes,
+        },
+        config: resolved.config,
+        profile: resolved.profile,
+        format: resolved.format,
+        fail_on: resolved.fail_on,
+        ecosystem,
+        rules,
+        output: args.output,
+        strict_parser_errors: args.strict_parser_errors,
+        verbose: args.verbose,
     };
-    let ctx = scan(&args.path, config, &scan_options).map_err(CliError::internal)?;
-
-    if args.verbose {
-        eprintln!(
-            "scanned {} files under {}",
-            ctx.files.len(),
-            ctx.root.display()
-        );
-    }
-
-    let ci_facts = ci::extract(&ctx);
-    if args.verbose {
-        eprintln!(
-            "extracted {} CI command(s) and {} env assignment(s)",
-            ci_facts.commands.len(),
-            ci_facts.env.len()
-        );
-    }
-    let mut result = rules::analyze(&ctx, resolved.profile, &ci_facts);
-
-    if let Some(pm) = ecosystem_filter(args.ecosystem.as_deref())? {
-        result.findings.retain(|f| f.package_manager == Some(pm));
-    }
-    if !args.rules.is_empty() {
-        // Normalize so `--rule sd3` and `--rule SD003` both match, mirroring
-        // `explain`. Without this, a lowercase or short id silently drops every
-        // finding and the run exits 0.
-        let allowed: std::collections::HashSet<String> =
-            args.rules.iter().map(|s| normalize_rule_id(s).0).collect();
-        result
-            .findings
-            .retain(|f| allowed.contains(f.rule_id.as_str()));
-    }
-
-    let parse_failures = result.parse_failures;
-    let mut report = Report::new(args.path.clone(), resolved.profile, TOOL_VERSION);
-    report.findings = result.findings;
-    report.diagnostics = result.diagnostics;
-
-    let reporter = reporter_for(resolved.format);
-    let bytes = reporter.format(&report).map_err(CliError::internal)?;
-
-    if let Some(out) = &args.output {
-        std::fs::write(out, &bytes).map_err(CliError::internal)?;
-    } else {
-        std::io::Write::write_all(&mut std::io::stdout(), &bytes).map_err(CliError::internal)?;
-    }
-
-    let failing = report
-        .findings
-        .iter()
-        .any(|f| resolved.fail_on.triggers(f.severity));
-    let strict_parse_failure = args.strict_parser_errors && parse_failures > 0;
-
-    if strict_parse_failure {
-        Ok(4)
-    } else if failing {
-        Ok(1)
-    } else {
-        Ok(0)
-    }
+    check_runner::run(request)
 }
 
 fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
@@ -487,7 +446,7 @@ impl CliError {
         }
     }
 
-    fn internal<E: std::fmt::Display>(err: E) -> Self {
+    pub(crate) fn internal<E: std::fmt::Display>(err: E) -> Self {
         Self {
             message: err.to_string(),
             kind: CliErrorKind::Internal,

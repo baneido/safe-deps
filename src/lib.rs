@@ -4,6 +4,7 @@
 //! npm/Yarn/pnpm/Bun/pip/uv, rules SD001-SD004, and text/JSON output.
 
 pub mod audit;
+pub mod check_runner;
 pub mod ci;
 pub mod cli;
 pub mod config;
