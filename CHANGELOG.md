@@ -9,6 +9,15 @@ This project is in the design stage. There is no released CLI yet.
 - Added package-manager security best-practices research.
 - Added Rust CLI architecture design.
 - Added README roadmap and project status.
+- Added a GitHub Actions parser that extracts `run` commands with file and line
+  locations plus workflow, job, and step `env` assignments (secret values
+  redacted).
+- Activated rule `SD002` (non-frozen CI install) using CI command facts.
+- Added rule `SD008` (audit missing or disabled), honoring
+  `[policy] external_audit`.
+- Added rule `SD009` (dangerous install flags such as `--force` and
+  `--break-system-packages`).
+- Added SARIF 2.1.0 output for GitHub code scanning.
 - Added `safe-deps audit`, an explicit networked mode that queries OSV for known
   vulnerabilities in pinned dependencies (`Cargo.lock`, `package-lock.json`).
   `safe-deps check` remains fully offline and static.
