@@ -130,11 +130,11 @@ Notes:
 CI-aware rules (SD002, SD008, SD009) read commands and `env` from these CI
 providers:
 
-| Provider       | Config file(s)                |
-| -------------- | ----------------------------- |
+| Provider       | Config file(s)                  |
+| -------------- | ------------------------------- |
 | GitHub Actions | `.github/workflows/*.yml\|yaml` |
-| GitLab CI      | `.gitlab-ci.yml`              |
-| CircleCI       | `.circleci/config.yml`        |
+| GitLab CI      | `.gitlab-ci.yml`                |
+| CircleCI       | `.circleci/config.yml`          |
 
 Other providers (Jenkins, Azure Pipelines, …) are not yet parsed.
 

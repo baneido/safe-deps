@@ -8,6 +8,10 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Added a `docs lint` CI job that runs `markdownlint-cli2` and `cspell` over the
+  Markdown so documentation quality is a PR gate, not just a local convenience.
+  Realigned a README table to satisfy the markdownlint `MD060` rule.
+
 - Added a tag-triggered release workflow that publishes per-target binaries
   (Linux and macOS on x86-64 + arm64, Windows on x86-64) to GitHub Releases with
   SHA-256 checksums, a cosign-signed `SHA256SUMS` manifest, and a CycloneDX SBOM.

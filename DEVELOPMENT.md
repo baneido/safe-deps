@@ -30,6 +30,15 @@ cargo run -- explain SD003
 cargo run -- list-rules
 ```
 
+Documentation is linted in CI too (the `docs lint` job), so run it before pushing
+Markdown changes:
+
+```bash
+npm ci
+npm run lint:markdown
+npm run lint:spelling     # add new technical terms to .cspell.json "words"
+```
+
 ## Architecture
 
 The `check` pipeline is layered; each stage hands typed data to the next and
