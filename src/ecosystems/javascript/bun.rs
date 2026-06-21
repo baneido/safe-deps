@@ -49,13 +49,13 @@ pub fn parse(text: &str) -> BunfigSettings {
 /// Returns whether `bun.lock` (Bun 1.2+) exists at the project dir.
 pub fn has_bun_lock(ctx: &crate::filesystem::WorkspaceContext, project_dir: &Path) -> bool {
     let target = crate::filesystem::project_join(project_dir, "bun.lock");
-    ctx.files.iter().any(|f| f.relative == target)
+    ctx.contains(&target)
 }
 
 /// Returns whether the legacy `bun.lockb` exists at the project dir.
 pub fn has_bun_lockb(ctx: &crate::filesystem::WorkspaceContext, project_dir: &Path) -> bool {
     let target = crate::filesystem::project_join(project_dir, "bun.lockb");
-    ctx.files.iter().any(|f| f.relative == target)
+    ctx.contains(&target)
 }
 
 #[cfg(test)]

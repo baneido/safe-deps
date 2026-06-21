@@ -278,10 +278,8 @@ fn infer_kind(ctx: &WorkspaceContext, dir: &Path, value: &toml::Value) -> Projec
 /// Whether the crate has any `src/bin/*.rs` autobin target.
 fn has_autobin(ctx: &WorkspaceContext, dir: &Path) -> bool {
     let bin_dir = project_join(dir, "src/bin");
-    ctx.files.iter().any(|f| {
-        f.relative.parent() == Some(bin_dir.as_path())
-            && f.relative.extension().and_then(|e| e.to_str()) == Some("rs")
-    })
+    crate::filesystem::files_in_dir(ctx, &bin_dir)
+        .any(|p| p.extension().and_then(|e| e.to_str()) == Some("rs"))
 }
 
 /// A crate is covered when it is an actual member of a proper-ancestor
