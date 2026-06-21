@@ -1394,6 +1394,32 @@ fn audit_format_honors_env_var() {
 }
 
 #[test]
+fn audit_config_discovered_relative_to_target_not_cwd() {
+    // Mirrors `config_discovered_relative_to_target_not_cwd` for the audit path:
+    // the default `safe-deps.toml` must be discovered relative to the analysis
+    // target, not the process cwd. Here `format = "json"` lives in the target's
+    // config; running `audit` from an unrelated cwd must still honor it.
+    let ws = workspace(&[
+        ("Cargo.lock", CARGO_LOCK_LEFTPAD),
+        ("safe-deps.toml", "format = \"json\"\n"),
+    ]);
+    let elsewhere = TempDir::new().unwrap();
+    let out = bin()
+        .current_dir(elsewhere.path())
+        .args(["audit", "--offline", "--no-cache"])
+        .arg(ws.path())
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "expected JSON from target-relative safe-deps.toml: {e}\n{}",
+            stdout(&out)
+        )
+    });
+    assert!(v.get("advisories").is_some());
+}
+
+#[test]
 fn ci_audit_command_clears_sd008() {
     let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "npm ci && npm audit");
     let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);
