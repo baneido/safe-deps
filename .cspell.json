@@ -2,7 +2,8 @@
   "version": "0.2",
   "language": "en",
   "ignorePaths": [
-    "LICENSE"
+    "LICENSE",
+    "THIRD_PARTY_LICENSES.md"
   ],
   "ignoreRegExpList": [
     "/```[\\s\\S]*?```/g",
@@ -31,6 +32,7 @@
     "lychee",
     "markdownlint",
     "miette",
+    "MSRV",
     "monorepo",
     "monorepos",
     "mypy",
