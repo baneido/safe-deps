@@ -8,6 +8,10 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Added a `docs lint` CI job that runs `markdownlint-cli2` and `cspell` on every
+  push and pull request, so the existing Markdown/spelling checks are now a PR
+  gate rather than local-only. Uses an SHA-pinned `actions/setup-node` with
+  `persist-credentials: false`, matching the repository's CI hardening posture.
 - Added a tag-triggered release workflow that publishes per-target binaries
   (Linux and macOS on x86-64 + arm64, Windows on x86-64) to GitHub Releases with
   SHA-256 checksums, a cosign-signed `SHA256SUMS` manifest, and a CycloneDX SBOM.
