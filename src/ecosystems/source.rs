@@ -156,6 +156,53 @@ pub fn classify_python_source(spec: &str) -> DependencySource {
     DependencySource::Registry
 }
 
+/// Classifies a Cargo dependency value from `Cargo.toml`. The value is either a
+/// version string (`"1.0"`, a registry requirement) or an inline table that may
+/// carry `path`, `git` (+ `rev`/`tag`/`branch`), or `workspace`.
+pub fn classify_cargo_dependency(value: &toml::Value) -> DependencySource {
+    if value.is_str() {
+        return DependencySource::Registry;
+    }
+    let Some(table) = value.as_table() else {
+        return DependencySource::Registry;
+    };
+    if table.get("workspace").and_then(|v| v.as_bool()) == Some(true) {
+        return DependencySource::Workspace;
+    }
+    if table.contains_key("path") {
+        return DependencySource::Path;
+    }
+    if let Some(git) = table.get("git").and_then(|v| v.as_str()) {
+        // Cargo pins a git dependency only via an explicit commit `rev` or a
+        // release `tag`; a `branch` (or no ref at all, which tracks the default
+        // branch) is floating.
+        let pinned = table.contains_key("rev") || table.contains_key("tag");
+        let ssh = git.starts_with("ssh://") || git.starts_with("git@") || git.contains("git+ssh");
+        return DependencySource::Git {
+            floating: !pinned,
+            ssh,
+        };
+    }
+    DependencySource::Registry
+}
+
+/// Classifies the right-hand side of a Go `replace` directive. A local
+/// filesystem path is unsafe (replace directives are ignored outside the main
+/// module, so consumers cannot resolve it); a replacement to another module is
+/// still proxy-resolved and checksummed.
+pub fn classify_go_replace_target(target: &str) -> DependencySource {
+    let t = target.trim();
+    if t.starts_with("./")
+        || t.starts_with("../")
+        || t.starts_with('/')
+        || t.starts_with(".\\")
+        || t.starts_with("..\\")
+    {
+        return DependencySource::Path;
+    }
+    DependencySource::Registry
+}
+
 fn is_path_spec(s: &str) -> bool {
     s.starts_with("file:")
         || s.starts_with("link:")
@@ -273,6 +320,68 @@ fn is_github_shorthand(s: &str) -> bool {
 mod tests {
     use super::DependencySource::*;
     use super::*;
+
+    fn cargo(toml_value: &str) -> DependencySource {
+        classify_cargo_dependency(&toml::from_str::<toml::Value>(toml_value).unwrap()["x"])
+    }
+
+    #[test]
+    fn cargo_registry_and_workspace_are_safe() {
+        assert_eq!(cargo("x = \"1.0\""), Registry);
+        assert_eq!(cargo("x = { version = \"1.0\" }"), Registry);
+        assert_eq!(cargo("x = { workspace = true }"), Workspace);
+    }
+
+    #[test]
+    fn cargo_path_and_git_classification() {
+        assert_eq!(cargo("x = { path = \"../x\" }"), Path);
+        assert_eq!(
+            cargo("x = { git = \"https://h/r.git\" }"),
+            Git {
+                floating: true,
+                ssh: false
+            }
+        );
+        assert_eq!(
+            cargo("x = { git = \"https://h/r.git\", branch = \"main\" }"),
+            Git {
+                floating: true,
+                ssh: false
+            }
+        );
+        assert_eq!(
+            cargo("x = { git = \"https://h/r.git\", rev = \"abc123\" }"),
+            Git {
+                floating: false,
+                ssh: false
+            }
+        );
+        assert_eq!(
+            cargo("x = { git = \"https://h/r.git\", tag = \"v1.0\" }"),
+            Git {
+                floating: false,
+                ssh: false
+            }
+        );
+        assert_eq!(
+            cargo("x = { git = \"ssh://git@h/r.git\" }"),
+            Git {
+                floating: true,
+                ssh: true
+            }
+        );
+    }
+
+    #[test]
+    fn go_replace_target_classification() {
+        assert_eq!(classify_go_replace_target("../local"), Path);
+        assert_eq!(classify_go_replace_target("./local"), Path);
+        assert_eq!(classify_go_replace_target("/abs/path"), Path);
+        assert_eq!(
+            classify_go_replace_target("github.com/fork/x v1.2.3"),
+            Registry
+        );
+    }
 
     #[test]
     fn js_registry_specs() {

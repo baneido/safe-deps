@@ -15,7 +15,10 @@ pub mod javascript;
 pub mod python;
 pub mod source;
 
-pub use source::{Dependency, DependencyGroup, DependencySource};
+pub use source::{
+    classify_cargo_dependency, classify_go_replace_target, Dependency, DependencyGroup,
+    DependencySource,
+};
 
 /// Whether a URL uses the plaintext `http` scheme. URL schemes are
 /// case-insensitive (RFC 3986), so `HTTP://` is treated the same as `http://`.

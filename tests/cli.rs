@@ -1475,3 +1475,86 @@ fn list_rules_includes_ci_aware_rules() {
         assert!(text.contains(id), "missing {id}:\n{text}");
     }
 }
+
+// --- SD006 for Cargo / Go (#21) ----------------------------------------------
+
+#[test]
+fn sd006_flags_cargo_git_and_path_deps_but_not_registry() {
+    let manifest = "\
+[package]
+name = \"app\"
+[dependencies]
+serde = \"1\"
+internal = { git = \"https://h/r.git\", branch = \"main\" }
+local = { path = \"../local\" }
+pinned = { git = \"https://h/r.git\", rev = \"abc1234\" }
+";
+    let ws = workspace(&[("Cargo.toml", manifest), ("Cargo.lock", "version = 3\n")]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    let msgs: String = sd006
+        .iter()
+        .map(|f| f["message"].as_str().unwrap())
+        .collect();
+    // floating git `internal` and production path `local` are flagged.
+    assert!(msgs.contains("internal"), "{msgs}");
+    assert!(msgs.contains("local"), "{msgs}");
+    // registry `serde` and rev-pinned `pinned` are not.
+    assert!(!msgs.contains("serde"), "{msgs}");
+    assert!(!msgs.contains("pinned"), "{msgs}");
+}
+
+#[test]
+fn sd006_flags_cargo_patch_redirect() {
+    let manifest = "\
+[package]
+name = \"app\"
+[dependencies]
+serde = \"1\"
+[patch.crates-io]
+serde = { git = \"https://h/serde.git\" }
+";
+    let ws = workspace(&[("Cargo.toml", manifest), ("Cargo.lock", "version = 3\n")]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{sd006:?}");
+    assert!(sd006[0]["message"].as_str().unwrap().contains("serde"));
+}
+
+#[test]
+fn sd006_cargo_registry_only_is_clean() {
+    let manifest = "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n";
+    let ws = workspace(&[("Cargo.toml", manifest), ("Cargo.lock", "version = 3\n")]);
+    assert!(findings_of(&check_json(&ws, &[]), "SD006").is_empty());
+}
+
+#[test]
+fn sd006_flags_go_local_path_replace() {
+    let go_mod = "\
+module example.com/m
+
+go 1.21
+
+require github.com/x/y v1.2.3
+
+replace github.com/x/y => ../local/y
+";
+    let ws = workspace(&[
+        ("go.mod", go_mod),
+        ("go.sum", "github.com/x/y v1.2.3 h1:abc=\n"),
+    ]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{sd006:?}");
+    assert!(sd006[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("github.com/x/y"));
+}
+
+#[test]
+fn sd006_go_normal_requires_are_clean() {
+    let go_mod = "module m\ngo 1.21\nrequire github.com/x/y v1.2.3\n";
+    let ws = workspace(&[
+        ("go.mod", go_mod),
+        ("go.sum", "github.com/x/y v1.2.3 h1:abc=\n"),
+    ]);
+    assert!(findings_of(&check_json(&ws, &[]), "SD006").is_empty());
+}
