@@ -265,6 +265,25 @@ fn config_file_fail_on_none_overrides_default() {
 }
 
 #[test]
+fn config_is_discovered_relative_to_the_target_path() {
+    // Regression: safe-deps.toml must be discovered in the analyzed directory,
+    // not the process CWD. Running `check sub` from a CWD that has no config
+    // must still pick up sub/safe-deps.toml.
+    let ws = workspace(&[
+        ("sub/package.json", NPM_DEPS),
+        ("sub/safe-deps.toml", "profile = \"strict\"\n"),
+    ]);
+    // CWD is the tempdir root (no safe-deps.toml here); analyze ./sub.
+    let out = run(&ws, &["check", "sub", "--format", "json"]);
+    let report: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{}", stdout(&out)));
+    assert_eq!(
+        report["profile"], "strict",
+        "config in the target dir must be applied: {report}"
+    );
+}
+
+#[test]
 fn config_rule_level_override_downgrades_severity() {
     let ws = workspace(&[
         ("package.json", NPM_DEPS),
