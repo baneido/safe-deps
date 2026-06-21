@@ -26,23 +26,29 @@ pub fn collect(ctx: &WorkspaceContext) -> Collected {
 
     for lock in files_named(ctx, "Cargo.lock") {
         match read_text(ctx, &lock) {
-            Ok(text) if toml::from_str::<toml::Value>(&text).is_ok() => {
-                for c in cargo_lock_coordinates(&text) {
-                    set.insert((c.ecosystem, c.name, c.version));
+            // Parse once here and reuse the parsed value, distinguishing a parse
+            // failure from a genuinely empty lockfile.
+            Ok(text) => match toml::from_str::<toml::Value>(&text) {
+                Ok(value) => {
+                    for c in cargo_coords_from_value(&value) {
+                        set.insert((c.ecosystem, c.name, c.version));
+                    }
                 }
-            }
-            Ok(_) => diagnostics.push(format!("could not parse {}", lock.display())),
+                Err(_) => diagnostics.push(format!("could not parse {}", lock.display())),
+            },
             Err(e) => diagnostics.push(format!("could not read {}: {e}", lock.display())),
         }
     }
     for lock in files_named(ctx, "package-lock.json") {
         match read_text(ctx, &lock) {
-            Ok(text) if serde_json::from_str::<serde_json::Value>(&text).is_ok() => {
-                for c in npm_lock_coordinates(&text) {
-                    set.insert((c.ecosystem, c.name, c.version));
+            Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(value) => {
+                    for c in npm_coords_from_value(&value) {
+                        set.insert((c.ecosystem, c.name, c.version));
+                    }
                 }
-            }
-            Ok(_) => diagnostics.push(format!("could not parse {}", lock.display())),
+                Err(_) => diagnostics.push(format!("could not parse {}", lock.display())),
+            },
             Err(e) => diagnostics.push(format!("could not read {}: {e}", lock.display())),
         }
     }
@@ -64,9 +70,16 @@ pub fn collect(ctx: &WorkspaceContext) -> Collected {
 /// packages (those with a registry source). The local crate(s) under audit have
 /// no `source` and are skipped, as are git/path dependencies.
 pub fn cargo_lock_coordinates(text: &str) -> Vec<PackageCoordinate> {
-    let Ok(value) = toml::from_str::<toml::Value>(text) else {
-        return Vec::new();
-    };
+    match toml::from_str::<toml::Value>(text) {
+        Ok(value) => cargo_coords_from_value(&value),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Extracts crates.io coordinates from an already-parsed `Cargo.lock`, so
+/// `collect` can parse once and still distinguish a parse failure from an empty
+/// lockfile.
+fn cargo_coords_from_value(value: &toml::Value) -> Vec<PackageCoordinate> {
     let Some(packages) = value.get("package").and_then(|p| p.as_array()) else {
         return Vec::new();
     };
@@ -101,9 +114,15 @@ fn is_registry_version(version: &str) -> bool {
 
 /// Parses an npm `package-lock.json` (v1 `dependencies` or v2/v3 `packages`).
 pub fn npm_lock_coordinates(text: &str) -> Vec<PackageCoordinate> {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
-        return Vec::new();
-    };
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => npm_coords_from_value(&value),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Extracts npm coordinates from an already-parsed `package-lock.json`, so
+/// `collect` can parse once and still distinguish a parse failure from empty.
+fn npm_coords_from_value(value: &serde_json::Value) -> Vec<PackageCoordinate> {
     let mut out = Vec::new();
     let has_packages = value.get("packages").is_some();
 

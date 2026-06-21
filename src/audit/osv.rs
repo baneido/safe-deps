@@ -77,10 +77,15 @@ fn finish(child: std::process::Child) -> Result<String, AuditError> {
         .wait_with_output()
         .map_err(|e| AuditError::Transport(e.to_string()))?;
     if !out.status.success() {
-        return Err(AuditError::Transport(format!(
-            "curl failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
+        // With `--fail-with-body` curl prints the HTTP error response to stdout;
+        // prefer that for context and fall back to stderr otherwise.
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let detail = match stdout.trim() {
+            "" => stderr.trim(),
+            body => body,
+        };
+        return Err(AuditError::Transport(format!("curl failed: {detail}")));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }

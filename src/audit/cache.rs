@@ -132,11 +132,21 @@ mod tests {
     #[test]
     fn expired_entry_is_not_fresh_but_is_available_offline() {
         let dir = TempDir::new().unwrap();
-        // TTL of 0 → anything stored is immediately stale.
-        let cache = Cache::new(dir.path().to_path_buf(), 0);
-        cache.put(&coord(), &[advisory()]);
-        // Freshness may still pass within the same second; force staleness by
-        // checking get_any always returns it.
+        let cache = Cache::new(dir.path().to_path_buf(), 3600);
+        // Hand-write an entry stamped well in the past so it is deterministically
+        // stale (a `put` + same-second read could still look fresh).
+        std::fs::create_dir_all(&cache.dir).unwrap();
+        let entry = Entry {
+            fetched: now() - 10_000,
+            advisories: vec![advisory()],
+        };
+        std::fs::write(cache.path(&coord()), serde_json::to_string(&entry).unwrap()).unwrap();
+
+        assert!(
+            cache.get_fresh(&coord()).is_none(),
+            "an expired entry must not be considered fresh"
+        );
+        // ...but it is still available for offline (cache-any) reads.
         assert!(cache.get_any(&coord()).is_some());
     }
 }
