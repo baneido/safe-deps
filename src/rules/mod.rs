@@ -147,10 +147,12 @@ pub fn analyze(ctx: &WorkspaceContext, profile: Profile, ci_facts: &CiFacts) -> 
         if pm_relevant {
             diagnostics.push(Diagnostic {
                 level: DiagnosticLevel::Info,
+                // The file lives in `location`; the reporter prints it as a
+                // prefix, so the message carries only the line to avoid a
+                // duplicated path.
                 message: format!(
-                    "{}:{}: CI command not fully parsed ({reason}); CI-derived findings \
+                    "line {}: CI command not fully parsed ({reason}); CI-derived findings \
                      (SD002/SD008/SD009) for this command may be incomplete",
-                    cmd.file.display(),
                     cmd.line
                 ),
                 location: Some(cmd.file.clone()),

@@ -263,7 +263,7 @@ pub fn is_install(inv: &Invocation) -> bool {
 /// literal `echo '$(x)'` is not flagged). Double-quoted spans are kept because
 /// command substitution still runs inside them.
 pub fn uncertainty(command: &str) -> Option<&'static str> {
-    let scanned = strip_single_quoted(command);
+    let scanned = scannable(command);
     if scanned.contains("$(") {
         Some("command substitution")
     } else if scanned.contains('`') {
@@ -280,19 +280,49 @@ pub fn uncertainty(command: &str) -> Option<&'static str> {
     }
 }
 
-/// Removes single-quoted spans from a command so literal text inside them is not
-/// scanned. An unterminated quote drops the remainder, matching how a shell would
-/// treat it as continuing.
-fn strip_single_quoted(s: &str) -> String {
+/// Returns a view of the command suitable for scanning for special constructs,
+/// with shell-inert text removed: single-quoted spans (everything inside is
+/// literal) and backslash-escaped characters are dropped. Double-quoted spans are
+/// kept because command substitution and backticks still run inside them — but a
+/// single quote inside a double-quoted span is an ordinary character, not a span
+/// delimiter (POSIX), so it does not start stripping. An unterminated quote drops
+/// the remainder, matching how a shell would treat it as continuing.
+fn scannable(s: &str) -> String {
+    enum State {
+        Normal,
+        Single,
+        Double,
+    }
     let mut out = String::with_capacity(s.len());
-    let mut in_single = false;
-    for c in s.chars() {
-        if c == '\'' {
-            in_single = !in_single;
-            continue;
-        }
-        if !in_single {
-            out.push(c);
+    let mut state = State::Normal;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match state {
+            // Outside quotes: a backslash escapes (and thus neutralizes) the next
+            // character, so `\$(` is not a substitution.
+            State::Normal => match c {
+                '\\' => {
+                    chars.next();
+                }
+                '\'' => state = State::Single,
+                '"' => state = State::Double,
+                _ => out.push(c),
+            },
+            // Single quotes: no escapes, everything literal until the next `'`.
+            State::Single => {
+                if c == '\'' {
+                    state = State::Normal;
+                }
+            }
+            // Double quotes: substitutions still run, so keep the text, but a
+            // backslash escapes the next character (e.g. `\$` is literal).
+            State::Double => match c {
+                '\\' => {
+                    chars.next();
+                }
+                '"' => state = State::Normal,
+                _ => out.push(c),
+            },
         }
     }
     out
@@ -341,6 +371,19 @@ mod tests {
         // A literal inside single quotes is not a real construct.
         assert_eq!(uncertainty("echo '$(not a command)'"), None);
         assert_eq!(uncertainty("echo 'use `backticks` literally'"), None);
+    }
+
+    #[test]
+    fn uncertainty_is_double_quote_and_escape_aware() {
+        // Single quotes inside a double-quoted span are literal, so the
+        // substitution still runs and must be flagged.
+        assert_eq!(
+            uncertainty("npm install \"'$(cat pkgs)'\""),
+            Some("command substitution")
+        );
+        // A backslash-escaped `$` is literal, not a substitution.
+        assert_eq!(uncertainty("echo \\$(not really)"), None);
+        assert_eq!(uncertainty("echo \"\\$(not really)\""), None);
     }
 
     #[test]
