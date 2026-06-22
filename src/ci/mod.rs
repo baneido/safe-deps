@@ -111,6 +111,7 @@ const SECRET_QUERY_HINTS: &[&str] = &[
     "secret",
     "key",
     "password",
+    "passwd",
     "auth",
     "signature",
     "credential",
@@ -142,19 +143,19 @@ pub fn redact_url_credentials(value: &str) -> String {
     // --- userinfo redaction ---------------------------------------------------
     // Userinfo ends at the first `@` that precedes the next `/`, `?`, or `#`.
     let host_boundary = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let (working, userinfo_prefix) = if let Some(at) = rest[..host_boundary].find('@') {
+    let working = if let Some(at) = rest[..host_boundary].find('@') {
         let mut out = String::with_capacity(value.len());
         out.push_str(&value[..after]);
         out.push_str("<redacted>");
         out.push_str(&rest[at..]);
         // Continue query-param redaction on the rebuilt string.
-        (out, after + "<redacted>".len() + (rest.len() - at))
+        Some(out)
     } else {
-        (value.to_string(), 0)
+        None
     };
 
     // Use the string after potential userinfo redaction for query processing.
-    let base = if userinfo_prefix > 0 { &working } else { value };
+    let base: &str = working.as_deref().unwrap_or(value);
 
     // --- query / fragment redaction ------------------------------------------
     // Find the query string: first `?` after the scheme authority.
@@ -262,6 +263,19 @@ mod tests {
         assert_eq!(
             redact_url_credentials("https://host/path?password=hunter2"),
             "https://host/path?password="
+        );
+    }
+
+    #[test]
+    fn redacts_passwd_query_param() {
+        assert_eq!(
+            redact_url_credentials("https://host/path?passwd=hunter2"),
+            "https://host/path?passwd="
+        );
+        // Mixed: passwd alongside a non-secret param.
+        assert_eq!(
+            redact_url_credentials("https://registry.example/simple?user=bot&passwd=s3cr3t"),
+            "https://registry.example/simple?user=bot&passwd="
         );
     }
 
