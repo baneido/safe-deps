@@ -37,9 +37,21 @@ impl Analyzer for CargoAnalyzer {
                 let dir = manifest_dir(man);
                 let parsed = manifest::read_manifest(ctx, man);
                 // A pure `[workspace]` root with no `[package]` is not itself a
-                // crate; its members are detected on their own.
+                // crate, so its members are detected on their own. However, the
+                // virtual root may still declare workspace-level dependency sources
+                // (`[patch]`, `[replace]`, `[workspace.dependencies]`) that SD006
+                // must evaluate. Emit a project for it when such entries exist so
+                // `facts` can extract and report them.
                 if !parsed.has_package && parsed.is_workspace {
-                    return None;
+                    if parsed.dependencies.is_empty() {
+                        return None;
+                    }
+                    return Some(Project {
+                        root: dir,
+                        ecosystem: Ecosystem::Rust,
+                        package_manager: PackageManager::Cargo,
+                        kind: ProjectKind::Unknown,
+                    });
                 }
                 Some(Project {
                     root: dir,
@@ -234,5 +246,86 @@ mod tests {
             ("src/bin/tool.rs", "fn main() {}\n"),
         ]);
         assert_eq!(facts_for(&dir)[0].project.kind, ProjectKind::Application);
+    }
+
+    #[test]
+    fn virtual_workspace_root_without_unsafe_sources_is_not_a_project() {
+        // A bare [workspace] with only registry deps in members should not produce
+        // an extra project for the root; only members are detected.
+        let dir = ws(&[
+            ("Cargo.toml", "[workspace]\nmembers = [\"crates/a\"]\n"),
+            (
+                "crates/a/Cargo.toml",
+                "[package]\nname = \"a\"\n[dependencies]\nx = \"1\"\n",
+            ),
+            ("crates/a/src/lib.rs", "\n"),
+            ("Cargo.lock", "version = 3\n"),
+        ]);
+        let facts = facts_for(&dir);
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].project.root, PathBuf::from("crates/a"));
+    }
+
+    #[test]
+    fn virtual_workspace_root_with_patch_is_detected_as_project() {
+        // A [workspace] root with a [patch.crates-io] git redirect must be
+        // detected so SD006 can evaluate the unsafe source.
+        let dir = ws(&[
+            (
+                "Cargo.toml",
+                "[workspace]\nmembers = [\"crates/a\"]\n\n[patch.crates-io]\nfoo = { git = \"https://github.com/example/foo\", branch = \"main\" }\n",
+            ),
+            (
+                "crates/a/Cargo.toml",
+                "[package]\nname = \"a\"\n[dependencies]\nfoo = \"1\"\n",
+            ),
+            ("crates/a/src/lib.rs", "\n"),
+            ("Cargo.lock", "version = 3\n"),
+        ]);
+        let facts = facts_for(&dir);
+        // Both the virtual root (for [patch]) and the member crate are detected.
+        assert_eq!(facts.len(), 2);
+        let root_facts = facts
+            .iter()
+            .find(|f| f.project.root == std::path::Path::new("."))
+            .expect("virtual workspace root should be detected");
+        assert_eq!(root_facts.project.package_manager, PackageManager::Cargo);
+        assert!(
+            !root_facts.dependencies.is_empty(),
+            "patch dep should be extracted"
+        );
+        let dep = &root_facts.dependencies[0];
+        assert_eq!(dep.name, "foo");
+    }
+
+    #[test]
+    fn virtual_workspace_root_with_workspace_dependencies_is_detected() {
+        // [workspace.dependencies] with a path or git entry must be detected.
+        let dir = ws(&[
+            (
+                "Cargo.toml",
+                "[workspace]\nmembers = [\"crates/a\"]\n\n[workspace.dependencies]\nbar = { path = \"../bar\" }\n",
+            ),
+            (
+                "crates/a/Cargo.toml",
+                "[package]\nname = \"a\"\n[dependencies]\nbar.workspace = true\n",
+            ),
+            ("crates/a/src/lib.rs", "\n"),
+            ("Cargo.lock", "version = 3\n"),
+        ]);
+        let facts = facts_for(&dir);
+        let root_facts = facts
+            .iter()
+            .find(|f| f.project.root == std::path::Path::new("."))
+            .expect("virtual workspace root should be detected");
+        let dep_names: Vec<&str> = root_facts
+            .dependencies
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect();
+        assert!(
+            dep_names.contains(&"bar"),
+            "workspace path dep should be extracted: {dep_names:?}"
+        );
     }
 }

@@ -1674,6 +1674,90 @@ fn sd006_cargo_registry_only_is_clean() {
     assert!(findings_of(&check_json(&ws, &[]), "SD006").is_empty());
 }
 
+// --- SD006 virtual workspace root (#83) --------------------------------------
+
+#[test]
+fn sd006_flags_virtual_workspace_root_patch_git_dep() {
+    // A pure [workspace] root (no [package]) with a [patch.crates-io] git dep
+    // must be detected and generate an SD006 finding.
+    let root_manifest = "\
+[workspace]
+members = [\"crates/app\"]
+
+[patch.crates-io]
+foo = { git = \"https://github.com/example/foo\", branch = \"main\" }
+";
+    let member_manifest = "[package]\nname = \"app\"\n[dependencies]\nfoo = \"1\"\n";
+    let ws = workspace(&[
+        ("Cargo.toml", root_manifest),
+        ("crates/app/Cargo.toml", member_manifest),
+        ("crates/app/src/main.rs", "fn main() {}\n"),
+        ("Cargo.lock", "version = 3\n"),
+    ]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert!(
+        !sd006.is_empty(),
+        "expected SD006 for [patch] git dep: {sd006:?}"
+    );
+    let msgs: String = sd006
+        .iter()
+        .map(|f| f["message"].as_str().unwrap())
+        .collect();
+    assert!(msgs.contains("foo"), "finding should mention `foo`: {msgs}");
+}
+
+#[test]
+fn sd006_flags_virtual_workspace_root_workspace_dependencies_path() {
+    // [workspace.dependencies] with a local path entry must be flagged.
+    let root_manifest = "\
+[workspace]
+members = [\"crates/app\"]
+
+[workspace.dependencies]
+bar = { path = \"../bar\" }
+";
+    let member_manifest = "[package]\nname = \"app\"\n[dependencies]\nbar.workspace = true\n";
+    let ws = workspace(&[
+        ("Cargo.toml", root_manifest),
+        ("crates/app/Cargo.toml", member_manifest),
+        ("crates/app/src/main.rs", "fn main() {}\n"),
+        ("Cargo.lock", "version = 3\n"),
+    ]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert!(
+        !sd006.is_empty(),
+        "expected SD006 for [workspace.dependencies] path: {sd006:?}"
+    );
+    let msgs: String = sd006
+        .iter()
+        .map(|f| f["message"].as_str().unwrap())
+        .collect();
+    assert!(msgs.contains("bar"), "finding should mention `bar`: {msgs}");
+}
+
+#[test]
+fn sd006_virtual_workspace_root_registry_only_is_clean() {
+    // A [workspace] root with no unsafe sources should produce no SD006 finding.
+    let root_manifest = "\
+[workspace]
+members = [\"crates/app\"]
+
+[workspace.dependencies]
+serde = \"1\"
+";
+    let member_manifest = "[package]\nname = \"app\"\n[dependencies]\nserde.workspace = true\n";
+    let ws = workspace(&[
+        ("Cargo.toml", root_manifest),
+        ("crates/app/Cargo.toml", member_manifest),
+        ("crates/app/src/main.rs", "fn main() {}\n"),
+        ("Cargo.lock", "version = 3\n"),
+    ]);
+    assert!(
+        findings_of(&check_json(&ws, &[]), "SD006").is_empty(),
+        "registry-only workspace root should be clean"
+    );
+}
+
 #[test]
 fn sd006_flags_go_local_path_replace() {
     let go_mod = "\

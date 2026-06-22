@@ -50,6 +50,15 @@ pub(super) fn dependencies(value: &toml::Value, file: &Path) -> Vec<Dependency> 
             );
         }
     }
+    // `[workspace.dependencies]` declares shared dep specs inherited by member
+    // crates; a git or path source here affects the whole workspace graph.
+    if let Some(ws_deps) = value
+        .get("workspace")
+        .and_then(|w| w.get("dependencies"))
+        .and_then(|d| d.as_table())
+    {
+        push(Some(ws_deps), DependencyGroup::Production);
+    }
     // `[patch.<registry>]` redirects and legacy `[replace]` reroute crates to a
     // git/path source for the whole graph — a strong supply-chain signal.
     if let Some(patch) = value.get("patch").and_then(|p| p.as_table()) {
