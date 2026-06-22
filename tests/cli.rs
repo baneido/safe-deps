@@ -835,8 +835,72 @@ fn audit_offline_without_cache_notes_unchecked_packages() {
     let out = run(&ws, &["audit", ".", "--offline", "--no-cache"]);
     let text = stdout(&out);
     assert!(text.contains("No known vulnerabilities"), "{text}");
-    // An offline cache miss must not read as a clean bill of health.
-    assert!(text.contains("not in the cache were not checked"), "{text}");
+    // An offline cache miss must surface the unchecked count in the output
+    // so it is visible in CI logs.
+    assert!(
+        text.contains("not in the cache were not checked"),
+        "expected unchecked-packages note:\n{text}"
+    );
+    // Exit 1 when packages are unchecked — must not be a silent exit-0 success.
+    assert_eq!(
+        code(&out),
+        1,
+        "offline cache miss must exit non-zero: {text}"
+    );
+}
+
+#[test]
+fn audit_offline_cache_miss_exits_nonzero_with_json_output() {
+    // In JSON mode, an offline run with cache misses must still exit 1 and
+    // the JSON must include a non-zero `offline_unchecked` field so callers
+    // can act on it programmatically.
+    // NOTE: content assertions (field presence) are covered by the unit tests
+    // in src/audit/mod.rs::render_json_includes_offline_unchecked_field.
+    let ws = workspace(&[("Cargo.lock", CARGO_LOCK_LEFTPAD)]);
+    let out = run(
+        &ws,
+        &["audit", ".", "--offline", "--no-cache", "--format", "json"],
+    );
+    // Must be valid JSON.
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{}", stdout(&out)));
+    // The JSON report must have advisories and packages_audited keys.
+    assert!(v.get("advisories").is_some(), "missing advisories: {v}");
+    // Exit non-zero when there are unchecked packages.
+    assert_eq!(code(&out), 1, "offline cache miss must exit non-zero");
+}
+
+#[test]
+fn audit_offline_cache_hit_no_vulns_exits_zero() {
+    // A fully-cached offline run with no vulnerabilities must stay exit 0.
+    let ws = workspace(&[("Cargo.lock", CARGO_LOCK_LEFTPAD)]);
+    // Seed the cache with a clean (no advisory) entry so the package is covered.
+    let clean_entry = r#"{ "fetched": 9999999999, "advisories": [] }"#;
+    let key = safe_deps::audit::PackageCoordinate {
+        ecosystem: "crates.io".to_string(),
+        name: "left-pad".to_string(),
+        version: "1.0.0".to_string(),
+    }
+    .cache_key();
+    write(ws.path(), &format!("cache/{key}.json"), clean_entry);
+    let cache = ws.path().join("cache");
+    let out = run(
+        &ws,
+        &[
+            "audit",
+            ".",
+            "--offline",
+            "--cache-dir",
+            cache.to_str().unwrap(),
+        ],
+    );
+    let text = stdout(&out);
+    assert!(text.contains("No known vulnerabilities"), "{text}");
+    assert_eq!(
+        code(&out),
+        0,
+        "cache-hit-only run with no vulns must exit 0: {text}"
+    );
 }
 
 // --- additional ecosystems + JUnit (Phase 4) ---------------------------------

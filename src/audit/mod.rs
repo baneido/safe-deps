@@ -102,14 +102,25 @@ pub struct AuditReport {
     pub ignored: Vec<IgnoredAdvisory>,
     /// Non-fatal notes (e.g. expired ignores, offline cache misses).
     pub diagnostics: Vec<String>,
-    /// Number of package coordinates queried.
+    /// Number of package coordinates queried (including any that were skipped in
+    /// offline mode due to cache misses).
     pub packages_audited: usize,
+    /// Number of packages not checked because they were absent from the local
+    /// cache during an `--offline` run. Zero for online runs.
+    pub offline_unchecked: usize,
 }
 
 impl AuditReport {
     /// Whether the run found active vulnerabilities (drives the exit code).
     pub fn has_findings(&self) -> bool {
         !self.advisories.is_empty()
+    }
+
+    /// Whether the audit is incomplete: unchecked packages were left unaudited
+    /// during an offline run. Callers must treat this as a non-zero exit to
+    /// prevent CI from misreading an incomplete audit as a clean bill of health.
+    pub fn has_unchecked(&self) -> bool {
+        self.offline_unchecked > 0
     }
 }
 
@@ -175,6 +186,12 @@ pub fn run_audit(
 pub fn render_text(report: &AuditReport) -> String {
     let mut out = String::new();
     out.push_str(&format!("audited {} package(s)\n", report.packages_audited));
+    if report.offline_unchecked > 0 {
+        out.push_str(&format!(
+            "warning: {} package(s) not in the local cache were not checked (offline mode)\n",
+            report.offline_unchecked
+        ));
+    }
     if report.advisories.is_empty() {
         out.push_str("No known vulnerabilities.\n");
     } else {
@@ -305,5 +322,77 @@ mod tests {
         .unwrap();
         assert_eq!(r.ignored.len(), 1);
         assert!(r.advisories.is_empty());
+    }
+
+    // --- offline_unchecked / has_unchecked ---
+
+    #[test]
+    fn has_unchecked_false_when_zero() {
+        let r = AuditReport {
+            offline_unchecked: 0,
+            ..Default::default()
+        };
+        assert!(!r.has_unchecked());
+    }
+
+    #[test]
+    fn has_unchecked_true_when_nonzero() {
+        let r = AuditReport {
+            offline_unchecked: 3,
+            packages_audited: 7,
+            ..Default::default()
+        };
+        assert!(r.has_unchecked());
+        assert!(!r.has_findings(), "no vulns, but unchecked");
+    }
+
+    // --- render_text includes unchecked warning ---
+
+    #[test]
+    fn render_text_shows_unchecked_warning() {
+        let r = AuditReport {
+            packages_audited: 2,
+            offline_unchecked: 3,
+            ..Default::default()
+        };
+        let text = render_text(&r);
+        assert!(
+            text.contains("3 package(s) not in the local cache were not checked"),
+            "unexpected text:\n{text}"
+        );
+        assert!(text.contains("No known vulnerabilities."));
+    }
+
+    #[test]
+    fn render_text_no_unchecked_warning_when_zero() {
+        let r = AuditReport {
+            packages_audited: 5,
+            offline_unchecked: 0,
+            ..Default::default()
+        };
+        let text = render_text(&r);
+        assert!(
+            !text.contains("not checked"),
+            "unexpected unchecked warning:\n{text}"
+        );
+    }
+
+    // --- render_json includes offline_unchecked field ---
+
+    #[test]
+    fn render_json_includes_offline_unchecked_field() {
+        let r = AuditReport {
+            packages_audited: 4,
+            offline_unchecked: 2,
+            ..Default::default()
+        };
+        let json = render_json(&r).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            v["offline_unchecked"].as_u64(),
+            Some(2),
+            "offline_unchecked missing from JSON:\n{json}"
+        );
+        assert_eq!(v["packages_audited"].as_u64(), Some(4));
     }
 }
