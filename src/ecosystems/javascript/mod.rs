@@ -4,8 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::ecosystems::{
-    EcoError, Ecosystem, FileFact, InstallSettings, PackageManager, Project, ProjectFacts,
-    ProjectKind,
+    is_proper_ancestor, EcoError, Ecosystem, FileFact, InstallSettings, PackageManager, Project,
+    ProjectFacts, ProjectKind,
 };
 use crate::filesystem::{files_named, project_join, WorkspaceContext};
 
@@ -51,47 +51,68 @@ fn project_dir(package_json_path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Determines the package manager for a directory containing `package.json`.
+/// Determines the package manager for a directory containing `package.json`,
+/// falling back to the nearest ancestor workspace root before defaulting to npm.
 fn detect_package_manager(
     ctx: &WorkspaceContext,
     dir: &Path,
     package_json_path: &Path,
 ) -> PackageManager {
+    detect_local_package_manager(ctx, dir, package_json_path)
+        // Inherit from the nearest ancestor workspace root, if any.
+        .or_else(|| inherit_from_workspace_root(ctx, dir))
+        .unwrap_or(PackageManager::Npm)
+}
+
+/// Like [`detect_package_manager`] but without the workspace-root inheritance
+/// fallback. Used when resolving a workspace root's own manager, to avoid
+/// recursing back into inheritance.
+fn detect_package_manager_skip_inherit(
+    ctx: &WorkspaceContext,
+    dir: &Path,
+    package_json_path: &Path,
+) -> PackageManager {
+    detect_local_package_manager(ctx, dir, package_json_path).unwrap_or(PackageManager::Npm)
+}
+
+/// Resolves the package manager from signals local to `dir` (the `packageManager`
+/// hint, then lockfiles, then config files). Returns `None` when no local signal
+/// is present, leaving the fallback (inheritance and/or npm default) to callers.
+fn detect_local_package_manager(
+    ctx: &WorkspaceContext,
+    dir: &Path,
+    package_json_path: &Path,
+) -> Option<PackageManager> {
     if let Ok(pj) = package_json::load(ctx, package_json_path) {
         if let Some(hint) = pj.package_manager_hint() {
-            return hint.manager;
+            return Some(hint.manager);
         }
     }
 
     if has_file_in(ctx, dir, "pnpm-lock.yaml") {
-        return PackageManager::Pnpm;
+        return Some(PackageManager::Pnpm);
     }
     if has_file_in(ctx, dir, "yarn.lock") {
-        return PackageManager::Yarn;
+        return Some(PackageManager::Yarn);
     }
     if has_file_in(ctx, dir, "package-lock.json") || has_file_in(ctx, dir, "npm-shrinkwrap.json") {
-        return PackageManager::Npm;
+        return Some(PackageManager::Npm);
     }
     if has_file_in(ctx, dir, "bun.lock") || has_file_in(ctx, dir, "bun.lockb") {
-        return PackageManager::Bun;
+        return Some(PackageManager::Bun);
     }
 
     if has_file_in(ctx, dir, ".yarnrc.yml") || has_file_in(ctx, dir, ".yarnrc") {
-        return PackageManager::Yarn;
+        return Some(PackageManager::Yarn);
     }
     if has_file_in(ctx, dir, "pnpm-workspace.yaml") {
-        return PackageManager::Pnpm;
+        return Some(PackageManager::Pnpm);
     }
     if has_file_in(ctx, dir, "bunfig.toml") {
-        return PackageManager::Bun;
+        return Some(PackageManager::Bun);
     }
 
-    // Inherit from the nearest ancestor workspace root, if any.
-    if let Some(inherited) = inherit_from_workspace_root(ctx, dir) {
-        return inherited;
-    }
-
-    PackageManager::Npm
+    None
 }
 
 fn has_file_in(ctx: &WorkspaceContext, dir: &Path, name: &str) -> bool {
@@ -122,40 +143,6 @@ fn inherit_from_workspace_root(ctx: &WorkspaceContext, dir: &Path) -> Option<Pac
     best.map(|(_, pm)| pm)
 }
 
-fn detect_package_manager_skip_inherit(
-    ctx: &WorkspaceContext,
-    dir: &Path,
-    package_json_path: &Path,
-) -> PackageManager {
-    if let Ok(pj) = package_json::load(ctx, package_json_path) {
-        if let Some(hint) = pj.package_manager_hint() {
-            return hint.manager;
-        }
-    }
-    if has_file_in(ctx, dir, "pnpm-lock.yaml") {
-        return PackageManager::Pnpm;
-    }
-    if has_file_in(ctx, dir, "yarn.lock") {
-        return PackageManager::Yarn;
-    }
-    if has_file_in(ctx, dir, "package-lock.json") || has_file_in(ctx, dir, "npm-shrinkwrap.json") {
-        return PackageManager::Npm;
-    }
-    if has_file_in(ctx, dir, "bun.lock") || has_file_in(ctx, dir, "bun.lockb") {
-        return PackageManager::Bun;
-    }
-    if has_file_in(ctx, dir, ".yarnrc.yml") || has_file_in(ctx, dir, ".yarnrc") {
-        return PackageManager::Yarn;
-    }
-    if has_file_in(ctx, dir, "pnpm-workspace.yaml") {
-        return PackageManager::Pnpm;
-    }
-    if has_file_in(ctx, dir, "bunfig.toml") {
-        return PackageManager::Bun;
-    }
-    PackageManager::Npm
-}
-
 fn is_workspace_root(ctx: &WorkspaceContext, dir: &Path, package_json_path: &Path) -> bool {
     if has_file_in(ctx, dir, "pnpm-workspace.yaml") {
         return true;
@@ -166,13 +153,6 @@ fn is_workspace_root(ctx: &WorkspaceContext, dir: &Path, package_json_path: &Pat
         }
     }
     false
-}
-
-fn is_proper_ancestor(ancestor: &Path, descendant: &Path) -> bool {
-    if ancestor == Path::new(".") {
-        return descendant != Path::new(".");
-    }
-    descendant.starts_with(ancestor) && descendant != ancestor
 }
 
 /// Returns whether a lockfile for `manager` exists in `dir`.

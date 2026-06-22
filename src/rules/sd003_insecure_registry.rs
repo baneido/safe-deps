@@ -6,6 +6,7 @@
 
 use crate::ecosystems::{PackageManager, Sourced};
 use crate::rule::{Confidence, Finding, Location, Rule, RuleId, RuleInput, Severity};
+use crate::rules::{config_loc, config_loc_at, pip_config_loc};
 
 pub struct Sd003;
 
@@ -148,15 +149,6 @@ fn finding(
     }
 }
 
-fn config_loc(facts: &crate::ecosystems::ProjectFacts, basename: &str) -> Option<Location> {
-    facts
-        .configs
-        .iter()
-        .find(|c| c.relative.file_name().and_then(|n| n.to_str()) == Some(basename))
-        .map(|c| Location::file(&c.relative))
-        .or_else(|| facts.manifest.as_ref().map(|m| Location::file(&m.relative)))
-}
-
 /// Locates a finding on the exact file that declared `setting`, falling back to
 /// `default` (the usual config heuristic) when the source file is unknown. This
 /// keeps a `pip.ini`-only setting off `pip.conf` when both files exist.
@@ -168,25 +160,4 @@ fn sourced_loc<T>(
         Some(path) => Some(Location::file(path)),
         None => default(),
     }
-}
-
-/// Returns the location of whichever pip config file (`pip.conf` or `pip.ini`)
-/// is present, or falls back to the manifest. Delegates to the shared helper in
-/// `rules::pip_config_loc` to keep the two SD003/SD004 heuristics in sync.
-fn pip_config_loc(facts: &crate::ecosystems::ProjectFacts) -> Option<Location> {
-    crate::rules::pip_config_loc(facts)
-}
-
-/// Like [`config_loc`] but attaches a 1-based line when one is known, so that
-/// line-scoped suppressions and precise output can target the exact setting.
-fn config_loc_at(
-    facts: &crate::ecosystems::ProjectFacts,
-    basename: &str,
-    line: Option<u32>,
-) -> Option<Location> {
-    let mut loc = config_loc(facts, basename)?;
-    if let Some(line) = line {
-        loc.line = Some(line);
-    }
-    Some(loc)
 }

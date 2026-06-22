@@ -12,7 +12,8 @@ design.
 
 Status: Phases 1–5 are implemented under `src/` — the scanner; JavaScript
 (npm/Yarn/pnpm/Bun), Python (pip/uv), Cargo, and Go analyzers; rules **SD001–SD009**;
-text/JSON/SARIF/JUnit output; GitHub Actions CI parsing; and the networked
+text/JSON/SARIF/JUnit output; CI parsing (GitHub Actions, GitLab CI, CircleCI);
+and the networked
 `safe-deps audit` (OSV) mode. The crate is not yet published to crates.io. `README.md`
 is current — trust the code when in doubt.
 
@@ -81,10 +82,13 @@ parsers populate only the fields relevant to their manager, and `None`/empty mea
   registered in `ecosystems::analyzers()`, each implementing the `Analyzer` trait
   (`detect` + `facts`). `javascript/mod.rs` is the fullest example (package-manager
   detection, workspace inheritance, monorepo lockfile coverage).
-- `ci/mod.rs` parses **GitHub Actions** workflows (`ci/github_actions.rs`) into
-  `CiFacts` (run commands with file/line + `env`), and `ci/command.rs` tokenizes
-  shell into `Invocation`s. These feed the CI-derived rules (SD002/SD008/SD009).
-  Other CI providers are not yet parsed.
+- `ci/mod.rs` parses CI workflows into `CiFacts` (run commands with file/line +
+  `env`) via pluggable `CiProvider`s — **GitHub Actions** (`ci/github_actions.rs`),
+  **GitLab CI** (`ci/gitlab_ci.rs`), and **CircleCI** (`ci/circleci.rs`).
+  `ci/yaml.rs` holds the shared line-oriented YAML helpers (`mapping_key`,
+  `scalar_to_string`, `push_command`, …) the providers reuse, and `ci/command.rs`
+  tokenizes shell into `Invocation`s. These feed the CI-derived rules
+  (SD002/SD008/SD009).
 - `report/`: `reporter_for` maps `OutputFormat`. Text, JSON, SARIF (2.1.0), and
   JUnit reporters are all real.
 
@@ -132,7 +136,8 @@ unless the user configures `application_roots`/`library_roots`. See `sd001_sever
 
 **SD001–SD009 are all implemented and registered** in `rules::all_rules()`. The
 CI-derived rules (SD002 non-frozen install, SD008 audit-missing, SD009 dangerous
-flags) only fire when a GitHub Actions workflow supplies `CiFacts`. SD006 (unsafe
+flags) only fire when a CI workflow (GitHub Actions, GitLab CI, or CircleCI)
+supplies `CiFacts`. SD006 (unsafe
 dependency source) covers JavaScript and Python manifests, Cargo (`git`/`path`
 deps and `[patch]`/`[replace]` redirects), and Go (local-path `replace` targets);
 deeper Cargo/Go source detections (`[source]` `replace-with`, `GOPRIVATE`/sumdb)

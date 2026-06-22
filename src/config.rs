@@ -628,8 +628,8 @@ format = "json"
 [policy]
 allow_git_dependencies = false
 allow_local_path_dependencies = false
-require_audit_in_ci = true
 external_audit = false
+external_audit_reason = "audited in monorepo CI"
 application_roots = ["apps/*"]
 library_roots = ["libs/**"]
 

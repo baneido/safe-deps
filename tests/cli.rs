@@ -489,8 +489,8 @@ format = "text"
 [policy]
 allow_git_dependencies = true
 allow_local_path_dependencies = true
-require_audit_in_ci = false
 external_audit = false
+external_audit_reason = "audited in monorepo CI"
 application_roots = []
 library_roots = []
 

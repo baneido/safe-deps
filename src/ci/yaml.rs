@@ -158,6 +158,38 @@ pub fn join_continuations(lines: &[(usize, &str)]) -> Vec<(u32, String)> {
     out
 }
 
+/// Converts a YAML scalar value to its string form for env/variable extraction.
+/// Strings, bools, and numbers stringify; everything else (null, sequences,
+/// mappings) yields an empty string. Providers with richer value shapes (e.g.
+/// GitLab's `{ value, description }`) handle those before delegating here.
+pub fn scalar_to_string(v: &serde_yaml::Value) -> String {
+    match v {
+        serde_yaml::Value::String(s) => s.clone(),
+        serde_yaml::Value::Bool(b) => b.to_string(),
+        serde_yaml::Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Appends a single shell command to `commands`, anchored at `line_idx` (0-based;
+/// stored 1-based). Empty commands are skipped. Shared by the providers whose
+/// command extraction emits one finished command per source line.
+pub fn push_command(
+    commands: &mut Vec<crate::ci::CiCommand>,
+    relative: &std::path::Path,
+    line_idx: usize,
+    command: &str,
+) {
+    if command.is_empty() {
+        return;
+    }
+    commands.push(crate::ci::CiCommand {
+        file: relative.to_path_buf(),
+        line: (line_idx as u32) + 1,
+        command: command.to_string(),
+    });
+}
+
 /// Removes a single pair of matching surrounding quotes from a scalar.
 pub fn unquote(s: &str) -> &str {
     let s = s.trim();
