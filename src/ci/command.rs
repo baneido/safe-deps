@@ -106,23 +106,53 @@ const WRAPPERS: &[&str] = &[
 /// Flags that do NOT take a value (e.g. `sudo -n`, `xvfb-run -a`) are not
 /// listed; they are already skipped by the `starts_with('-')` check.
 const WRAPPER_VALUE_FLAGS: &[(&str, &[&str])] = &[
-    // sudo: -u <user>, -g <group>, -r <role>, -t <type>, -U <other-user>,
-    //       -p <prompt>, -c <class>, -T <timeout>, -C <fd>, -D <directory>
+    // sudo: -u/--user <user>, -g/--group <group>, -r/--role <role>,
+    //       -t/--type <type>, -U/--other-user <other-user>,
+    //       -p/--prompt <prompt>, -c/--class <class>,
+    //       -T/--command-timeout <timeout>, -C/--close-from <fd>,
+    //       -D/--chdir <directory>
     (
         "sudo",
-        &["-u", "-g", "-r", "-t", "-U", "-p", "-c", "-T", "-C", "-D"],
+        &[
+            "-u",
+            "--user",
+            "-g",
+            "--group",
+            "-r",
+            "--role",
+            "-t",
+            "--type",
+            "-U",
+            "--other-user",
+            "-p",
+            "--prompt",
+            "-c",
+            "--class",
+            "-T",
+            "--command-timeout",
+            "-C",
+            "--close-from",
+            "-D",
+            "--chdir",
+        ],
     ),
     // doas: -u <user>, -c <config>
     ("doas", &["-u", "-c"]),
-    // nice: -n <adjustment> (also --adjustment=N, covered by =)
-    ("nice", &["-n"]),
-    // ionice: -c <class>, -n <priority>, -p <pid>, -t (no value)
-    ("ionice", &["-c", "-n", "-p"]),
-    // env: -u <NAME> removes a variable; KEY=VALUE pairs are env assignments
-    //      handled separately by is_env_assignment
+    // nice: -n/--adjustment <adjustment>
+    ("nice", &["-n", "--adjustment"]),
+    // ionice: -c/--class <class>, -n/--classdata <priority>, -p/--pid <pid>
+    (
+        "ionice",
+        &["-c", "--class", "-n", "--classdata", "-p", "--pid"],
+    ),
+    // env: -u/--unset <NAME> removes a variable; KEY=VALUE pairs are env
+    //      assignments handled separately by is_env_assignment
     ("env", &["-u", "--unset"]),
-    // stdbuf: -i/-o/-e <size> set buffer modes
-    ("stdbuf", &["-i", "-o", "-e"]),
+    // stdbuf: -i/--input, -o/--output, -e/--error <size> set buffer modes
+    (
+        "stdbuf",
+        &["-i", "--input", "-o", "--output", "-e", "--error"],
+    ),
 ];
 
 fn leaf(token: &str) -> &str {
@@ -815,5 +845,81 @@ mod tests {
         let s = seg("ionice -c 2 -n 4 npm ci");
         assert_eq!(program(&s[0]), Some("npm"), "ionice -c 2 -n 4 npm ci");
         assert_eq!(subcommand(&s[0]), Some("ci"), "ionice -c 2 -n 4 npm ci");
+    }
+
+    /// Long-form space-separated value flags must be skipped just like short forms.
+    /// Addresses the review comment on PR #111 (issue #95).
+    #[test]
+    fn wrapper_long_form_value_flags_skip_their_argument() {
+        // sudo --user <user>: 'nobody' is the value for --user, not the program.
+        let s = seg("sudo --user nobody npm ci");
+        assert_eq!(program(&s[0]), Some("npm"), "sudo --user nobody npm ci");
+        assert_eq!(subcommand(&s[0]), Some("ci"), "sudo --user nobody npm ci");
+
+        // nice --adjustment <n>: '10' is the value for --adjustment, not the program.
+        let s = seg("nice --adjustment 10 pnpm install");
+        assert_eq!(
+            program(&s[0]),
+            Some("pnpm"),
+            "nice --adjustment 10 pnpm install"
+        );
+        assert_eq!(
+            subcommand(&s[0]),
+            Some("install"),
+            "nice --adjustment 10 pnpm install"
+        );
+
+        // sudo --group <group>
+        let s = seg("sudo --group wheel npm install");
+        assert_eq!(
+            program(&s[0]),
+            Some("npm"),
+            "sudo --group wheel npm install"
+        );
+        assert_eq!(
+            subcommand(&s[0]),
+            Some("install"),
+            "sudo --group wheel npm install"
+        );
+
+        // ionice --class <class> --classdata <priority>
+        let s = seg("ionice --class 2 --classdata 4 npm ci");
+        assert_eq!(
+            program(&s[0]),
+            Some("npm"),
+            "ionice --class 2 --classdata 4 npm ci"
+        );
+        assert_eq!(
+            subcommand(&s[0]),
+            Some("ci"),
+            "ionice --class 2 --classdata 4 npm ci"
+        );
+
+        // stdbuf --output <size>
+        let s = seg("stdbuf --output L npm install");
+        assert_eq!(program(&s[0]), Some("npm"), "stdbuf --output L npm install");
+        assert_eq!(
+            subcommand(&s[0]),
+            Some("install"),
+            "stdbuf --output L npm install"
+        );
+
+        // env --unset <NAME>: the long form is already listed, verify it works.
+        let s = seg("env --unset NODE_ENV npm ci");
+        assert_eq!(program(&s[0]), Some("npm"), "env --unset NODE_ENV npm ci");
+        assert_eq!(subcommand(&s[0]), Some("ci"), "env --unset NODE_ENV npm ci");
+
+        // sudo --chdir <dir> combined with --user
+        let s = seg("sudo --user deploy --chdir /app pnpm install");
+        assert_eq!(
+            program(&s[0]),
+            Some("pnpm"),
+            "sudo --user deploy --chdir /app pnpm install"
+        );
+        assert_eq!(
+            subcommand(&s[0]),
+            Some("install"),
+            "sudo --user deploy --chdir /app pnpm install"
+        );
     }
 }
