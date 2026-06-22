@@ -2830,6 +2830,27 @@ fn sd004_per_file_unhashed_prod_masked_by_hashed_dev_is_flagged() {
     );
 }
 
+// --- requirements include following (issue #100) -----------------------------
+
+#[test]
+fn requirements_subdir_base_txt_deps_enter_facts_for_sd006() {
+    // requirements/base.txt is an entry-point; the git dep should be flagged.
+    let ws = workspace(&[(
+        "requirements/base.txt",
+        "internal @ git+https://github.com/org/repo.git\n",
+    )]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(
+        sd006.len(),
+        1,
+        "expected SD006 from requirements/base.txt: {sd006:?}"
+    );
+    assert!(
+        sd006[0]["message"].as_str().unwrap().contains("internal"),
+        "{sd006:?}"
+    );
+}
+
 #[test]
 fn uv_toml_only_unsafe_index_strategy_triggers_sd007() {
     // uv.toml-only project: SD007 must fire on unsafe-best-match index strategy.
@@ -3127,5 +3148,61 @@ fn sd004_finding_location_is_the_requirements_file() {
     assert!(
         file.ends_with("requirements.txt"),
         "location should point to requirements.txt, got: {file}"
+    );
+}
+
+#[test]
+fn requirements_txt_r_include_deps_enter_facts_for_sd006() {
+    // requirements.txt includes requirements/base.txt via -r; the git dep must
+    // be flagged even though it lives in the included file.
+    let ws = workspace(&[
+        ("requirements.txt", "-r requirements/base.txt\n"),
+        (
+            "requirements/base.txt",
+            "internal @ git+https://github.com/org/repo.git\n",
+        ),
+    ]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "expected SD006 via -r include: {sd006:?}");
+}
+
+#[test]
+fn requirements_r_include_propagates_sd004() {
+    // requirements.txt has -r requirements/base.txt.
+    // base.txt has --require-hashes + hash pins for all requirements.
+    // SD004 (integrity disabled) must not fire when hashes are enforced via an include.
+    let ws = workspace(&[
+        ("requirements.txt", "-r requirements/base.txt\n"),
+        (
+            "requirements/base.txt",
+            "--require-hashes\nrequests==2.31.0 --hash=sha256:aaa\n",
+        ),
+    ]);
+    assert!(
+        !rule_ids(&check_json(&ws, &[])).contains(&"SD004".to_string()),
+        "SD004 must not fire when require-hashes propagates through -r include"
+    );
+}
+
+#[test]
+fn requirements_subdir_layout_produces_single_project() {
+    // The common layout with requirements/ dir + no top-level requirements.txt
+    // must detect exactly one Python project (not one per .txt file).
+    let ws = workspace(&[
+        ("requirements/base.txt", "requests==2.31.0\n"),
+        ("requirements/dev.txt", "pytest==7.0\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    let projects: std::collections::HashSet<_> = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["package_manager"] == "pip")
+        .map(|f| f["project_root"].as_str().unwrap().to_string())
+        .collect();
+    // At most one pip project root (could be zero findings if workspace is clean).
+    assert!(
+        projects.len() <= 1,
+        "expected at most one pip project root: {projects:?}"
     );
 }
