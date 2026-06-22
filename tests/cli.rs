@@ -1880,3 +1880,105 @@ fn uv_toml_pyproject_combo_not_double_detected() {
         .count();
     assert_eq!(sd003, 1, "expected exactly one SD003, got {sd003}");
 }
+
+// --- requirements.txt + uv.toml / uv.lock upgrade (#101) ---------------------
+
+#[test]
+fn requirements_plus_uv_toml_upgrades_to_uv_and_sd003_fires() {
+    // The common uv layout: requirements.txt exists alongside uv.toml.
+    // The project must be classified as Uv so SD003 fires on allow-insecure-host.
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        ("uv.toml", "allow-insecure-host = [\"internal.example\"]\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    let ids = rule_ids(&report);
+    assert!(
+        ids.contains(&"SD003".to_string()),
+        "SD003 expected; ids: {ids:?}"
+    );
+    let sd003 = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["rule_id"] == "SD003")
+        .expect("SD003 finding expected");
+    assert_eq!(sd003["package_manager"], "uv", "must be classified as uv");
+    assert!(
+        sd003["message"]
+            .as_str()
+            .unwrap()
+            .contains("internal.example"),
+        "message: {}",
+        sd003["message"]
+    );
+}
+
+#[test]
+fn requirements_plus_uv_toml_sd007_fires() {
+    // requirements.txt + uv.toml with unsafe index strategy: SD007 must fire.
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        (
+            "uv.toml",
+            "index-strategy = \"unsafe-best-match\"\nextra-index-url = [\"https://pypi.internal/simple\"]\n",
+        ),
+    ]);
+    let report = check_json(&ws, &[]);
+    let ids = rule_ids(&report);
+    assert!(
+        ids.contains(&"SD007".to_string()),
+        "SD007 expected; ids: {ids:?}"
+    );
+    let sd007_pkg: Vec<_> = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule_id"] == "SD007")
+        .map(|f| f["package_manager"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        sd007_pkg.iter().all(|pm| *pm == "uv"),
+        "all SD007 findings must have package_manager=uv; got {sd007_pkg:?}"
+    );
+}
+
+#[test]
+fn requirements_only_stays_pip_no_regression() {
+    // A plain requirements.txt project (no uv.* files) must still be pip.
+    // This is a regression guard for the upgrade logic.
+    let ws = workspace(&[("requirements.txt", "requests==2.31.0\n")]);
+    let report = check_json(&ws, &[]);
+    // No SD003 expected (no insecure config), no uv findings.
+    let uv_findings: Vec<_> = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["package_manager"] == "uv")
+        .collect();
+    assert!(
+        uv_findings.is_empty(),
+        "pip-only project must not produce uv findings: {uv_findings:?}"
+    );
+}
+
+#[test]
+fn requirements_plus_uv_toml_no_duplicate_projects() {
+    // requirements.txt + uv.toml must yield exactly one project (no dup entries).
+    // If two projects existed for the same dir, findings would be doubled.
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        ("uv.toml", "allow-insecure-host = [\"internal.example\"]\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    let sd003_count = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule_id"] == "SD003")
+        .count();
+    assert_eq!(
+        sd003_count, 1,
+        "expected exactly one SD003, got {sd003_count} (possible dup project)"
+    );
+}

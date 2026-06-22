@@ -54,25 +54,39 @@ impl crate::ecosystems::Analyzer for PythonAnalyzer {
             });
         }
 
-        // Detect uv projects that have only `uv.toml` and/or `uv.lock` but no
-        // `pyproject.toml` or `requirements*.txt`. These directories are otherwise
-        // invisible to the analyzer, so uv configuration (insecure-host, index
-        // strategy, etc.) escapes SD003/SD007.
+        // Detect uv projects. Two cases:
+        //
+        // 1. The directory was already registered (e.g. via `requirements*.txt`
+        //    as `pip`) but ALSO contains `uv.toml` or `uv.lock` — this is the
+        //    common "uv manages a requirements-based project" layout. Upgrade the
+        //    existing project to `PackageManager::Uv` so that `build_uv_facts`
+        //    runs and uv settings reach SD003/SD007.
+        //
+        // 2. The directory has only `uv.toml` / `uv.lock` with no
+        //    `pyproject.toml` or `requirements*.txt`. These directories are
+        //    otherwise invisible to the analyzer; add a new project entry.
         for uv_file in files_named(ctx, "uv.toml")
             .into_iter()
             .chain(files_named(ctx, "uv.lock"))
         {
             let dir = project_dir(&uv_file);
-            if covered_dirs.contains(&dir) {
-                continue;
+            if let Some(existing) = projects.iter_mut().find(|p| p.root == dir) {
+                // Upgrade a previously-detected pip project to uv so that uv
+                // config (allow-insecure-host, index-strategy, …) is parsed.
+                if existing.package_manager == PackageManager::Pip {
+                    existing.package_manager = PackageManager::Uv;
+                }
+                // If it was already Uv (e.g. detected via pyproject.toml with
+                // [tool.uv]), leave it as-is — no duplicate entry needed.
+            } else {
+                covered_dirs.push(dir.clone());
+                projects.push(Project {
+                    root: dir,
+                    ecosystem: Ecosystem::Python,
+                    package_manager: PackageManager::Uv,
+                    kind: ProjectKind::Unknown,
+                });
             }
-            covered_dirs.push(dir.clone());
-            projects.push(Project {
-                root: dir,
-                ecosystem: Ecosystem::Python,
-                package_manager: PackageManager::Uv,
-                kind: ProjectKind::Unknown,
-            });
         }
 
         projects
@@ -532,5 +546,80 @@ mod tests {
         let projects = detect_projects(&dir);
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].package_manager, PackageManager::Pip);
+    }
+
+    // --- requirements.txt + uv.toml upgrade ------------------------------------
+
+    #[test]
+    fn requirements_plus_uv_toml_upgrades_to_uv() {
+        // A directory with both requirements.txt AND uv.toml must be classified
+        // as Uv (not Pip) so that uv settings reach SD003/SD007.
+        let dir = ws(&[
+            ("requirements.txt", "requests==2.31.0\n"),
+            ("uv.toml", "allow-insecure-host = [\"internal.example\"]\n"),
+        ]);
+        let projects = detect_projects(&dir);
+        assert_eq!(projects.len(), 1, "expected one project, got: {projects:?}");
+        assert_eq!(projects[0].package_manager, PackageManager::Uv);
+    }
+
+    #[test]
+    fn requirements_plus_uv_lock_upgrades_to_uv() {
+        // A directory with requirements.txt AND uv.lock must also be upgraded.
+        let dir = ws(&[
+            ("requirements.txt", "requests==2.31.0\n"),
+            ("uv.lock", "version = 1\n"),
+        ]);
+        let projects = detect_projects(&dir);
+        assert_eq!(projects.len(), 1, "expected one project, got: {projects:?}");
+        assert_eq!(projects[0].package_manager, PackageManager::Uv);
+    }
+
+    #[test]
+    fn requirements_plus_uv_toml_no_duplicate_projects() {
+        // The upgrade must not create a second project entry for the same dir.
+        let dir = ws(&[
+            ("requirements.txt", "requests==2.31.0\n"),
+            ("uv.toml", "index-strategy = \"unsafe-best-match\"\n"),
+        ]);
+        let projects = detect_projects(&dir);
+        assert_eq!(projects.len(), 1, "duplicate projects: {projects:?}");
+    }
+
+    #[test]
+    fn requirements_plus_uv_toml_allow_insecure_host_in_settings() {
+        // After upgrading to Uv, build_uv_facts must parse uv.toml so that
+        // allow-insecure-host populates install_settings (SD003 can fire).
+        let dir = ws(&[
+            ("requirements.txt", "requests==2.31.0\n"),
+            ("uv.toml", "allow-insecure-host = [\"internal.example\"]\n"),
+        ]);
+        let facts = all_facts(&dir);
+        assert_eq!(facts.len(), 1);
+        assert_eq!(
+            facts[0].install_settings.allow_insecure_hosts,
+            vec!["internal.example"],
+            "allow-insecure-host from uv.toml must be present in settings"
+        );
+    }
+
+    #[test]
+    fn requirements_plus_uv_toml_index_strategy_in_settings() {
+        // After upgrading to Uv, index-strategy from uv.toml must be visible
+        // in install_settings so SD007 can fire.
+        let dir = ws(&[
+            ("requirements.txt", "requests==2.31.0\n"),
+            (
+                "uv.toml",
+                "index-strategy = \"unsafe-best-match\"\nextra-index-url = [\"https://pypi.internal/simple\"]\n",
+            ),
+        ]);
+        let facts = all_facts(&dir);
+        assert_eq!(facts.len(), 1);
+        assert_eq!(
+            facts[0].install_settings.index_strategy.as_deref(),
+            Some("unsafe-best-match"),
+            "index-strategy from uv.toml must be present in settings"
+        );
     }
 }
