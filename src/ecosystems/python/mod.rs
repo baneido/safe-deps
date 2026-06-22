@@ -54,6 +54,27 @@ impl crate::ecosystems::Analyzer for PythonAnalyzer {
             });
         }
 
+        // Detect uv projects that have only `uv.toml` and/or `uv.lock` but no
+        // `pyproject.toml` or `requirements*.txt`. These directories are otherwise
+        // invisible to the analyzer, so uv configuration (insecure-host, index
+        // strategy, etc.) escapes SD003/SD007.
+        for uv_file in files_named(ctx, "uv.toml")
+            .into_iter()
+            .chain(files_named(ctx, "uv.lock"))
+        {
+            let dir = project_dir(&uv_file);
+            if covered_dirs.contains(&dir) {
+                continue;
+            }
+            covered_dirs.push(dir.clone());
+            projects.push(Project {
+                root: dir,
+                ecosystem: Ecosystem::Python,
+                package_manager: PackageManager::Uv,
+                kind: ProjectKind::Unknown,
+            });
+        }
+
         projects
     }
 
@@ -388,4 +409,128 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
         has_legacy_bun_lockfile: false,
         parse_diagnostics: pyproject_parse_diagnostic(ctx, dir).into_iter().collect(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::ecosystems::Analyzer;
+    use crate::filesystem::{scan, ScanOptions};
+    use tempfile::TempDir;
+
+    fn ws(files: &[(&str, &str)]) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        for (rel, contents) in files {
+            let p = dir.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, contents).unwrap();
+        }
+        dir
+    }
+
+    fn detect_projects(dir: &TempDir) -> Vec<Project> {
+        let ctx = scan(dir.path(), Config::default(), &ScanOptions::default()).unwrap();
+        PythonAnalyzer.detect(&ctx)
+    }
+
+    fn all_facts(dir: &TempDir) -> Vec<ProjectFacts> {
+        let ctx = scan(dir.path(), Config::default(), &ScanOptions::default()).unwrap();
+        PythonAnalyzer
+            .detect(&ctx)
+            .iter()
+            .filter_map(|p| PythonAnalyzer.facts(p, &ctx).ok())
+            .collect()
+    }
+
+    // --- uv.toml-only detection -----------------------------------------------
+
+    #[test]
+    fn uv_toml_only_detects_uv_project() {
+        // A directory with only uv.toml (no pyproject.toml, no requirements.txt)
+        // must be detected as a uv/Python project so SD003/SD007 can fire.
+        let dir = ws(&[("uv.toml", "allow-insecure-host = [\"internal.example\"]\n")]);
+        let projects = detect_projects(&dir);
+        assert_eq!(projects.len(), 1, "expected one project: {projects:?}");
+        assert_eq!(projects[0].package_manager, PackageManager::Uv);
+        assert_eq!(projects[0].ecosystem, Ecosystem::Python);
+    }
+
+    #[test]
+    fn uv_lock_only_detects_uv_project() {
+        // A directory with only uv.lock (no pyproject.toml) must also be detected.
+        let dir = ws(&[("uv.lock", "version = 1\n")]);
+        let projects = detect_projects(&dir);
+        assert_eq!(projects.len(), 1, "expected one project: {projects:?}");
+        assert_eq!(projects[0].package_manager, PackageManager::Uv);
+    }
+
+    #[test]
+    fn uv_toml_insecure_host_populates_settings() {
+        // The insecure-host in uv.toml must be collected so SD003 can fire.
+        let dir = ws(&[("uv.toml", "allow-insecure-host = [\"internal.example\"]\n")]);
+        let facts = all_facts(&dir);
+        assert_eq!(facts.len(), 1);
+        assert_eq!(
+            facts[0].install_settings.allow_insecure_hosts,
+            vec!["internal.example"]
+        );
+    }
+
+    #[test]
+    fn uv_toml_and_lock_lockfile_is_present() {
+        // With both uv.toml and uv.lock the lockfile vec must be non-empty
+        // so SD001 does not fire (no manifest means has_manifest_dependencies=false
+        // anyway, but the lockfile should still be recorded correctly).
+        let dir = ws(&[
+            ("uv.toml", "index-strategy = \"first-match\"\n"),
+            ("uv.lock", "version = 1\n"),
+        ]);
+        let facts = all_facts(&dir);
+        assert_eq!(facts.len(), 1);
+        assert_eq!(
+            facts[0].lockfiles.len(),
+            1,
+            "uv.lock must appear in lockfiles"
+        );
+        assert!(!facts[0].has_manifest_dependencies);
+    }
+
+    #[test]
+    fn uv_toml_with_pyproject_not_double_detected() {
+        // When both pyproject.toml and uv.toml are present, only one project
+        // should be detected (pyproject.toml wins because it appears first).
+        let dir = ws(&[
+            (
+                "pyproject.toml",
+                "[project]\nname = \"x\"\ndependencies = [\"requests\"]\n",
+            ),
+            ("uv.toml", "index-strategy = \"first-match\"\n"),
+            ("uv.lock", "version = 1\n"),
+        ]);
+        let projects = detect_projects(&dir);
+        assert_eq!(projects.len(), 1, "duplicate detection: {projects:?}");
+        assert_eq!(projects[0].package_manager, PackageManager::Uv);
+    }
+
+    #[test]
+    fn existing_pyproject_detection_unaffected() {
+        // A plain pyproject.toml project without uv.* files must still be pip.
+        let dir = ws(&[(
+            "pyproject.toml",
+            "[project]\nname = \"x\"\ndependencies = [\"requests\"]\n",
+        )]);
+        let projects = detect_projects(&dir);
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].package_manager, PackageManager::Pip);
+    }
+
+    #[test]
+    fn existing_requirements_detection_unaffected() {
+        // A plain requirements.txt project without uv.* files must still be pip.
+        let dir = ws(&[("requirements.txt", "requests==2.31.0\n")]);
+        let projects = detect_projects(&dir);
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].package_manager, PackageManager::Pip);
+    }
 }

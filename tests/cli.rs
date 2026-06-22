@@ -1803,3 +1803,80 @@ fn ci_cargo_build_locked_is_clean() {
     );
     assert!(findings_for(&check_json(&ws, &[]), "SD002").is_empty());
 }
+
+// --- uv.toml / uv.lock only detection (#101) ----------------------------------
+
+#[test]
+fn uv_toml_only_insecure_host_triggers_sd003() {
+    // A project with only uv.toml (no pyproject.toml, no requirements.txt) must
+    // still be detected as a uv project so SD003 fires on allow-insecure-host.
+    let ws = workspace(&[("uv.toml", "allow-insecure-host = [\"internal.example\"]\n")]);
+    let report = check_json(&ws, &[]);
+    let ids = rule_ids(&report);
+    assert!(ids.contains(&"SD003".to_string()), "ids: {ids:?}");
+    let sd003 = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["rule_id"] == "SD003")
+        .unwrap();
+    assert_eq!(sd003["package_manager"], "uv");
+    assert!(
+        sd003["message"]
+            .as_str()
+            .unwrap()
+            .contains("internal.example"),
+        "{}",
+        sd003["message"]
+    );
+}
+
+#[test]
+fn uv_toml_only_unsafe_index_strategy_triggers_sd007() {
+    // uv.toml-only project: SD007 must fire on unsafe-best-match index strategy.
+    let ws = workspace(&[(
+        "uv.toml",
+        "index-strategy = \"unsafe-best-match\"\nextra-index-url = [\"https://pypi.internal/simple\"]\n",
+    )]);
+    let report = check_json(&ws, &[]);
+    let ids = rule_ids(&report);
+    assert!(ids.contains(&"SD007".to_string()), "ids: {ids:?}");
+}
+
+#[test]
+fn uv_lock_only_is_detected_and_lockfile_recorded() {
+    // A directory with only uv.lock (no pyproject.toml) is detected as a uv
+    // project. No manifest means has_manifest_dependencies=false, so SD001 is
+    // suppressed; the lockfile is still recorded in facts.
+    let ws = workspace(&[("uv.lock", "version = 1\n")]);
+    let report = check_json(&ws, &[]);
+    // No SD001 because there is no manifest with declared dependencies.
+    assert!(
+        !rule_ids(&report).contains(&"SD001".to_string()),
+        "unexpected SD001 without manifest: {:?}",
+        rule_ids(&report)
+    );
+}
+
+#[test]
+fn uv_toml_pyproject_combo_not_double_detected() {
+    // When pyproject.toml is present alongside uv.toml, only one project is
+    // detected — existing behaviour must not regress.
+    let ws = workspace(&[
+        (
+            "pyproject.toml",
+            "[project]\nname = \"x\"\ndependencies = [\"requests\"]\n",
+        ),
+        ("uv.toml", "allow-insecure-host = [\"internal.example\"]\n"),
+        ("uv.lock", "version = 1\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    // Exactly one SD003 (from the single detected project).
+    let sd003 = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule_id"] == "SD003")
+        .count();
+    assert_eq!(sd003, 1, "expected exactly one SD003, got {sd003}");
+}
