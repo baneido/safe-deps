@@ -92,6 +92,10 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
             continue;
         }
         // Array form: consume `- item` lines (incl. per-item `- |` block text).
+        // YAML allows an "indentless block sequence" where `- item` aligns with
+        // the parent mapping key (e.g. `script:\n- npm ci`).  We therefore break
+        // only when the indent is *strictly less* than `key_indent`, or when the
+        // indent equals `key_indent` and the line is not a sequence item.
         let mut j = i + 1;
         while j < lines.len() {
             let line = lines[j];
@@ -99,10 +103,14 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
                 j += 1;
                 continue;
             }
-            if leading_spaces(line) <= key_indent {
+            let indent = leading_spaces(line);
+            let content = strip_comment(line).trim();
+            // A bare `-` (exactly `-`, or `-` followed by whitespace/comment
+            // that strips away) is also a valid YAML empty sequence item.
+            let is_seq_item = content.starts_with("- ") || content == "-";
+            if indent < key_indent || (indent == key_indent && !is_seq_item) {
                 break;
             }
-            let content = strip_comment(line).trim();
             if let Some(item) = content.strip_prefix("- ") {
                 if !is_block_scalar_indicator(item.trim()) {
                     push(&mut commands, relative, j, unquote(item.trim()));
@@ -254,5 +262,65 @@ job:
         let get = |n: &str| env.iter().find(|e| e.name == n).map(|e| e.value.as_str());
         assert_eq!(get("NODE_ENV"), Some("production"));
         assert_eq!(get("NPM_TOKEN"), Some("<redacted>"));
+    }
+
+    // Indentless block sequence: `- item` at the *same* indent level as the
+    // parent `script:` key — valid YAML per the spec.
+    #[test]
+    fn extracts_indentless_script_sequence() {
+        let text = "\
+job:
+  script:
+  - npm install
+  - npm audit
+";
+        assert_eq!(cmds(text), vec!["npm install", "npm audit"]);
+    }
+
+    #[test]
+    fn extracts_indentless_before_and_after_script() {
+        let text = "\
+job:
+  before_script:
+  - npm ci
+  script:
+  - npm test
+  after_script:
+  - npm run clean
+";
+        assert_eq!(cmds(text), vec!["npm ci", "npm test", "npm run clean"]);
+    }
+
+    #[test]
+    fn indentless_sequence_stops_at_next_mapping_key() {
+        let text = "\
+build:
+  script:
+  - npm ci
+  - npm run build
+deploy:
+  script:
+  - npm run deploy
+";
+        assert_eq!(
+            cmds(text),
+            vec!["npm ci", "npm run build", "npm run deploy"]
+        );
+    }
+
+    // A bare `-` (empty YAML sequence item, optionally followed by a comment)
+    // must be treated as a sequence item so the parser does not exit the block
+    // early and drop subsequent commands.
+    #[test]
+    fn indentless_sequence_bare_dash_skipped_collection_continues() {
+        let text = "\
+job:
+  script:
+  - npm ci
+  -
+  - # this is just a comment
+  - npm test
+";
+        assert_eq!(cmds(text), vec!["npm ci", "npm test"]);
     }
 }
