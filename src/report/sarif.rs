@@ -9,11 +9,11 @@ use serde::Serialize;
 
 use crate::report::{Report, ReportError, Reporter};
 use crate::rule::{Finding, Severity};
+// The per-rule help URI is declared once in the rule metadata registry.
+use crate::rules::meta::HELP_URI;
 
 const SCHEMA: &str = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json";
 const INFORMATION_URI: &str = "https://github.com/baneido/safe-deps";
-// The per-rule help URI is declared once in the rule metadata registry.
-use crate::rules::meta::HELP_URI;
 
 pub struct SarifReporter;
 

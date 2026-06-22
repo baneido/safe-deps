@@ -1,8 +1,9 @@
 //! Single-source guard for rule metadata (#66).
 //!
 //! The declarative `rules::meta::ALL_RULE_META` registry is the source of truth
-//! for rule metadata (id / summary / explanation / default severity /
-//! applicable ecosystems / SARIF help URI). These tests assert that:
+//! for per-rule metadata (id / summary / explanation / default severity /
+//! applicable ecosystems). The SARIF help URI is not per-rule metadata: it is a
+//! single shared `rules::meta::HELP_URI` constant. These tests assert that:
 //!
 //!   * `rules::all_rules()` (the behavior registry) has exactly the same rule
 //!     ids as the metadata registry — no rule can ship without metadata, none

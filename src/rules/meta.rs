@@ -163,21 +163,41 @@ problems. Remove them or scope them to a documented exception.",
 ];
 
 /// Looks up the declarative metadata for a rule id. Returns `None` for an
-/// unknown id.
+/// unknown id. `ALL_RULE_META` is guaranteed id-sorted (enforced by
+/// `metadata_is_id_sorted_and_unique` and `tests/rule_metadata.rs`), so this is
+/// a binary search.
 pub fn meta_for(id: &str) -> Option<&'static RuleMeta> {
-    ALL_RULE_META.iter().find(|m| m.id == id)
+    ALL_RULE_META
+        .binary_search_by(|m| m.id.cmp(id))
+        .ok()
+        .map(|i| &ALL_RULE_META[i])
 }
 
-/// The summary declared for `id`, or an empty string if the id is unknown. Used
-/// by the `Rule::summary` default so each rule's metadata is read from the
+/// The metadata declared for `id`. Panics on an unknown id: the `Rule::summary`/
+/// `Rule::explanation` defaults read through here, so a registered rule lacking
+/// a metadata entry — or an external `Rule` impl that forgot to override — is a
+/// programmer error we surface loudly rather than emitting blank CLI/SARIF text.
+/// Every registered rule has an entry (enforced by `tests/rule_metadata.rs`), so
+/// this never panics at runtime for a real rule.
+fn require_meta(id: &str) -> &'static RuleMeta {
+    meta_for(id).unwrap_or_else(|| {
+        panic!(
+            "no rule metadata registered for id `{id}`; add an entry to rules::meta::ALL_RULE_META"
+        )
+    })
+}
+
+/// The summary declared for `id`. Panics on an unknown id (see `require_meta`).
+/// Used by the `Rule::summary` default so each rule's metadata is read from the
 /// single source rather than re-declared in the impl.
 pub fn summary_for(id: &str) -> &'static str {
-    meta_for(id).map(|m| m.summary).unwrap_or("")
+    require_meta(id).summary
 }
 
-/// The explanation declared for `id`, or an empty string if the id is unknown.
+/// The explanation declared for `id`. Panics on an unknown id (see
+/// `require_meta`).
 pub fn explanation_for(id: &str) -> &'static str {
-    meta_for(id).map(|m| m.explanation).unwrap_or("")
+    require_meta(id).explanation
 }
 
 #[cfg(test)]
@@ -203,8 +223,18 @@ mod tests {
             "Lockfile missing for a manifest that declares dependencies."
         );
         assert!(meta_for("SD999").is_none());
-        assert_eq!(summary_for("SD999"), "");
-        assert_eq!(explanation_for("SD999"), "");
+    }
+
+    #[test]
+    #[should_panic(expected = "no rule metadata registered for id `SD999`")]
+    fn summary_for_unknown_id_panics() {
+        let _ = summary_for("SD999");
+    }
+
+    #[test]
+    #[should_panic(expected = "no rule metadata registered for id `SD999`")]
+    fn explanation_for_unknown_id_panics() {
+        let _ = explanation_for("SD999");
     }
 
     #[test]
