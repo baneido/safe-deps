@@ -1879,8 +1879,8 @@ fn pip_ini_extra_index_url_is_sd007_warning() {
 }
 
 #[test]
-fn pip_conf_safe_settings_yield_no_findings() {
-    // Sanity: a pip.ini with only HTTPS index and no bypasses is clean.
+fn pip_ini_safe_settings_yield_no_findings() {
+    // Sanity: a pip.ini with only an HTTPS index and no bypasses is clean.
     let ws = workspace(&[
         ("requirements.txt", "requests==2.31.0\n"),
         ("pip.ini", "[global]\nindex-url = https://pypi.org/simple\n"),
