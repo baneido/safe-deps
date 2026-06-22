@@ -268,7 +268,8 @@ jobs:
           linux_arm64=$(sha safe-deps-aarch64-unknown-linux-gnu.tar.gz)
           linux_amd64=$(sha safe-deps-x86_64-unknown-linux-gnu.tar.gz)
 
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/baneido/homebrew-tap.git" tap
+          GH_TOKEN="$TAP_TOKEN" gh auth setup-git
+          GH_TOKEN="$TAP_TOKEN" gh repo clone baneido/homebrew-tap tap
           mkdir -p tap/Formula
           sed -e "s|{{VERSION}}|${version}|g" \
               -e "s|{{TAG}}|${TAG}|g" \
