@@ -1765,6 +1765,22 @@ fn gitlab_ci_non_frozen_install_reports_sd002() {
 }
 
 #[test]
+fn gitlab_ci_indentless_script_sequence_reports_sd002() {
+    // `- npm install` at the same indent as `script:` is a valid GitLab CI
+    // indentless sequence; the CI-derived rules must still see the command.
+    let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);
+    write(
+        ws.path(),
+        ".gitlab-ci.yml",
+        "build:\n  script:\n  - npm install\n",
+    );
+    let report = check_json(&ws, &[]);
+    let sd002 = findings_for(&report, "SD002");
+    assert_eq!(sd002.len(), 1, "{report}");
+    assert_eq!(sd002[0]["location"]["file"], ".gitlab-ci.yml");
+}
+
+#[test]
 fn circleci_non_frozen_install_reports_sd002() {
     let ws = workspace(&[("package.json", NPM_DEPS), ("package-lock.json", NPM_LOCK)]);
     write(

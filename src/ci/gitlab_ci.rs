@@ -92,6 +92,10 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
             continue;
         }
         // Array form: consume `- item` lines (incl. per-item `- |` block text).
+        // GitLab allows an *indentless* block sequence whose `- ` items share the
+        // key's indent (`script:\n- cmd`), so a sequence item is consumed even at
+        // `key_indent`; only a shallower line, or a non-item line at `key_indent`
+        // (a sibling mapping key), ends the block.
         let mut j = i + 1;
         while j < lines.len() {
             let line = lines[j];
@@ -99,10 +103,12 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
                 j += 1;
                 continue;
             }
-            if leading_spaces(line) <= key_indent {
+            let indent = leading_spaces(line);
+            let content = strip_comment(line).trim();
+            let is_sequence_item = content == "-" || content.starts_with("- ");
+            if indent < key_indent || (indent == key_indent && !is_sequence_item) {
                 break;
             }
-            let content = strip_comment(line).trim();
             if let Some(item) = content.strip_prefix("- ") {
                 if !is_block_scalar_indicator(item.trim()) {
                     push(&mut commands, relative, j, unquote(item.trim()));
@@ -210,6 +216,47 @@ test:
             cmds(text),
             vec!["npm ci", "npm test", "npm run build", "pytest -q"]
         );
+    }
+
+    #[test]
+    fn extracts_indentless_block_sequence() {
+        // `- item` sharing the key's indent is a valid YAML (indentless) sequence
+        // and is common in `.gitlab-ci.yml`.
+        let text = "\
+job:
+  before_script:
+  - npm ci
+  script:
+  - npm install
+  - npm audit
+";
+        assert_eq!(cmds(text), vec!["npm ci", "npm install", "npm audit"]);
+    }
+
+    #[test]
+    fn indentless_sequence_stops_at_sibling_key() {
+        // The indentless items belong to `script:`; the sibling `tags:` sequence
+        // (also indentless) must not be collected as commands.
+        let text = "\
+job:
+  script:
+  - npm ci
+  tags:
+  - linux
+  - docker
+";
+        assert_eq!(cmds(text), vec!["npm ci"]);
+    }
+
+    #[test]
+    fn extracts_top_level_indentless_sequence() {
+        let text = "\
+script:
+- npm ci
+after_script:
+- echo done
+";
+        assert_eq!(cmds(text), vec!["npm ci", "echo done"]);
     }
 
     #[test]

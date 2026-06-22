@@ -29,6 +29,7 @@
     "GOPRIVATE",
     "heredoc",
     "heredocs",
+    "indentless",
     "insta",
     "lockfile",
     "lockfiles",

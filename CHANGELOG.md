@@ -8,6 +8,12 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Fixed the GitLab CI parser missing indentless block sequences under `script:`
+  / `before_script:` / `after_script:` (`- cmd` sharing the key's indent, valid
+  YAML). Such commands were dropped, so SD002/SD008/SD009 silently no-op'd on
+  those pipelines; they are now extracted, while a sibling key at the same indent
+  still ends the sequence (#85).
+
 - Added `examples/` onboarding fixtures: small self-contained projects that each
   trip one rule (`missing-lockfile` → SD001, `npm-insecure-registry` → SD003,
   `pip-extra-index` → SD007), plus a hardened `clean-baseline` that stays clean.
