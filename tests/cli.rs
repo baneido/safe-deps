@@ -1748,6 +1748,134 @@ fn unreadable_directory_is_surfaced_and_escalates_under_strict() {
     assert_eq!(code(&strict), 4, "strict mode should escalate a walk error");
 }
 
+// --- diagnostic exit-code behaviour (issue #93) --------------------------------
+
+// Under the strict profile, an expired suppression that *matches* a finding
+// produces a DiagnosticLevel::Error diagnostic. We use a workspace that has a
+// real SD003 finding (.npmrc with an insecure registry) so the expired
+// suppression actually matches the finding and triggers the error path.
+const EXPIRED_SUPPRESSION_STRICT: &str = "\
+[[suppressions]]
+rule = \"SD003\"
+path = \".npmrc\"
+reason = \"tracked\"
+expires = \"2000-01-01\"
+";
+
+#[test]
+fn error_diagnostic_exits_nonzero_even_without_findings() {
+    // Under the strict profile an expired suppression that matches a finding
+    // produces a DiagnosticLevel::Error diagnostic. Even with --fail-on none
+    // (so the finding itself would not trigger an exit) the error diagnostic
+    // must force exit code 1.
+    //
+    // The expired suppression keeps the SD003 finding in the results (not
+    // suppressed) but also emits a DiagnosticLevel::Error.  The combination
+    // of --fail-on none and no *other* errors would previously exit 0.
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        ("package-lock.json", r#"{ "lockfileVersion": 3 }"#),
+        (".npmrc", "registry=http://registry.example.com/\n"),
+        ("safe-deps.toml", EXPIRED_SUPPRESSION_STRICT),
+    ]);
+
+    // In the strict profile an expired suppression that matches a finding
+    // produces DiagnosticLevel::Error.
+    let out = run(
+        &ws,
+        &["check", ".", "--profile", "strict", "--fail-on", "none"],
+    );
+    // Even with --fail-on none, the error diagnostic must produce exit 1.
+    assert_eq!(
+        code(&out),
+        1,
+        "error diagnostic must produce exit 1 regardless of --fail-on: {}",
+        stdout(&out)
+    );
+    // The error-level diagnostic must appear in the JSON report.
+    let report = check_json(&ws, &["--profile", "strict", "--fail-on", "none"]);
+    let diags = report["diagnostics"].as_array().unwrap();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d["level"] == "error" && d["message"].as_str().unwrap().contains("expired")),
+        "expected error-level expired-suppression diagnostic: {diags:?}"
+    );
+}
+
+#[test]
+fn warning_only_diagnostic_does_not_change_exit_behavior() {
+    // An expired suppression under the balanced (non-strict) profile emits
+    // DiagnosticLevel::Warning, not Error.  That must NOT change the exit
+    // code; the finding threshold still governs.  With --fail-on none, the
+    // run must exit 0 despite the warning diagnostic.
+    let config = "\
+[[suppressions]]
+rule = \"SD003\"
+path = \".npmrc\"
+reason = \"tracked\"
+expires = \"2000-01-01\"
+";
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        ("package-lock.json", r#"{ "lockfileVersion": 3 }"#),
+        (".npmrc", "registry=http://registry.example.com/\n"),
+        ("safe-deps.toml", config),
+    ]);
+
+    // Balanced profile → expired suppression matching a finding is a Warning.
+    // With --fail-on none the run must exit 0.
+    let out = run(&ws, &["check", ".", "--fail-on", "none"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "warning diagnostic alone must not change exit code: {}",
+        stdout(&out)
+    );
+    // Verify the diagnostic is present and at warning level.
+    let report = check_json(&ws, &["--fail-on", "none"]);
+    let diags = report["diagnostics"].as_array().unwrap();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d["level"] == "warning" && d["message"].as_str().unwrap().contains("expired")),
+        "expected warning-level expired-suppression diagnostic: {diags:?}"
+    );
+}
+
+#[test]
+fn error_diagnostic_exit_is_consistent_across_formats() {
+    // The exit code must be 1 for error diagnostics regardless of --format.
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        ("package-lock.json", r#"{ "lockfileVersion": 3 }"#),
+        (".npmrc", "registry=http://registry.example.com/\n"),
+        ("safe-deps.toml", EXPIRED_SUPPRESSION_STRICT),
+    ]);
+
+    for fmt in ["text", "json", "sarif", "junit"] {
+        let out = run(
+            &ws,
+            &[
+                "check",
+                ".",
+                "--profile",
+                "strict",
+                "--fail-on",
+                "none",
+                "--format",
+                fmt,
+            ],
+        );
+        assert_eq!(
+            code(&out),
+            1,
+            "error diagnostic should exit 1 for --format {fmt}: {}",
+            stdout(&out)
+        );
+    }
+}
+
 // --- CI provider plugins: GitLab CI / CircleCI + Cargo/Go (#22) ---------------
 
 #[test]
