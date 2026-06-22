@@ -53,7 +53,7 @@ pub(super) fn try_read_manifest(
         is_workspace,
         has_dependencies: declares_dependencies(&value),
         kind: infer_kind(ctx, dir, &value),
-        dependencies: depsource::dependencies(&value, relative),
+        dependencies: depsource::dependencies(ctx, &value, dir, relative),
     })
 }
 
