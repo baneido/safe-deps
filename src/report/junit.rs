@@ -2,10 +2,18 @@
 //!
 //! Each finding becomes a `<testcase>`; severity maps to the JUnit outcome a
 //! dashboard understands: errors to `<error>`, warnings to `<failure>`, and
-//! informational findings to `<skipped>` (surfaced but non-failing). The output
-//! is a single `<testsuite>` wrapped in `<testsuites>`, deterministically
+//! informational findings to `<skipped>` (surfaced but non-failing).
+//!
+//! Linter-run diagnostics (parse failures, expired suppressions) are *not*
+//! findings, but a dashboard must still be able to see that the run was
+//! incomplete. They are emitted in a second `<testsuite name="diagnostics">`
+//! using the same level→outcome mapping (error→`<error>`, warning→`<failure>`,
+//! info→`<skipped>`), so their existence is discoverable from JUnit output
+//! without being conflated with policy findings. The top-level `<testsuites>`
+//! aggregate counts include both suites. Both suites are deterministically
 //! ordered like the other reporters.
 
+use crate::diagnostics::{Diagnostic, DiagnosticLevel};
 use crate::report::{Report, ReportError, Reporter};
 use crate::rule::{Finding, Severity};
 
@@ -16,10 +24,23 @@ impl Reporter for JunitReporter {
         let mut sorted = report.findings.clone();
         crate::report::sort_findings(&mut sorted);
 
-        let errors = count(&sorted, Severity::Error);
-        let failures = count(&sorted, Severity::Warning);
-        let skipped = count(&sorted, Severity::Info);
-        let total = sorted.len();
+        let f_errors = count(&sorted, Severity::Error);
+        let f_failures = count(&sorted, Severity::Warning);
+        let f_skipped = count(&sorted, Severity::Info);
+        let f_total = sorted.len();
+
+        let diagnostics = &report.diagnostics;
+        let d_errors = count_diag(diagnostics, DiagnosticLevel::Error);
+        let d_failures = count_diag(diagnostics, DiagnosticLevel::Warning);
+        let d_skipped = count_diag(diagnostics, DiagnosticLevel::Info);
+        let d_total = diagnostics.len();
+
+        // The top-level aggregate spans both the findings and the diagnostics
+        // suites, so a dashboard's headline counts reflect run incompleteness too.
+        let total = f_total + d_total;
+        let errors = f_errors + d_errors;
+        let failures = f_failures + d_failures;
+        let skipped = f_skipped + d_skipped;
 
         let mut out = String::new();
         out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
@@ -27,12 +48,23 @@ impl Reporter for JunitReporter {
             "<testsuites name=\"safe-deps\" tests=\"{total}\" failures=\"{failures}\" errors=\"{errors}\" skipped=\"{skipped}\">\n"
         ));
         out.push_str(&format!(
-            "  <testsuite name=\"safe-deps\" tests=\"{total}\" failures=\"{failures}\" errors=\"{errors}\" skipped=\"{skipped}\">\n"
+            "  <testsuite name=\"safe-deps\" tests=\"{f_total}\" failures=\"{f_failures}\" errors=\"{f_errors}\" skipped=\"{f_skipped}\">\n"
         ));
         for finding in &sorted {
             out.push_str(&testcase(finding));
         }
         out.push_str("  </testsuite>\n");
+        // Only emit the diagnostics suite when there is something to report, so
+        // a clean run keeps the original single-suite shape.
+        if d_total > 0 {
+            out.push_str(&format!(
+                "  <testsuite name=\"diagnostics\" tests=\"{d_total}\" failures=\"{d_failures}\" errors=\"{d_errors}\" skipped=\"{d_skipped}\">\n"
+            ));
+            for diag in diagnostics {
+                out.push_str(&diagnostic_case(diag));
+            }
+            out.push_str("  </testsuite>\n");
+        }
         out.push_str("</testsuites>\n");
         Ok(out.into_bytes())
     }
@@ -87,6 +119,43 @@ fn detail(f: &Finding) -> String {
 
 fn count(findings: &[Finding], severity: Severity) -> usize {
     findings.iter().filter(|f| f.severity == severity).count()
+}
+
+fn count_diag(diagnostics: &[Diagnostic], level: DiagnosticLevel) -> usize {
+    diagnostics.iter().filter(|d| d.level == level).count()
+}
+
+/// Renders one diagnostic as a `<testcase>` in the diagnostics suite, mapping
+/// its level to the same JUnit outcome the findings use. The optional file
+/// location is carried in the classname and the body detail so an operator can
+/// trace the diagnostic back to its source.
+fn diagnostic_case(d: &Diagnostic) -> String {
+    let loc = d
+        .location
+        .as_ref()
+        .map(|p| crate::path::normalize_separators(p));
+    let name = escape(&match &loc {
+        Some(path) => format!("diagnostic: {path}: {}", d.message),
+        None => format!("diagnostic: {}", d.message),
+    });
+    let classname = escape(&format!("diagnostics.{}", loc.as_deref().unwrap_or("-")));
+    let message = escape(&d.message);
+    let detail = escape(&match &loc {
+        Some(path) => format!("{path}\n{}", d.message),
+        None => d.message.clone(),
+    });
+    let body = match d.level {
+        DiagnosticLevel::Error => {
+            format!("      <error message=\"{message}\" type=\"diagnostic\">{detail}</error>\n")
+        }
+        DiagnosticLevel::Warning => {
+            format!("      <failure message=\"{message}\" type=\"diagnostic\">{detail}</failure>\n")
+        }
+        DiagnosticLevel::Info => {
+            format!("      <skipped message=\"{message}\">{detail}</skipped>\n")
+        }
+    };
+    format!("    <testcase name=\"{name}\" classname=\"{classname}\">\n{body}    </testcase>\n")
 }
 
 /// Escapes the five XML predefined entities so messages and paths are safe in
@@ -200,5 +269,70 @@ mod tests {
             String::from_utf8(JunitReporter.format(&report_with(vec![]).clone()).unwrap()).unwrap();
         assert!(xml.contains("tests=\"0\""));
         assert!(xml.starts_with("<?xml"));
+        // No diagnostics → keep the original single-suite shape.
+        assert!(!xml.contains("name=\"diagnostics\""));
+    }
+
+    #[test]
+    fn diagnostics_are_emitted_in_their_own_suite() {
+        let mut report = report_with(vec![]);
+        report
+            .diagnostics
+            .push(crate::diagnostics::Diagnostic::warn_at(
+                "could not parse pkg/package.json",
+                PathBuf::from("pkg/package.json"),
+            ));
+        let xml = String::from_utf8(JunitReporter.format(&report).unwrap()).unwrap();
+        // A separate suite makes diagnostics discoverable without conflating
+        // them with policy findings; a warning maps to <failure>.
+        assert!(xml.contains("<testsuite name=\"diagnostics\""), "{xml}");
+        assert!(
+            xml.contains(
+                "<failure message=\"could not parse pkg/package.json\" type=\"diagnostic\">"
+            ),
+            "{xml}"
+        );
+        assert!(xml.contains("pkg/package.json"), "{xml}");
+        // The top-level aggregate counts the diagnostic too.
+        assert!(
+            xml.contains("<testsuites name=\"safe-deps\" tests=\"1\""),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn error_diagnostic_maps_to_error_outcome() {
+        let mut report = report_with(vec![]);
+        report
+            .diagnostics
+            .push(crate::diagnostics::Diagnostic::error("internal failure"));
+        let xml = String::from_utf8(JunitReporter.format(&report).unwrap()).unwrap();
+        assert!(
+            xml.contains("<error message=\"internal failure\" type=\"diagnostic\">"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<testsuite name=\"diagnostics\" tests=\"1\" failures=\"0\" errors=\"1\""),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn findings_and_diagnostics_aggregate_together() {
+        let mut report = report_with(vec![finding("SD001", Severity::Error, "missing lock")]);
+        report
+            .diagnostics
+            .push(crate::diagnostics::Diagnostic::warn("parse trouble"));
+        let xml = String::from_utf8(JunitReporter.format(&report).unwrap()).unwrap();
+        // 1 finding (error) + 1 diagnostic (warning => failure) across two suites.
+        assert!(
+            xml.contains("<testsuites name=\"safe-deps\" tests=\"2\" failures=\"1\" errors=\"1\""),
+            "{xml}"
+        );
+        // The findings suite keeps its own scoped counts.
+        assert!(
+            xml.contains("<testsuite name=\"safe-deps\" tests=\"1\" failures=\"0\" errors=\"1\""),
+            "{xml}"
+        );
     }
 }

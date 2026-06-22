@@ -835,8 +835,27 @@ fn audit_offline_without_cache_notes_unchecked_packages() {
     let out = run(&ws, &["audit", ".", "--offline", "--no-cache"]);
     let text = stdout(&out);
     assert!(text.contains("No known vulnerabilities"), "{text}");
-    // An offline cache miss must not read as a clean bill of health.
+    // An offline cache miss must not read as a clean bill of health: the summary
+    // qualifies the clean line and the unchecked count is shown explicitly.
     assert!(text.contains("not in the cache were not checked"), "{text}");
+    assert!(text.contains("not fully clean"), "{text}");
+    assert!(text.contains("Unchecked (1)"), "{text}");
+}
+
+#[test]
+fn audit_offline_without_cache_json_reports_unchecked_count() {
+    let ws = workspace(&[("Cargo.lock", CARGO_LOCK_LEFTPAD)]);
+    let out = run(
+        &ws,
+        &["audit", ".", "--offline", "--no-cache", "--format", "json"],
+    );
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{}", stdout(&out)));
+    // The offline gap is explicit in JSON, so a CI consumer cannot read the run
+    // as fully clean.
+    assert_eq!(v["packages_unchecked"], 1, "{v}");
+    assert_eq!(v["packages_audited"], 0, "{v}");
+    assert_eq!(code(&out), 0, "no active advisories should still exit 0");
 }
 
 // --- additional ecosystems + JUnit (Phase 4) ---------------------------------
@@ -1565,6 +1584,50 @@ fn sarif_output_is_valid_and_maps_results() {
         result["locations"][0]["physicalLocation"]["region"]["startLine"],
         8
     );
+    // A clean parse run still records the invocation as successful so a consumer
+    // can read the run's execution state.
+    assert_eq!(
+        run0["invocations"][0]["executionSuccessful"], true,
+        "{sarif}"
+    );
+}
+
+#[test]
+fn sarif_reports_diagnostics_on_invocation() {
+    // A malformed manifest raises a (warning) parse diagnostic; it must surface
+    // as a tool-execution notification while keeping the run successful.
+    let ws = workspace(&[("package.json", "{ \"name\": \"broken\", ")]);
+    let out = run(&ws, &["check", ".", "--format", "sarif"]);
+    let sarif: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("invalid SARIF: {e}\n{}", stdout(&out)));
+    let inv = &sarif["runs"][0]["invocations"][0];
+    assert_eq!(
+        inv["executionSuccessful"], true,
+        "a warning diagnostic is non-fatal: {sarif}"
+    );
+    let notes = inv["toolExecutionNotifications"].as_array().unwrap();
+    assert!(
+        notes.iter().any(|n| n["message"]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("parse")),
+        "expected a parse notification: {sarif}"
+    );
+}
+
+#[test]
+fn junit_surfaces_diagnostics_in_their_own_suite() {
+    // A malformed manifest raises a parse diagnostic; JUnit must make it
+    // discoverable in a dedicated `diagnostics` suite (a warning => <failure>).
+    let ws = workspace(&[("package.json", "{ \"name\": \"broken\", ")]);
+    let out = run(&ws, &["check", ".", "--format", "junit"]);
+    let xml = stdout(&out);
+    assert!(
+        xml.contains("<testsuite name=\"diagnostics\""),
+        "diagnostics suite missing: {xml}"
+    );
+    assert!(xml.contains("type=\"diagnostic\""), "{xml}");
+    assert!(xml.contains("parse"), "{xml}");
 }
 
 #[test]

@@ -102,14 +102,27 @@ pub struct AuditReport {
     pub ignored: Vec<IgnoredAdvisory>,
     /// Non-fatal notes (e.g. expired ignores, offline cache misses).
     pub diagnostics: Vec<String>,
-    /// Number of package coordinates queried.
+    /// Number of package coordinates actually checked against the source.
     pub packages_audited: usize,
+    /// Number of package coordinates that could NOT be checked (e.g. an offline
+    /// cache miss). A non-zero count means the result is incomplete: the run did
+    /// not get a clean bill of health for these packages, it just did not look.
+    #[serde(default)]
+    pub packages_unchecked: usize,
 }
 
 impl AuditReport {
     /// Whether the run found active vulnerabilities (drives the exit code).
     pub fn has_findings(&self) -> bool {
         !self.advisories.is_empty()
+    }
+
+    /// Whether the run is fully conclusive: it found no active vulnerabilities
+    /// AND left nothing ignored or unchecked. When this is false a "no known
+    /// vulnerabilities" line would be misleading on its own, so the renderers
+    /// always show the ignored/unchecked counts alongside it.
+    pub fn is_fully_clean(&self) -> bool {
+        self.advisories.is_empty() && self.ignored.is_empty() && self.packages_unchecked == 0
     }
 }
 
@@ -177,6 +190,16 @@ pub fn render_text(report: &AuditReport) -> String {
     out.push_str(&format!("audited {} package(s)\n", report.packages_audited));
     if report.advisories.is_empty() {
         out.push_str("No known vulnerabilities.\n");
+        // A "no known vulnerabilities" line is only the whole story when nothing
+        // was ignored or left unchecked. Otherwise spell out the gap on the same
+        // summary so an incomplete run is not mistaken for a clean one.
+        if !report.is_fully_clean() {
+            out.push_str(&format!(
+                "Note: {} advisory(ies) ignored, {} package(s) unchecked — result is not fully clean.\n",
+                report.ignored.len(),
+                report.packages_unchecked
+            ));
+        }
     } else {
         out.push_str(&format!(
             "\nVulnerabilities ({}):\n",
@@ -205,6 +228,12 @@ pub fn render_text(report: &AuditReport) -> String {
                 i.advisory.id, i.advisory.package.name, i.advisory.package.version, i.reason
             ));
         }
+    }
+    if report.packages_unchecked > 0 {
+        out.push_str(&format!(
+            "\nUnchecked ({}): packages whose advisories could not be retrieved.\n",
+            report.packages_unchecked
+        ));
     }
     for d in &report.diagnostics {
         out.push_str(&format!("note: {d}\n"));
@@ -305,5 +334,60 @@ mod tests {
         .unwrap();
         assert_eq!(r.ignored.len(), 1);
         assert!(r.advisories.is_empty());
+    }
+
+    #[test]
+    fn empty_run_is_fully_clean() {
+        let r = AuditReport::default();
+        assert!(r.is_fully_clean());
+        let text = render_text(&r);
+        assert!(text.contains("No known vulnerabilities."), "{text}");
+        assert!(!text.contains("not fully clean"), "{text}");
+    }
+
+    #[test]
+    fn ignored_only_run_is_not_fully_clean_in_text() {
+        let src = Fake(vec![advisory("RUSTSEC-1", &[], "left-pad")]);
+        let r = run_audit(
+            &[coord("x")],
+            &src,
+            &[ignore("RUSTSEC-1", None)],
+            (2026, 1, 1),
+        )
+        .unwrap();
+        assert!(!r.is_fully_clean());
+        let text = render_text(&r);
+        // A clean-looking "no known vulnerabilities" must be qualified.
+        assert!(text.contains("No known vulnerabilities."), "{text}");
+        assert!(text.contains("not fully clean"), "{text}");
+        assert!(text.contains("1 advisory(ies) ignored"), "{text}");
+        assert!(text.contains("Ignored (1)"), "{text}");
+    }
+
+    #[test]
+    fn unchecked_packages_surface_in_text_and_json() {
+        let mut r = AuditReport {
+            packages_audited: 0,
+            packages_unchecked: 3,
+            ..Default::default()
+        };
+        r.diagnostics
+            .push("offline: 3 package(s) not in the cache were not checked".to_string());
+        assert!(!r.is_fully_clean());
+        let text = render_text(&r);
+        assert!(text.contains("3 package(s) unchecked"), "{text}");
+        assert!(text.contains("Unchecked (3)"), "{text}");
+        let json = render_json(&r).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["packages_unchecked"], 3);
+    }
+
+    #[test]
+    fn clean_run_json_reports_zero_unchecked() {
+        let r = AuditReport::default();
+        let json = render_json(&r).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["packages_unchecked"], 0);
+        assert_eq!(v["ignored"].as_array().unwrap().len(), 0);
     }
 }

@@ -36,17 +36,22 @@ struct SarifLog {
 struct SarifRun {
     tool: SarifTool,
     results: Vec<SarifResult>,
-    /// Linter-run notes (parse failures, expired suppressions). SARIF carries
-    /// these on the invocation, separate from findings.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// The tool invocation. Always present so a consumer can read the run's
+    /// `executionSuccessful` state; linter-run notes (parse failures, expired
+    /// suppressions) ride along as notifications, separate from findings.
     invocations: Vec<SarifInvocation>,
 }
 
 #[derive(Serialize)]
 struct SarifInvocation {
+    /// `false` when any error-level diagnostic was raised: an errored run must
+    /// not be reported as successful.
     #[serde(rename = "executionSuccessful")]
     execution_successful: bool,
-    #[serde(rename = "toolExecutionNotifications")]
+    #[serde(
+        rename = "toolExecutionNotifications",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     tool_execution_notifications: Vec<SarifNotification>,
 }
 
@@ -166,17 +171,23 @@ impl SarifLog {
             .collect();
 
         // Surface linter-run diagnostics on the invocation, matching the text
-        // and JSON reporters which both include them.
+        // and JSON reporters which both include them. An error-level diagnostic
+        // means the run could not fully analyze the workspace, so the invocation
+        // must report `executionSuccessful = false` — a consumer must never read
+        // an errored run as a successful one.
         let notifications: Vec<SarifNotification> =
             report.diagnostics.iter().map(sarif_notification).collect();
-        let invocations = if notifications.is_empty() {
-            Vec::new()
-        } else {
-            vec![SarifInvocation {
-                execution_successful: true,
-                tool_execution_notifications: notifications,
-            }]
-        };
+        let execution_successful = !report
+            .diagnostics
+            .iter()
+            .any(|d| d.level == crate::diagnostics::DiagnosticLevel::Error);
+        // Always emit exactly one invocation so a consumer can read the run's
+        // execution state even on a clean run; only the notifications list is
+        // conditional on there being diagnostics.
+        let invocations = vec![SarifInvocation {
+            execution_successful,
+            tool_execution_notifications: notifications,
+        }];
 
         SarifLog {
             schema: SCHEMA,
@@ -297,6 +308,47 @@ mod tests {
         assert_eq!(
             note["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
             "pkg/package.json"
+        );
+    }
+
+    #[test]
+    fn error_diagnostic_marks_execution_unsuccessful() {
+        let mut r = Report::new(PathBuf::from("."), Profile::Balanced, "0.1.0");
+        r.diagnostics
+            .push(crate::diagnostics::Diagnostic::error("internal failure"));
+        let bytes = SarifReporter.format(&r).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let inv = &v["runs"][0]["invocations"][0];
+        assert_eq!(
+            inv["executionSuccessful"], false,
+            "an error diagnostic must not report a successful execution"
+        );
+        assert_eq!(inv["toolExecutionNotifications"][0]["level"], "error");
+    }
+
+    #[test]
+    fn clean_run_reports_successful_invocation() {
+        // No findings, no diagnostics: the invocation is still present (so a
+        // consumer can read execution state) and reports success.
+        let r = Report::new(PathBuf::from("."), Profile::Balanced, "0.1.0");
+        let bytes = SarifReporter.format(&r).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let inv = &v["runs"][0]["invocations"][0];
+        assert_eq!(inv["executionSuccessful"], true);
+        // No notifications array when there are no diagnostics.
+        assert!(inv["toolExecutionNotifications"].is_null());
+    }
+
+    #[test]
+    fn warning_diagnostic_keeps_execution_successful() {
+        let mut r = Report::new(PathBuf::from("."), Profile::Balanced, "0.1.0");
+        r.diagnostics
+            .push(crate::diagnostics::Diagnostic::warn("could not parse"));
+        let bytes = SarifReporter.format(&r).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            v["runs"][0]["invocations"][0]["executionSuccessful"], true,
+            "a warning diagnostic is non-fatal and keeps the run successful"
         );
     }
 
