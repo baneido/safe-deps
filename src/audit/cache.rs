@@ -21,6 +21,7 @@
 //! For production use, ensure `$HOME` (or `$XDG_CACHE_HOME`) is set so the
 //! cache lands in a user-private, persistent location.
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -95,11 +96,14 @@ impl Cache {
         self.load(coord).map(|e| e.advisories)
     }
 
-    /// Stores advisories for a coordinate atomically (write temp file, then
-    /// rename over the target so concurrent readers never see a partial file).
+    /// Stores advisories for a coordinate atomically: write a freshly created,
+    /// randomly named temp file in the same directory (via `tempfile`, which
+    /// opens with `O_EXCL`), then atomically replace the target so concurrent
+    /// readers never see a partial file and a re-`put` overwrites cleanly on
+    /// every platform.
     ///
     /// Returns `Some(message)` if the directory could not be created or the
-    /// write/rename failed; the caller should surface this as a diagnostic.
+    /// write/persist failed; the caller should surface this as a diagnostic.
     /// The cache is best-effort — callers must not treat a `Some` return as
     /// fatal.
     pub fn put(&self, coord: &PackageCoordinate, advisories: &[Advisory]) -> Option<String> {
@@ -119,25 +123,39 @@ impl Cache {
         };
 
         let target = self.path(coord);
-        // Choose a temp-file name unique enough to avoid collisions between
-        // concurrent processes: use the process id and a pseudo-random suffix
-        // derived from the current timestamp in nanoseconds.
-        let unique = unique_suffix();
-        let tmp = self.dir.join(format!("{}.tmp.{unique}", coord.cache_key()));
+        // Create the temp file with `tempfile`: it opens with `O_EXCL` (so it
+        // always refers to a freshly created file, never a pre-existing symlink)
+        // and uses an unguessable random name, closing the symlink/TOCTOU and
+        // name-collision windows a predictable pid+timestamp name would leave
+        // open. It lives in the SAME directory as the target so the final move
+        // stays a same-filesystem atomic rename.
+        let mut tmp = match tempfile::NamedTempFile::new_in(&self.dir) {
+            Ok(f) => f,
+            Err(e) => {
+                return Some(format!(
+                    "cache: could not create temp file in {}: {e}",
+                    self.dir.display()
+                ));
+            }
+        };
 
-        if let Err(e) = std::fs::write(&tmp, &text) {
+        if let Err(e) = tmp.write_all(text.as_bytes()) {
             return Some(format!(
                 "cache: could not write temp file {}: {e}",
-                tmp.display()
+                tmp.path().display()
             ));
         }
 
-        if let Err(e) = std::fs::rename(&tmp, &target) {
-            // Clean up the orphaned temp file on a best-effort basis.
-            let _ = std::fs::remove_file(&tmp);
+        // `persist` atomically renames over `target` on Unix. On Windows a plain
+        // rename will not replace an existing file, so fall back to `tempfile`'s
+        // `persist_noclobber`-free replace path: drop into a manual replace via
+        // `NamedTempFile::persist` and, if it reports the target already exists,
+        // remove the target and retry. (`tempfile::persist` is documented to
+        // overwrite on Unix; on Windows it surfaces the replace error so we can
+        // handle it.)
+        if let Err(e) = persist_replace(tmp, &target) {
             return Some(format!(
-                "cache: could not rename {} to {}: {e}",
-                tmp.display(),
+                "cache: could not persist temp file to {}: {e}",
                 target.display()
             ));
         }
@@ -146,17 +164,32 @@ impl Cache {
     }
 }
 
-/// Returns a suffix string that is unique per process per call, combining the
-/// process id and the current time in nanoseconds.  This is used to name temp
-/// files inside the cache directory; it does not need to be cryptographically
-/// random — only distinct enough to avoid accidental collision.
-fn unique_suffix() -> String {
-    let pid = std::process::id();
-    let ns = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    format!("{pid}-{ns}")
+/// Atomically place `tmp` at `target`, replacing any existing file
+/// cross-platform.
+///
+/// On Unix, `NamedTempFile::persist` performs a `rename(2)` that atomically
+/// replaces an existing target. On Windows, `rename` refuses to overwrite an
+/// existing file, so a second `put` for the same coordinate would otherwise
+/// start failing once an entry exists; we detect that case and replace the
+/// target explicitly. The temp file is dropped (and cleaned up) on any error so
+/// no orphan lingers in the cache directory.
+fn persist_replace(tmp: tempfile::NamedTempFile, target: &std::path::Path) -> std::io::Result<()> {
+    match tmp.persist(target) {
+        Ok(_) => Ok(()),
+        Err(persist_err) => {
+            // `persist` only fails to overwrite on platforms (Windows) where a
+            // rename onto an existing file is rejected. Recover the temp file,
+            // remove the stale target, and retry the rename so an overwrite of an
+            // existing entry succeeds everywhere.
+            if target.exists() {
+                let tmp = persist_err.file;
+                std::fs::remove_file(target)?;
+                tmp.persist(target).map(|_| ()).map_err(|e| e.error)
+            } else {
+                Err(persist_err.error)
+            }
+        }
+    }
 }
 
 fn now() -> u64 {
@@ -268,6 +301,58 @@ mod tests {
         assert!(
             leftover_temps.is_empty(),
             "temp files must not linger after a successful put: {leftover_temps:?}"
+        );
+    }
+
+    #[test]
+    fn put_twice_overwrites_existing_entry() {
+        // Re-`put`ting the same coordinate must replace the existing entry
+        // cleanly on every platform (Windows `rename` refusing to overwrite an
+        // existing file was the regression this guards against). The second read
+        // must reflect the latest content, with no lingering temp file and no
+        // spurious diagnostic.
+        let dir = TempDir::new().unwrap();
+        let cache = Cache::new(dir.path().to_path_buf(), 3600);
+
+        let first = Advisory {
+            id: "RUSTSEC-FIRST".into(),
+            ..advisory()
+        };
+        let second = Advisory {
+            id: "RUSTSEC-SECOND".into(),
+            ..advisory()
+        };
+
+        assert!(
+            cache.put(&coord(), &[first]).is_none(),
+            "first put must succeed"
+        );
+        assert!(
+            cache.put(&coord(), &[second]).is_none(),
+            "second put (overwrite) must succeed"
+        );
+
+        // The latest content wins.
+        let got = cache
+            .get_any(&coord())
+            .expect("entry must exist after overwrite");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].id, "RUSTSEC-SECOND");
+
+        // No leftover temp files from either write.
+        let leftover_temps: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                // The cache entry itself ends in `.json`; anything else under the
+                // dir would be an orphaned temp file.
+                !name.ends_with(".json")
+            })
+            .collect();
+        assert!(
+            leftover_temps.is_empty(),
+            "temp files must not linger after overwrite: {leftover_temps:?}"
         );
     }
 
