@@ -209,8 +209,35 @@ pub fn scan(
     config: Config,
     options: &ScanOptions,
 ) -> Result<WorkspaceContext, FsError> {
-    if !root.is_dir() {
-        return Err(FsError::NotADirectory(root.to_path_buf()));
+    // Use an explicit stat so we can distinguish three cases:
+    //   1. path exists and is a directory          → proceed
+    //   2. path exists but is not a directory, or
+    //      path does not exist (NotFound)          → user input error (exit 2)
+    //   3. metadata call fails for any other reason
+    //      (e.g. PermissionDenied on a non-searchable parent) → internal/operational
+    //      error (exit 3); not the user's fault.
+    match std::fs::metadata(root) {
+        Ok(meta) if meta.is_dir() => {
+            // Valid directory — fall through to the walk below.
+        }
+        Ok(_) => {
+            // Path exists but is a file, symlink to a file, etc.
+            return Err(FsError::NotADirectory(root.to_path_buf()));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Path does not exist at all — also a user input error.
+            return Err(FsError::NotADirectory(root.to_path_buf()));
+        }
+        Err(e) => {
+            // Permission denied, I/O error, or any other OS-level failure
+            // while stat-ing the root itself. This is an operational problem,
+            // not a bad argument — surface it as an internal error (exit 3).
+            return Err(FsError::Internal(format!(
+                "could not stat workspace root {}: {}",
+                root.display(),
+                e
+            )));
+        }
     }
 
     let exclude_set = build_globset(
@@ -516,5 +543,49 @@ mod tests {
             message: "invalid syntax".into(),
         };
         assert!(!err.is_user_input_error());
+    }
+
+    /// When the *parent* directory is non-searchable (mode 0o000), `metadata(root)`
+    /// fails with `PermissionDenied`. That is an operational failure — not a bad
+    /// argument — so `scan()` must return `FsError::Internal`, and
+    /// `is_user_input_error()` must be `false` (→ exit 3, not exit 2).
+    #[test]
+    #[cfg(unix)]
+    fn scan_non_searchable_parent_is_internal_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = TempDir::new().unwrap();
+        // Create the child directory *before* locking the parent.
+        let child = parent.path().join("workspace");
+        std::fs::create_dir(&child).unwrap();
+
+        // Remove all permissions on the parent so stat-ing `child` through it
+        // requires search permission we no longer have.
+        std::fs::set_permissions(parent.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = scan(&child, Config::default(), &ScanOptions::default());
+
+        // Restore permissions before any assertion so TempDir can clean up even
+        // if the test fails.
+        std::fs::set_permissions(parent.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Running as root bypasses permission checks; skip the assertion in that case.
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => {
+                eprintln!("skipping: permission check was not enforced (running as root?)");
+                return;
+            }
+        };
+
+        assert!(
+            !err.is_user_input_error(),
+            "PermissionDenied on parent should be an internal error (exit 3), not a \
+             usage error (exit 2); got: {err}"
+        );
+        assert!(
+            matches!(err, FsError::Internal(_)),
+            "expected FsError::Internal for stat failure, got: {err}"
+        );
     }
 }
