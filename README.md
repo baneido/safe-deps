@@ -86,8 +86,9 @@ usage/config error, `3` internal error, `4` parse failure under
 
 ## Try it
 
-[`examples/`](examples) holds small, self-contained projects that each trip one
-rule, plus a hardened baseline that stays clean:
+[`examples/` in the repository](https://github.com/baneido/safe-deps/tree/main/examples)
+holds small, self-contained projects that each trip one rule, plus a hardened
+baseline that stays clean. From a checkout of the repository:
 
 ```bash
 safe-deps check examples/missing-lockfile        # SD001
@@ -96,7 +97,8 @@ safe-deps check examples/pip-extra-index          # SD007 (+ SD004)
 safe-deps check examples/clean-baseline          # no findings, exit 0
 ```
 
-See [`examples/README.md`](examples/README.md) for what each demonstrates.
+See [`examples/README.md`](https://github.com/baneido/safe-deps/blob/main/examples/README.md)
+for what each demonstrates.
 
 ## Supported ecosystems
 
@@ -233,19 +235,19 @@ system `curl` (a TLS-crate-free build, e.g. for toolchains without a C compiler)
 
 ## Contributing
 
-- [CONTRIBUTING.md](CONTRIBUTING.md) — how to report issues and land a change.
-- [DEVELOPMENT.md](DEVELOPMENT.md) — build, test, and architecture.
-- [RELEASING.md](RELEASING.md) — the release checklist (maintainers).
+- [CONTRIBUTING.md](https://github.com/baneido/safe-deps/blob/main/CONTRIBUTING.md) — how to report issues and land a change.
+- [DEVELOPMENT.md](https://github.com/baneido/safe-deps/blob/main/DEVELOPMENT.md) — build, test, and architecture.
+- [RELEASING.md](https://github.com/baneido/safe-deps/blob/main/RELEASING.md) — the release checklist (maintainers).
 
 ## Design documents
 
-- [Security best practices research](docs/security-best-practices.md)
-- [CLI architecture design](docs/design/safe-deps-cli-design.md)
+- [Security best practices research](https://github.com/baneido/safe-deps/blob/main/docs/security-best-practices.md)
+- [CLI architecture design](https://github.com/baneido/safe-deps/blob/main/docs/design/safe-deps-cli-design.md)
 
 ## Roadmap
 
 The detailed roadmap lives in the
-[CLI architecture design](docs/design/safe-deps-cli-design.md#roadmap). At a high
+[CLI architecture design](https://github.com/baneido/safe-deps/blob/main/docs/design/safe-deps-cli-design.md#roadmap). At a high
 level, Phases 1–5 below are implemented; remaining work is tracked in the issue
 tracker.
 

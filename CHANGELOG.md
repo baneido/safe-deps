@@ -20,7 +20,8 @@ workflow; it gathers the work accumulated during pre-`0.2.2` development.
   ships only source, tests, and reader-facing docs/licenses (dropping the
   `examples/` fixtures, the 93 KB `package-lock.json`, the Node lint toolchain,
   docs, and CI config). The first publish is a one-time manual bootstrap (crates.io
-  has no pending-publisher flow); see [RELEASING.md](RELEASING.md).
+  has no pending-publisher flow); see
+  [RELEASING.md](https://github.com/baneido/safe-deps/blob/main/RELEASING.md).
 - Fixed SD008 (audit missing) duplicate findings and cross-package attribution in monorepos
   (#96). It was a project-scoped rule that nonetheless decided from the whole
   workspace's CI facts, so it fired once per package (duplicates) and let one
