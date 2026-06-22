@@ -1814,6 +1814,43 @@ registry = \"https://internal.example/index\"
 }
 
 #[test]
+fn sd006_nearer_local_cargo_config_override_suppresses_ancestor_remote_redirect() {
+    // Cargo config is hierarchical and NEAREST wins. The member's own
+    // `.cargo/config.toml` redirects `crates-io` to a LOCAL vendored directory,
+    // while the workspace root redirects the same source to a REMOTE mirror. The
+    // effective redirect is the member's local one, so SD006 must NOT fire: the
+    // nearer local override suppresses the ancestor's remote redirect.
+    let root_manifest = "[workspace]\nmembers = [\"crates/a\"]\n";
+    let member_manifest = "[package]\nname = \"a\"\n[dependencies]\nserde = \"1\"\n";
+    let root_config = "\
+[source.crates-io]
+replace-with = \"mirror\"
+
+[source.mirror]
+registry = \"https://internal.example/index\"
+";
+    let member_config = "\
+[source.crates-io]
+replace-with = \"vendored\"
+
+[source.vendored]
+directory = \"vendor\"
+";
+    let ws = workspace(&[
+        ("Cargo.toml", root_manifest),
+        ("Cargo.lock", "version = 3\n"),
+        ("crates/a/Cargo.toml", member_manifest),
+        ("crates/a/src/lib.rs", "\n"),
+        (".cargo/config.toml", root_config),
+        ("crates/a/.cargo/config.toml", member_config),
+    ]);
+    assert!(
+        findings_of(&check_json(&ws, &[]), "SD006").is_empty(),
+        "a nearer local/vendored redirect overrides the ancestor's remote redirect"
+    );
+}
+
+#[test]
 fn sd006_flags_go_sumdb_disabling_ci_env() {
     let go_mod = "module m\ngo 1.21\nrequire github.com/x/y v1.2.3\n";
     let workflow = "\

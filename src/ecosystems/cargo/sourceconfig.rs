@@ -11,12 +11,17 @@
 //! NOT flagged. The replacement target's definition is inspected to tell the two
 //! apart.
 //!
-//! Cargo config lookup is hierarchical: a `.cargo/config.toml` at a workspace
-//! root applies to member crates. Member facts therefore also scan ancestor
-//! config locations up to the scanned workspace root, deduplicating redirects
-//! that resolve identically so a member and its root do not double-report.
+//! Cargo config lookup is hierarchical and NEAREST WINS: a `.cargo/config.toml`
+//! at a workspace root applies to member crates, but a nearer member config can
+//! override an ancestor's `replace-with` for the same source name. Member facts
+//! therefore scan ancestor config locations up to the scanned workspace root,
+//! tracking each source name's redirect as they walk outward from the crate dir.
+//! The first (nearest) redirect for a given source name is authoritative; only
+//! that effective redirect is evaluated for remote-vs-local, so a nearer local
+//! (vendored) override suppresses an ancestor's remote redirect for the same
+//! source name (no false positive).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::diagnostics::Diagnostic;
@@ -38,6 +43,23 @@ enum SourceKind {
     /// `directory` or `local-registry`: an on-disk vendored source. Redirecting
     /// to it is the standard deterministic/offline setup `cargo vendor` builds.
     Local,
+    /// The redirect target is not defined in the config that declares the
+    /// redirect, so its kind is unknown. Treated like `Local` for flagging (we
+    /// do not assume it is remote), but it still records the source name so a
+    /// nearer such redirect suppresses an ancestor's redirect for the same name.
+    Unknown,
+}
+
+/// A single `[source.<name>]` `replace-with` redirect, paired with the resolved
+/// kind of its target. Carrying the target kind alongside the [`Dependency`]
+/// lets the hierarchical walk record every nearest redirect (so it suppresses
+/// ancestor redirects) while emitting a finding only for remote targets.
+struct Redirect {
+    /// Kind of the redirect's `replace-with` target, resolved within the config
+    /// that declares the redirect.
+    target: SourceKind,
+    /// The dependency fact to emit if this is the effective remote redirect.
+    dep: Dependency,
 }
 
 /// Result of scanning the Cargo source config(s) applicable to a crate.
@@ -49,17 +71,23 @@ pub(super) struct SourceConfig {
     pub(super) diagnostics: Vec<Diagnostic>,
 }
 
-/// Extracts remote `[source]` `replace-with` redirects that apply to the crate
-/// at `dir`, honoring Cargo's hierarchical config lookup: the crate's own
-/// `.cargo/config.toml` plus those in ancestor directories up to the scanned
-/// workspace root. Redirects to a local (`directory`/`local-registry`) target
-/// are vendoring and are not emitted. Identical redirects discovered at multiple
-/// levels are reported once.
+/// Extracts the EFFECTIVE remote `[source]` `replace-with` redirects that apply
+/// to the crate at `dir`, honoring Cargo's hierarchical config lookup where the
+/// NEAREST config wins. Walking from the crate's own `.cargo/config.toml` outward
+/// to ancestors up to the scanned workspace root, the first redirect seen for a
+/// given source name is authoritative; ancestor redirects for an
+/// already-resolved source name are ignored. Only the effective (nearest)
+/// redirect is evaluated for remote-vs-local: a redirect to a local
+/// (`directory`/`local-registry`) target — or to an undefined target — is
+/// vendoring/unknown and not emitted, and a nearer such override suppresses an
+/// ancestor's remote redirect for the same source name.
 pub(super) fn source_replacements(ctx: &WorkspaceContext, dir: &Path) -> SourceConfig {
     let mut out = SourceConfig::default();
-    // (source name, replacement) already emitted, so a redirect declared at both
-    // the crate and an ancestor level is not double-reported.
-    let mut seen = std::collections::HashSet::new();
+    // Source names whose effective (nearest) redirect has already been resolved.
+    // A nearer config wins, so once a source name is recorded here, ancestor
+    // redirects for it are ignored — even when the nearer redirect was a safe
+    // local/vendored or undefined-target override that emitted no finding.
+    let mut resolved: HashSet<String> = HashSet::new();
     for config_dir in ancestor_config_dirs(dir) {
         for name in CONFIG_NAMES {
             let rel = project_join(&config_dir, name);
@@ -80,11 +108,16 @@ pub(super) fn source_replacements(ctx: &WorkspaceContext, dir: &Path) -> SourceC
                     break;
                 }
             };
-            for dep in replacements(&value, &rel) {
-                if let DependencySource::RegistryReplaced { replacement } = &dep.source {
-                    if seen.insert((dep.name.clone(), replacement.clone())) {
-                        out.dependencies.push(dep);
-                    }
+            for redirect in replacements(&value, &rel) {
+                // NEAREST wins: skip a source name already resolved by a nearer
+                // config, whether or not that nearer override produced a finding.
+                if !resolved.insert(redirect.dep.name.clone()) {
+                    continue;
+                }
+                // Only the effective (nearest) redirect is evaluated, and only a
+                // remote target is a reroute worth flagging.
+                if redirect.target == SourceKind::Remote {
+                    out.dependencies.push(redirect.dep);
                 }
             }
             // `.cargo/config.toml` supersedes the legacy `.cargo/config` in the
@@ -126,11 +159,15 @@ fn ancestor_config_dirs(dir: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// Parses the `[source.<name>]` tables of a `.cargo/config.toml` value, emitting
-/// a [`Dependency`] only for `replace-with` redirects whose target is a remote
-/// source. A redirect to a local (`directory`/`local-registry`) target, or to an
-/// undefined source, is treated as vendoring/unknown and not emitted.
-fn replacements(value: &toml::Value, file: &Path) -> Vec<Dependency> {
+/// Parses the `[source.<name>]` tables of a `.cargo/config.toml` value, returning
+/// EVERY `replace-with` redirect it declares paired with the resolved kind of
+/// the redirect's target. Remote redirects carry a flaggable [`Dependency`];
+/// local/vendored or undefined-target redirects are returned too (with target
+/// `Local`/`Unknown`) so the hierarchical walk can record the source name and
+/// let a nearer such redirect suppress an ancestor's remote redirect for the
+/// same name. The kind/finding decision for an effective redirect is made by the
+/// caller.
+fn replacements(value: &toml::Value, file: &Path) -> Vec<Redirect> {
     let Some(sources) = value.get("source").and_then(|s| s.as_table()) else {
         return Vec::new();
     };
@@ -149,22 +186,27 @@ fn replacements(value: &toml::Value, file: &Path) -> Vec<Dependency> {
         let Some(replacement) = table.get("replace-with").and_then(|v| v.as_str()) else {
             continue;
         };
-        // Only flag redirects to a known remote source. A target that is local
-        // (vendoring) or not defined in this file is not a remote reroute.
-        if kinds.get(replacement) != Some(&SourceKind::Remote) {
-            continue;
-        }
-        out.push(Dependency {
-            name: name.clone(),
-            spec: format!("replace-with = \"{replacement}\""),
-            group: DependencyGroup::Production,
-            source: DependencySource::RegistryReplaced {
-                replacement: replacement.to_string(),
+        // A target that is local (vendoring) or not defined in this file is not
+        // a remote reroute; the caller emits a finding only for `Remote`, but it
+        // still needs every redirect to track nearest-wins overrides.
+        let target = kinds
+            .get(replacement)
+            .copied()
+            .unwrap_or(SourceKind::Unknown);
+        out.push(Redirect {
+            target,
+            dep: Dependency {
+                name: name.clone(),
+                spec: format!("replace-with = \"{replacement}\""),
+                group: DependencyGroup::Production,
+                source: DependencySource::RegistryReplaced {
+                    replacement: replacement.to_string(),
+                },
+                file: file.to_path_buf(),
             },
-            file: file.to_path_buf(),
         });
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.sort_by(|a, b| a.dep.name.cmp(&b.dep.name));
     out
 }
 
@@ -187,9 +229,17 @@ fn source_kind(body: &toml::Value) -> Option<SourceKind> {
 mod tests {
     use super::*;
 
+    /// The redirects a single config flags: the deps of the remote redirects
+    /// `replacements` returns, sorted by name. (`replacements` now returns every
+    /// redirect with its target kind; flagging only remote ones is the caller's
+    /// job, which this mirrors for the single-file unit tests below.)
     fn parse(toml_text: &str) -> Vec<Dependency> {
         let value: toml::Value = toml::from_str(toml_text).unwrap();
         replacements(&value, Path::new(".cargo/config.toml"))
+            .into_iter()
+            .filter(|r| r.target == SourceKind::Remote)
+            .map(|r| r.dep)
+            .collect()
     }
 
     #[test]

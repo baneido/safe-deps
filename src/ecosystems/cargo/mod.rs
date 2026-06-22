@@ -83,9 +83,12 @@ impl Analyzer for CargoAnalyzer {
 
         // Merge manifest dependency sources with `.cargo/config.toml`
         // `[source]` `replace-with` redirects (honoring Cargo's hierarchical
-        // config lookup up to the scanned workspace root). The config file is
-        // surfaced as a scanned config so suppressions/reporting can reference
-        // it, and any parse failure becomes a warning diagnostic.
+        // config lookup up to the scanned workspace root, nearest-wins). A
+        // `configs` entry is added ONLY when an unsafe (remote) redirect is
+        // emitted, pointing at the config that declares the effective redirect,
+        // so reporting/suppressions can reference it; a present-but-safe
+        // (vendored) or malformed config leaves `configs` empty (a malformed one
+        // still becomes a warning diagnostic below).
         let mut dependencies = parsed.dependencies;
         let source_config = sourceconfig::source_replacements(ctx, dir);
         let configs = source_config
@@ -300,6 +303,75 @@ mod tests {
                 )
             })
             .expect("ancestor source replacement is extracted for the member crate");
+        assert_eq!(replaced.name, "crates-io");
+    }
+
+    #[test]
+    fn nearer_local_override_suppresses_ancestor_remote_redirect() {
+        // Cargo config is hierarchical and NEAREST wins. The member config
+        // redirects `crates-io` to a LOCAL vendored source while the root config
+        // redirects the same source to a REMOTE mirror. The effective redirect is
+        // the member's local one (safe), so SD006 must NOT fire: the ancestor's
+        // remote redirect is overridden, not an additional concern.
+        let dir = ws(&[
+            ("Cargo.toml", "[workspace]\nmembers = [\"crates/a\"]\n"),
+            (
+                "crates/a/Cargo.toml",
+                "[package]\nname = \"a\"\n[dependencies]\nserde = \"1\"\n",
+            ),
+            ("crates/a/src/lib.rs", "\n"),
+            ("Cargo.lock", "version = 3\n"),
+            (
+                ".cargo/config.toml",
+                "[source.crates-io]\nreplace-with = \"mirror\"\n[source.mirror]\nregistry = \"https://internal.example/index\"\n",
+            ),
+            (
+                "crates/a/.cargo/config.toml",
+                "[source.crates-io]\nreplace-with = \"vendored\"\n[source.vendored]\ndirectory = \"vendor\"\n",
+            ),
+        ]);
+        let facts = facts_for(&dir);
+        assert_eq!(facts.len(), 1);
+        assert!(
+            !facts[0].dependencies.iter().any(|d| matches!(
+                d.source,
+                crate::ecosystems::DependencySource::RegistryReplaced { .. }
+            )),
+            "a nearer local/vendored redirect for `crates-io` overrides the ancestor's \
+             remote redirect, so no source replacement should be emitted: {:?}",
+            facts[0].dependencies
+        );
+    }
+
+    #[test]
+    fn ancestor_only_remote_redirect_is_flagged() {
+        // No nearer override exists, so the ancestor's REMOTE redirect is the
+        // effective one and must be flagged (unchanged behavior).
+        let dir = ws(&[
+            ("Cargo.toml", "[workspace]\nmembers = [\"crates/a\"]\n"),
+            (
+                "crates/a/Cargo.toml",
+                "[package]\nname = \"a\"\n[dependencies]\nserde = \"1\"\n",
+            ),
+            ("crates/a/src/lib.rs", "\n"),
+            ("Cargo.lock", "version = 3\n"),
+            (
+                ".cargo/config.toml",
+                "[source.crates-io]\nreplace-with = \"mirror\"\n[source.mirror]\nregistry = \"https://internal.example/index\"\n",
+            ),
+        ]);
+        let facts = facts_for(&dir);
+        assert_eq!(facts.len(), 1);
+        let replaced = facts[0]
+            .dependencies
+            .iter()
+            .find(|d| {
+                matches!(
+                    d.source,
+                    crate::ecosystems::DependencySource::RegistryReplaced { .. }
+                )
+            })
+            .expect("the effective ancestor remote redirect is flagged");
         assert_eq!(replaced.name, "crates-io");
     }
 
