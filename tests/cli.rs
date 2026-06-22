@@ -479,6 +479,77 @@ fn pip_trusted_host_is_error() {
     assert_eq!(sd003["package_manager"], "pip");
 }
 
+#[test]
+fn pip_conf_multiline_trusted_host_triggers_sd003() {
+    // Multi-line `trusted-host` in pip.conf should produce SD003 for each host.
+    let pip_conf = "[global]\ntrusted-host =\n    pypi.org\n    files.pythonhosted.org\n";
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        ("pip.conf", pip_conf),
+    ]);
+    let report = check_json(&ws, &[]);
+    let sd003_msgs: Vec<&str> = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule_id"] == "SD003")
+        .map(|f| f["message"].as_str().unwrap())
+        .collect();
+    assert!(
+        sd003_msgs.iter().any(|m| m.contains("pypi.org")),
+        "expected SD003 for pypi.org; got: {sd003_msgs:?}"
+    );
+    assert!(
+        sd003_msgs
+            .iter()
+            .any(|m| m.contains("files.pythonhosted.org")),
+        "expected SD003 for files.pythonhosted.org; got: {sd003_msgs:?}"
+    );
+}
+
+#[test]
+fn pip_conf_multiline_extra_index_url_triggers_sd003_and_sd007() {
+    // Multi-line `extra-index-url` with an HTTP URL should trigger SD003 (HTTP)
+    // and SD007 (extra index) for that URL.
+    let pip_conf = "[global]\nextra-index-url =\n    http://private.example/simple\n    https://backup.example/simple\n";
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        ("pip.conf", pip_conf),
+    ]);
+    let report = check_json(&ws, &[]);
+    let sd003_msgs: Vec<&str> = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule_id"] == "SD003")
+        .map(|f| f["message"].as_str().unwrap())
+        .collect();
+    assert!(
+        sd003_msgs
+            .iter()
+            .any(|m| m.contains("http://private.example/simple")),
+        "expected SD003 for http extra-index-url; got: {sd003_msgs:?}"
+    );
+
+    let sd007_msgs: Vec<&str> = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule_id"] == "SD007")
+        .map(|f| f["message"].as_str().unwrap())
+        .collect();
+    assert!(
+        !sd007_msgs.is_empty(),
+        "expected at least one SD007 finding; got none"
+    );
+    assert!(
+        sd007_msgs
+            .iter()
+            .any(|m| m.contains("http://private.example/simple")),
+        "expected SD007 for http://private.example/simple; got: {sd007_msgs:?}"
+    );
+}
+
 // --- monorepo ----------------------------------------------------------------
 
 #[test]
