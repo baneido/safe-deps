@@ -9,18 +9,30 @@ not install dependencies, execute project code, or make network calls. The
 separate `safe-deps audit` command is the *only* networked mode — it explicitly
 queries a vulnerability database (OSV).
 
-> Status: the CLI is implemented (Phases 1–5). It is **not yet published to
-> crates.io**; install a prebuilt binary from GitHub Releases or build from
-> source (both below). Minimum supported Rust version (MSRV): **1.86**.
+> Status: the CLI is implemented (Phases 1–5) and published to
+> [crates.io](https://crates.io/crates/safe-deps); install with `cargo install`,
+> grab a prebuilt binary from GitHub Releases, or build from source (all below).
+> Minimum supported Rust version (MSRV): **1.86**.
 
 ## Install
 
-### Prebuilt binaries (recommended)
+### From crates.io
+
+```bash
+cargo install safe-deps --locked
+```
+
+Builds and installs the latest [crates.io](https://crates.io/crates/safe-deps)
+release into `~/.cargo/bin`. Needs a Rust toolchain (MSRV 1.86); `--locked` builds
+against the crate's published `Cargo.lock` for a reproducible dependency set.
+
+### Prebuilt binaries
 
 Each tagged release publishes binaries for Linux and macOS (x86-64 and arm64)
 and Windows (x86-64) to [GitHub Releases](https://github.com/baneido/safe-deps/releases),
 with a SHA-256 checksum per archive, a signed `SHA256SUMS` manifest, and a
-CycloneDX SBOM.
+CycloneDX SBOM — prefer these when you want a verified artifact without a Rust
+toolchain.
 
 Download the archive for your platform, then verify it before use:
 
@@ -52,8 +64,7 @@ cargo build --release        # binary at target/release/safe-deps
 cargo run -- check .         # or run directly from source
 ```
 
-`cargo install --path .` installs it into `~/.cargo/bin`. A crates.io release is
-planned; until then use the binaries or a source build.
+`cargo install --path .` installs it into `~/.cargo/bin` from a local checkout.
 
 ## Usage
 
