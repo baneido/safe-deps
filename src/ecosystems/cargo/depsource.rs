@@ -61,6 +61,16 @@ pub(super) fn dependencies(value: &toml::Value, file: &Path) -> Vec<Dependency> 
         value.get("replace").and_then(|r| r.as_table()),
         DependencyGroup::Production,
     );
+    // `[workspace.dependencies]` defines the source for `dep = { workspace = true }`
+    // members. It lives only in the workspace root (often a virtual manifest), so
+    // a git/path source here is the single declaration point for the whole graph.
+    push(
+        value
+            .get("workspace")
+            .and_then(|w| w.get("dependencies"))
+            .and_then(|d| d.as_table()),
+        DependencyGroup::Production,
+    );
 
     let mut seen = std::collections::HashSet::new();
     out.retain(|d| seen.insert((d.name.clone(), d.spec.clone())));

@@ -33,23 +33,20 @@ impl Analyzer for CargoAnalyzer {
     fn detect(&self, ctx: &WorkspaceContext) -> Vec<Project> {
         files_named(ctx, "Cargo.toml")
             .iter()
-            .filter_map(|man| {
-                let dir = manifest_dir(man);
-                let parsed = manifest::read_manifest(ctx, man);
-                // A pure `[workspace]` root with no `[package]` is not itself a
-                // crate; its members are detected on their own.
-                if !parsed.has_package && parsed.is_workspace {
-                    return None;
-                }
-                Some(Project {
-                    root: dir,
-                    ecosystem: Ecosystem::Rust,
-                    package_manager: PackageManager::Cargo,
-                    // Emit Unknown so `refine_kinds` can apply user-configured
-                    // application_roots/library_roots; `facts` infers from the
-                    // crate's targets only when the kind is still Unknown.
-                    kind: ProjectKind::Unknown,
-                })
+            .map(|man| Project {
+                root: manifest_dir(man),
+                ecosystem: Ecosystem::Rust,
+                package_manager: PackageManager::Cargo,
+                // Emit Unknown so `refine_kinds` can apply user-configured
+                // application_roots/library_roots; `facts` infers from the
+                // crate's targets only when the kind is still Unknown.
+                //
+                // A pure `[workspace]` root (virtual manifest, no `[package]`) is
+                // not a crate — its members are detected separately — but it is
+                // still emitted so its root-only `[patch]`/`[replace]`/
+                // `[workspace.dependencies]` unsafe sources are checked by SD006.
+                // It declares no `[dependencies]`, so SD001 does not fire for it.
+                kind: ProjectKind::Unknown,
             })
             .collect()
     }
@@ -100,7 +97,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::filesystem::{scan, ScanOptions};
-    use std::path::PathBuf;
+    use std::path::Path;
     use tempfile::TempDir;
 
     fn ws(files: &[(&str, &str)]) -> TempDir {
@@ -182,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn pure_workspace_root_is_not_a_crate() {
+    fn pure_workspace_root_is_collected_without_being_a_crate() {
         let dir = ws(&[
             ("Cargo.toml", "[workspace]\nmembers = [\"crates/a\"]\n"),
             (
@@ -193,10 +190,72 @@ mod tests {
             ("Cargo.lock", "version = 3\n"),
         ]);
         let facts = facts_for(&dir);
-        // Only the member crate is detected, and the root lock covers it.
-        assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].project.root, PathBuf::from("crates/a"));
-        assert!(facts[0].covered_by_workspace_lockfile);
+        // The virtual root and the member crate are both collected.
+        assert_eq!(facts.len(), 2);
+
+        let root = facts
+            .iter()
+            .find(|f| f.project.root.as_path() == Path::new("."))
+            .expect("virtual workspace root is collected");
+        // It is not a crate: no declared `[dependencies]`, so SD001 stays quiet.
+        assert!(!root.has_manifest_dependencies);
+        assert!(root.dependencies.is_empty());
+
+        let member = facts
+            .iter()
+            .find(|f| f.project.root.as_path() == Path::new("crates/a"))
+            .expect("member crate is detected");
+        assert!(member.has_manifest_dependencies);
+        assert!(member.covered_by_workspace_lockfile);
+    }
+
+    #[test]
+    fn virtual_workspace_root_unsafe_sources_are_collected() {
+        // `[patch]`, `[replace]`, and `[workspace.dependencies]` live only in the
+        // root (virtual) manifest; their unsafe sources must reach SD006.
+        let dir = ws(&[
+            (
+                "Cargo.toml",
+                "[workspace]\nmembers = [\"crates/a\"]\n\n\
+                 [patch.crates-io]\nfoo = { git = \"https://example.com/foo\" }\n\n\
+                 [replace]\n\"bar:1.0.0\" = { path = \"../bar\" }\n\n\
+                 [workspace.dependencies]\nbaz = { path = \"../baz\" }\n",
+            ),
+            (
+                "crates/a/Cargo.toml",
+                "[package]\nname = \"a\"\n[dependencies]\nbaz = { workspace = true }\n",
+            ),
+            ("crates/a/src/lib.rs", "\n"),
+        ]);
+        let facts = facts_for(&dir);
+        let root = facts
+            .iter()
+            .find(|f| f.project.root.as_path() == Path::new("."))
+            .expect("virtual root collected");
+        let names: Vec<&str> = root.dependencies.iter().map(|d| d.name.as_str()).collect();
+        assert!(
+            names.contains(&"foo"),
+            "patch git source missing: {names:?}"
+        );
+        // `[replace]` keys are package-id specs (`name:version`).
+        assert!(
+            names.contains(&"bar:1.0.0"),
+            "replace path source missing: {names:?}"
+        );
+        assert!(
+            names.contains(&"baz"),
+            "workspace.dependencies path source missing: {names:?}"
+        );
+        // The member's `baz = {{ workspace = true }}` is a safe workspace ref, so
+        // it is not double-counted as an unsafe source.
+        let member = facts
+            .iter()
+            .find(|f| f.project.root.as_path() == Path::new("crates/a"))
+            .unwrap();
+        assert!(
+            member.dependencies.is_empty(),
+            "member should add no sources"
+        );
     }
 
     #[test]

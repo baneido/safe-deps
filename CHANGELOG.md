@@ -8,6 +8,13 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Fixed SD006 missing unsafe dependency sources declared in a Cargo virtual
+  workspace root (a `[workspace]`-only manifest with no `[package]`). Such roots
+  are now collected as projects so their `[patch]`/`[replace]`/
+  `[workspace.dependencies]` git/path sources are flagged; they declare no
+  `[dependencies]`, so SD001 does not fire for them and member crates are not
+  double-counted (#83).
+
 - Added `examples/` onboarding fixtures: small self-contained projects that each
   trip one rule (`missing-lockfile` → SD001, `npm-insecure-registry` → SD003,
   `pip-extra-index` → SD007), plus a hardened `clean-baseline` that stays clean.

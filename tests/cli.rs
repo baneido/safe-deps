@@ -1049,6 +1049,35 @@ dependencies = [\"requests>=2\", \"internal @ git+https://h/r.git\"]
 }
 
 #[test]
+fn sd006_flags_cargo_virtual_workspace_root_sources() {
+    // A pure `[workspace]` root: its `[patch]` git ref and
+    // `[workspace.dependencies]` path source must be flagged by SD006, with no
+    // duplicate from the member crate (whose `workspace = true` ref is safe).
+    let ws = workspace(&[
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/app\"]\n\n\
+             [patch.crates-io]\nfoo = { git = \"https://github.com/example/foo\", branch = \"main\" }\n\n\
+             [workspace.dependencies]\nbar = { path = \"../bar\" }\n",
+        ),
+        (
+            "crates/app/Cargo.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nbar = { workspace = true }\n",
+        ),
+        ("crates/app/src/main.rs", "fn main() {}\n"),
+        ("Cargo.lock", "version = 3\n"),
+    ]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    let messages: Vec<&str> = sd006
+        .iter()
+        .map(|f| f["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(sd006.len(), 2, "expected exactly foo + bar: {messages:?}");
+    assert!(messages.iter().any(|m| m.contains("foo")), "{messages:?}");
+    assert!(messages.iter().any(|m| m.contains("bar")), "{messages:?}");
+}
+
+#[test]
 fn sd005_flags_pnpm_dangerously_allow_all_builds() {
     let ws = workspace(&[
         (

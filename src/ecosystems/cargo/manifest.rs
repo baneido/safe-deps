@@ -11,30 +11,21 @@ use super::depsource;
 /// The subset of `Cargo.toml` the analyzer reads.
 #[derive(Debug)]
 pub(super) struct CargoManifest {
-    pub(super) has_package: bool,
-    pub(super) is_workspace: bool,
     pub(super) has_dependencies: bool,
     pub(super) kind: ProjectKind,
-    /// Non-registry dependencies (git/path) and `[patch]`/`[replace]`
-    /// redirects, for SD006. Computed on every manifest parse but only consumed
-    /// via `facts`; the value produced during `detect` is discarded.
+    /// Non-registry dependencies (git/path) and `[patch]`/`[replace]`/
+    /// `[workspace.dependencies]` redirects, for SD006.
     pub(super) dependencies: Vec<Dependency>,
 }
 
 impl Default for CargoManifest {
     fn default() -> Self {
         Self {
-            has_package: false,
-            is_workspace: false,
             has_dependencies: false,
             kind: ProjectKind::Unknown,
             dependencies: Vec::new(),
         }
     }
-}
-
-pub(super) fn read_manifest(ctx: &WorkspaceContext, relative: &Path) -> CargoManifest {
-    try_read_manifest(ctx, relative).unwrap_or_default()
 }
 
 pub(super) fn try_read_manifest(
@@ -45,12 +36,7 @@ pub(super) fn try_read_manifest(
     let text = read_text(ctx, relative).map_err(|_| ())?;
     let value: toml::Value = toml::from_str(&text).map_err(|_| ())?;
 
-    let has_package = value.get("package").is_some();
-    let is_workspace = value.get("workspace").is_some();
-
     Ok(CargoManifest {
-        has_package,
-        is_workspace,
         has_dependencies: declares_dependencies(&value),
         kind: infer_kind(ctx, dir, &value),
         dependencies: depsource::dependencies(&value, relative),
