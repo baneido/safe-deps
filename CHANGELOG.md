@@ -17,6 +17,13 @@ unreleased and not yet tagged.
   (legacy behavior, no regression). The resolved path is surfaced by
   `audit --verbose` and in spawn-error messages, and a CI step now runs the
   `curl-transport` test suite. The default `native-http` build is unaffected.
+- Added output-schema and diagnostic regression tests (`tests/output_and_diagnostics.rs`):
+  SARIF 2.1.0 structure (driver rules + results contract) and well-formed JUnit
+  XML, the `complex-shell-not-fully-parsed` diagnostic firing for
+  command/process substitution and heredocs in package-manager commands (and
+  staying silent on plain ones), and malformed `pyproject.toml`/`uv.toml`
+  surfacing a parse diagnostic that escalates under `--strict-parser-errors`
+  rather than being silently treated as no config.
 - Added a `docs lint` CI job that runs `markdownlint-cli2` and `cspell` on every
   push and pull request, so the existing Markdown/spelling checks are now a PR
   gate rather than local-only. Uses an SHA-pinned `actions/setup-node` with
