@@ -504,6 +504,128 @@ fn monorepo_member_covered_by_root_lockfile() {
     );
 }
 
+/// The root lockfile covers `workspaces`-glob members only; a project that just
+/// sits under the root (not a member) keeps its own SD001. Covers the
+/// `package.json` `workspaces` notation shared by npm, Yarn, and Bun.
+#[test]
+fn npm_workspace_lockfile_covers_member_but_not_standalone() {
+    let ws = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "root", "private": true, "workspaces": ["packages/*"] }"#,
+        ),
+        ("package-lock.json", "{}"),
+        (
+            "packages/app/package.json",
+            r#"{ "name": "app", "dependencies": { "left-pad": "^1" } }"#,
+        ),
+        (
+            "examples/standalone/package.json",
+            r#"{ "name": "standalone", "dependencies": { "left-pad": "^1" } }"#,
+        ),
+    ]);
+    let sd001 = findings_of(&check_json(&ws, &[]), "SD001");
+    assert_eq!(
+        sd001.len(),
+        1,
+        "only the non-member is uncovered: {sd001:?}"
+    );
+    assert!(sd001[0]["location"]["file"]
+        .as_str()
+        .unwrap()
+        .starts_with("examples/standalone"));
+}
+
+#[test]
+fn pnpm_workspace_lockfile_covers_member_but_not_standalone() {
+    let ws = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "root", "private": true, "packageManager": "pnpm@9" }"#,
+        ),
+        ("pnpm-workspace.yaml", "packages:\n  - \"packages/*\"\n"),
+        ("pnpm-lock.yaml", "lockfileVersion: 9\n"),
+        (
+            "packages/app/package.json",
+            r#"{ "name": "app", "dependencies": { "left-pad": "^1" } }"#,
+        ),
+        (
+            "examples/standalone/package.json",
+            r#"{ "name": "standalone", "dependencies": { "left-pad": "^1" } }"#,
+        ),
+    ]);
+    let sd001 = findings_of(&check_json(&ws, &[]), "SD001");
+    assert_eq!(
+        sd001.len(),
+        1,
+        "only the non-member is uncovered: {sd001:?}"
+    );
+    assert!(sd001[0]["location"]["file"]
+        .as_str()
+        .unwrap()
+        .starts_with("examples/standalone"));
+}
+
+#[test]
+fn bun_workspace_lockfile_covers_member_but_not_standalone() {
+    let ws = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "root", "private": true, "workspaces": ["packages/*"] }"#,
+        ),
+        ("bun.lock", "{}"),
+        (
+            "packages/app/package.json",
+            r#"{ "name": "app", "dependencies": { "left-pad": "^1" } }"#,
+        ),
+        (
+            "outside/standalone/package.json",
+            r#"{ "name": "standalone", "dependencies": { "left-pad": "^1" } }"#,
+        ),
+    ]);
+    let sd001 = findings_of(&check_json(&ws, &[]), "SD001");
+    assert_eq!(
+        sd001.len(),
+        1,
+        "only the non-member is uncovered: {sd001:?}"
+    );
+    assert!(sd001[0]["location"]["file"]
+        .as_str()
+        .unwrap()
+        .starts_with("outside/standalone"));
+}
+
+#[test]
+fn yarn_negated_workspace_glob_excludes_member_from_coverage() {
+    // A `!`-negated pattern (Yarn) removes a directory from the workspace, so it
+    // is not covered by the root lockfile.
+    let ws = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "root", "private": true, "workspaces": ["packages/*", "!packages/vendored"] }"#,
+        ),
+        ("yarn.lock", "# yarn lockfile v1\n"),
+        (
+            "packages/app/package.json",
+            r#"{ "name": "app", "dependencies": { "left-pad": "^1" } }"#,
+        ),
+        (
+            "packages/vendored/package.json",
+            r#"{ "name": "vendored", "dependencies": { "left-pad": "^1" } }"#,
+        ),
+    ]);
+    let sd001 = findings_of(&check_json(&ws, &[]), "SD001");
+    assert_eq!(
+        sd001.len(),
+        1,
+        "only the excluded member is uncovered: {sd001:?}"
+    );
+    assert!(sd001[0]["location"]["file"]
+        .as_str()
+        .unwrap()
+        .starts_with("packages/vendored"));
+}
+
 // --- diagnostics / partial progress ------------------------------------------
 
 #[test]

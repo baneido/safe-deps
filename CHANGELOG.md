@@ -8,6 +8,14 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Fixed JavaScript workspace lockfile coverage ignoring the `workspaces` globs:
+  a project that merely sat under a workspace root with a lockfile was wrongly
+  marked covered, so SD001 (missing lockfile) was missed for non-members. The
+  root lockfile now covers only directories matched by the root's member globs
+  (`package.json` `workspaces` for npm/Yarn/Bun, `pnpm-workspace.yaml` for pnpm,
+  honoring Yarn `!`-negations); a standalone project under the root keeps its own
+  SD001 (#84).
+
 - Added `examples/` onboarding fixtures: small self-contained projects that each
   trip one rule (`missing-lockfile` → SD001, `npm-insecure-registry` → SD003,
   `pip-extra-index` → SD007), plus a hardened `clean-baseline` that stays clean.

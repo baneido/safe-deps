@@ -375,7 +375,8 @@ fn pnpm_allow_all_builds(
 }
 
 /// A project is covered when a proper-ancestor workspace root declares
-/// workspaces and holds a lockfile for the same package manager.
+/// workspaces, lists `dir` as a member, and holds a lockfile for the same
+/// package manager.
 fn covered_by_workspace(ctx: &WorkspaceContext, dir: &Path, manager: PackageManager) -> bool {
     if dir == Path::new(".") {
         return false;
@@ -389,9 +390,68 @@ fn covered_by_workspace(ctx: &WorkspaceContext, dir: &Path, manager: PackageMana
         if !is_workspace_root(ctx, &root_dir, pj) {
             continue;
         }
+        // The lockfile only covers actual workspace members. A project that
+        // merely sits under the root but is not matched by its `workspaces`
+        // globs (e.g. an `examples/` sample) keeps its own SD001.
+        if !is_workspace_member(ctx, &root_dir, dir, pj) {
+            continue;
+        }
         if !lockfile_in_dir(ctx, &root_dir, manager).is_empty() {
             return true;
         }
     }
     false
+}
+
+/// The member globs declared at `root_dir`: `pnpm-workspace.yaml` `packages:`
+/// plus the `package.json` `workspaces` field (npm/Yarn/Bun).
+fn workspace_member_globs(
+    ctx: &WorkspaceContext,
+    root_dir: &Path,
+    package_json_path: &Path,
+) -> Vec<String> {
+    let mut globs = Vec::new();
+    if has_file_in(ctx, root_dir, "pnpm-workspace.yaml") {
+        if let Ok(ws) = pnpm::load_workspace(ctx, &project_join(root_dir, "pnpm-workspace.yaml")) {
+            globs.extend(ws.packages);
+        }
+    }
+    if let Ok(pj) = package_json::load(ctx, package_json_path) {
+        globs.extend(pj.workspaces.packages().iter().cloned());
+    }
+    globs
+}
+
+/// Whether `dir` is a member of the workspace rooted at `root_dir`: its path
+/// relative to the root matches an inclusion glob and no `!`-prefixed exclusion
+/// glob (Yarn supports negated patterns).
+fn is_workspace_member(
+    ctx: &WorkspaceContext,
+    root_dir: &Path,
+    dir: &Path,
+    package_json_path: &Path,
+) -> bool {
+    let globs = workspace_member_globs(ctx, root_dir, package_json_path);
+    let rel = if root_dir == Path::new(".") {
+        dir
+    } else {
+        dir.strip_prefix(root_dir).unwrap_or(dir)
+    };
+    let rel = rel.to_string_lossy().replace('\\', "/");
+    let matches = |pattern: &str| {
+        globset::Glob::new(pattern.trim_start_matches("./"))
+            .map(|g| g.compile_matcher().is_match(rel.as_str()))
+            .unwrap_or(false)
+    };
+    let mut included = false;
+    for g in &globs {
+        if let Some(excluded) = g.strip_prefix('!') {
+            if matches(excluded) {
+                return false;
+            }
+        } else if matches(g) {
+            included = true;
+        }
+    }
+    included
 }
