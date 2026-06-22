@@ -133,8 +133,10 @@ unless the user configures `application_roots`/`library_roots`. See `sd001_sever
 **SD001–SD009 are all implemented and registered** in `rules::all_rules()`. The
 CI-derived rules (SD002 non-frozen install, SD008 audit-missing, SD009 dangerous
 flags) only fire when a GitHub Actions workflow supplies `CiFacts`. SD006 (unsafe
-dependency source) currently covers JavaScript and Python manifests; Cargo/Go are
-not yet wired into it. SD001 covers npm/Yarn/pnpm/Bun/uv/Cargo/Go (pip has no
+dependency source) covers JavaScript and Python manifests, Cargo (`git`/`path`
+deps and `[patch]`/`[replace]` redirects), and Go (local-path `replace` targets);
+deeper Cargo/Go source detections (`[source]` `replace-with`, `GOPRIVATE`/sumdb)
+are tracked in issue #65. SD001 covers npm/Yarn/pnpm/Bun/uv/Cargo/Go (pip has no
 conventional lockfile). See the README's coverage matrix for the per-ecosystem
 breakdown. `docs/design/safe-deps-cli-design.md` holds the rule taxonomy/roadmap and
 `docs/security-best-practices.md` is the research backing the rule IDs.

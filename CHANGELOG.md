@@ -8,6 +8,12 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Corrected the SD006 coverage docs: the README rule matrix and `CLAUDE.md` said
+  SD006 (unsafe dependency source) did not cover Cargo/Go, but it has since #35 —
+  it flags Cargo `git`/`path` deps and `[patch]`/`[replace]` redirects and Go
+  local-path `replace` targets. Marked them `✓` and noted the remaining
+  deeper detections (Cargo `[source]` `replace-with`, Go `GOPRIVATE`/sumdb) as
+  tracked in #65.
 - Added a single-source guard for rule metadata (`tests/rule_metadata.rs`): the
   README rule table must match `Rule::summary()` for every registered rule (and
   list the same ids), so documentation can no longer silently drift from the
