@@ -18,18 +18,8 @@ impl Rule for Sd005 {
         RuleId::new("SD005")
     }
 
-    fn summary(&self) -> &'static str {
-        "Dependency build/lifecycle scripts are broadly enabled."
-    }
-
-    fn explanation(&self) -> &'static str {
-        "Running build or postinstall scripts for every dependency lets any \
-package in the tree execute code at install time. pnpm's \
-dangerouslyAllowAllBuilds and a Bun trustedDependencies wildcard remove the \
-build allowlist that normally contains this. Prefer an explicit allowlist \
-(pnpm onlyBuiltDependencies, named Bun trustedDependencies) scoped to the few \
-packages that genuinely need a build step."
-    }
+    // `summary`/`explanation` are derived from the declarative metadata in
+    // `rules::meta` (the single source, #66); only `evaluate` lives here.
 
     fn evaluate(&self, input: &RuleInput) -> Vec<Finding> {
         let facts = input.facts;

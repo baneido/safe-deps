@@ -17,18 +17,8 @@ impl Rule for Sd006 {
         RuleId::new("SD006")
     }
 
-    fn summary(&self) -> &'static str {
-        "Dependency resolves from an unsafe source (floating git, tarball, path)."
-    }
-
-    fn explanation(&self) -> &'static str {
-        "Dependencies pulled from a moving Git ref, an SSH VCS URL, a direct \
-tarball, or a local filesystem path are not reproducible or integrity-checked \
-the way registry releases are. Pin Git dependencies to a commit, publish \
-internal packages to a registry, and keep local path dependencies out of \
-production groups. Declare [policy] allow_git_dependencies or \
-allow_local_path_dependencies to accept a deliberate choice."
-    }
+    // `summary`/`explanation` are derived from the declarative metadata in
+    // `rules::meta` (the single source, #66); only `evaluate` lives here.
 
     fn evaluate(&self, input: &RuleInput) -> Vec<Finding> {
         let facts = input.facts;

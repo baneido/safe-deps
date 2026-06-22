@@ -14,16 +14,8 @@ impl Rule for Sd004 {
         RuleId::new("SD004")
     }
 
-    fn summary(&self) -> &'static str {
-        "Integrity or checksum validation is disabled."
-    }
-
-    fn explanation(&self) -> &'static str {
-        "Lockfile hashes and checksums should not be disabled or silently \
-regenerated. Flagged signals include npm package-lock=false, Yarn Berry \
-checksumBehavior: ignore (with update treated as suspicious), and pip \
-deployment requirements that lack --require-hashes."
-    }
+    // `summary`/`explanation` are derived from the declarative metadata in
+    // `rules::meta` (the single source, #66); only `evaluate` lives here.
 
     fn evaluate(&self, input: &RuleInput) -> Vec<Finding> {
         let facts = input.facts;

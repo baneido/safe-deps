@@ -18,16 +18,8 @@ impl Rule for Sd008 {
         RuleId::new("SD008")
     }
 
-    fn summary(&self) -> &'static str {
-        "CI installs dependencies but no audit command is visible."
-    }
-
-    fn explanation(&self) -> &'static str {
-        "When CI installs dependencies, a dependency audit step gives a path to \
-catch known-vulnerable packages. Use npm/yarn/pnpm audit or pip-audit/safety. \
-If audits run in a separate workflow, a SaaS scanner, or an organization-wide \
-schedule, declare [policy] external_audit = true to acknowledge that control."
-    }
+    // `summary`/`explanation` are derived from the declarative metadata in
+    // `rules::meta` (the single source, #66); only `evaluate` lives here.
 
     fn evaluate(&self, input: &RuleInput) -> Vec<Finding> {
         let facts = input.facts;

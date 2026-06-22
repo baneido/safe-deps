@@ -17,18 +17,8 @@ impl Rule for Sd007 {
         RuleId::new("SD007")
     }
 
-    fn summary(&self) -> &'static str {
-        "Index/source config exposes the project to dependency confusion."
-    }
-
-    fn explanation(&self) -> &'static str {
-        "An extra package index or a cross-index resolution strategy lets a \
-public package shadow an internal one of the same name (dependency confusion). \
-Prefer a single trusted index, or pin internal packages to a dedicated index \
-with explicit ownership. uv's index-strategy = unsafe-best-match resolves the \
-best version across all configured indexes and should be avoided. This rule is \
-an error under the strict profile and a warning otherwise."
-    }
+    // `summary`/`explanation` are derived from the declarative metadata in
+    // `rules::meta` (the single source, #66); only `evaluate` lives here.
 
     fn evaluate(&self, input: &RuleInput) -> Vec<Finding> {
         let facts = input.facts;

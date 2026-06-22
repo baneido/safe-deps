@@ -17,6 +17,8 @@ use crate::project::refine_kinds;
 use crate::report::sort_findings;
 use crate::rule::{Finding, Profile, Rule, RuleInput, WorkspaceInput};
 
+pub mod meta;
+
 pub mod sd001_lockfile_missing;
 pub mod sd002_non_frozen_ci_install;
 pub mod sd003_insecure_registry;

@@ -12,8 +12,8 @@ use crate::rule::{Finding, Severity};
 
 const SCHEMA: &str = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json";
 const INFORMATION_URI: &str = "https://github.com/baneido/safe-deps";
-const HELP_URI: &str =
-    "https://github.com/baneido/safe-deps/blob/main/docs/design/safe-deps-cli-design.md";
+// The per-rule help URI is declared once in the rule metadata registry.
+use crate::rules::meta::HELP_URI;
 
 pub struct SarifReporter;
 
@@ -136,24 +136,25 @@ struct SarifText {
 
 impl SarifLog {
     fn from_report(report: &Report) -> Self {
-        // Stable rule index built from the canonical rule registry, so result
-        // `ruleIndex` values match the emitted `rules` array exactly.
-        let rules = crate::rules::all_rules();
-        let descriptors: Vec<SarifRuleDescriptor> = rules
+        // Rule descriptors are generated from the declarative metadata registry
+        // (the single source, #66). It is id-sorted, so result `ruleIndex`
+        // values match the emitted `rules` array exactly.
+        let meta = crate::rules::meta::ALL_RULE_META;
+        let descriptors: Vec<SarifRuleDescriptor> = meta
             .iter()
-            .map(|r| SarifRuleDescriptor {
-                id: r.id().as_str().to_string(),
-                name: r.id().as_str().to_string(),
+            .map(|m| SarifRuleDescriptor {
+                id: m.id.to_string(),
+                name: m.id.to_string(),
                 short_description: SarifText {
-                    text: r.summary().to_string(),
+                    text: m.summary.to_string(),
                 },
                 full_description: SarifText {
-                    text: r.explanation().to_string(),
+                    text: m.explanation.to_string(),
                 },
                 help_uri: HELP_URI,
             })
             .collect();
-        let index_of = |id: &str| rules.iter().position(|r| r.id() == id);
+        let index_of = |id: &str| meta.iter().position(|m| m.id == id);
 
         let mut sorted = report.findings.clone();
         crate::report::sort_findings(&mut sorted);
