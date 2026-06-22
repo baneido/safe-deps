@@ -20,8 +20,9 @@ use crate::rule::{Confidence, Finding, Location, Rule, RuleId, Severity, Workspa
 
 pub struct Sd008;
 
-/// Ecosystems whose CI installs SD008 recognizes. Rust/Go installs are not
-/// modeled as install invocations, so they never reach this rule.
+/// Ecosystems for which SD008 knows how to recognize CI install commands.
+/// Rust/Go installs are not modeled as install invocations, so they never
+/// reach this rule.
 const AUDITED_ECOSYSTEMS: &[Ecosystem] = &[Ecosystem::JavaScript, Ecosystem::Python];
 
 impl Rule for Sd008 {

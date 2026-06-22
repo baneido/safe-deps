@@ -1556,10 +1556,9 @@ fn external_audit_policy_opts_out_of_sd008() {
 
 #[test]
 fn monorepo_audit_missing_reports_sd008_once() {
-    // A monorepo where the workflow installs every package but only one audits.
-    // SD008 is workspace-scoped: it must fire exactly once (not once per
-    // package) and one package's audit must not be misused as coverage that
-    // clears the rule for a sibling.
+    // A monorepo where the workflow installs every package but never runs an
+    // audit command. SD008 is workspace-scoped: it must fire exactly once (not
+    // once per package) for the entire workspace.
     let pkg = |name: &str| format!(r#"{{ "name": "{name}", "dependencies": {{ "x": "^1" }} }}"#);
     let ws = workspace(&[
         ("package.json", r#"{ "name": "root", "private": true }"#),
