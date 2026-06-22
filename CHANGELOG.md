@@ -9,6 +9,19 @@ workflow; it gathers the work accumulated during pre-`0.2.2` development.
 
 ## Unreleased
 
+- Made `Cargo.toml` the single source of truth for releases, eliminating the
+  recurring tag/crate-version drift. Bumping the `version` on `main` is now the
+  release action: the new
+  [`release-tag.yml`](https://github.com/baneido/safe-deps/blob/main/.github/workflows/release-tag.yml)
+  workflow derives the matching `vX.Y.Z` tag from the manifest and dispatches the
+  release, so the tag can no longer disagree with the crate version. Manually
+  pushing a tag no longer triggers anything; re-run a release for an existing tag
+  with `gh workflow run release.yml --ref vX.Y.Z`. A new `version bump completeness`
+  CI check fails any PR whose version bump is incomplete — `Cargo.lock` not
+  refreshed, no matching `CHANGELOG.md` section, a non-increasing version, or one
+  already released. See
+  [RELEASING.md](https://github.com/baneido/safe-deps/blob/main/RELEASING.md).
+
 ## 0.2.2 — 2026-06-23
 
 - Made the crate publishable to crates.io. The release workflow now publishes

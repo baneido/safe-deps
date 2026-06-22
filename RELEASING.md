@@ -5,7 +5,11 @@ crate on **crates.io** (`cargo install safe-deps` / as a library dependency), an
 **Homebrew** formula on [`baneido/homebrew-tap`](https://github.com/baneido/homebrew-tap)
 (`brew install baneido/tap/safe-deps`). All three are produced automatically by
 [`.github/workflows/release.yml`](.github/workflows/release.yml) when a `vX.Y.Z` tag
-is pushed. This document is the maintainer checklist for cutting that tag.
+exists. You never create that tag by hand: **bumping the `version` in `Cargo.toml`
+on `main` is the release action.**
+[`release-tag.yml`](.github/workflows/release-tag.yml) derives the matching tag from
+the manifest and dispatches the release, so the tag and the crate version can never
+disagree. This document is the maintainer checklist for that bump.
 
 > **First publish is a one-time manual bootstrap (already completed for `v0.2.1`).** The automated `publish-crate`
 > job authenticates with crates.io Trusted Publishing (GitHub OIDC, no long-lived
@@ -67,29 +71,47 @@ Trusted Publishing settings do not exist until the crate does. Do this once:
    `baneido/safe-deps`, workflow `release.yml`, environment blank. Then revoke the
    step-1 token.
 
-You can still push the matching `vX.Y.Z` tag for this first version to get its
-binary release, SBOM, and signatures — the `publish-crate` job will fail with
-"crate already uploaded", which is harmless: it is an independent job, so the
+You still cut the matching `vX.Y.Z` binary release, SBOM, and signatures for this
+first version the normal way — bump the version on `main` (see
+[Releasing](#releasing-the-version-bump-is-what-publishes) below) so
+`release-tag.yml` tags and dispatches the release. The `publish-crate` job will fail
+with "crate already uploaded", which is harmless: it is an independent job, so the
 build/sign/sbom jobs still complete. Every version *after* the bootstrap publishes
 fully automatically over OIDC.
 
-## Tagging (this is what publishes)
+## Releasing (the version bump is what publishes)
 
-Pushing the tag is the release action — it triggers `release.yml`, which
-verifies the tag matches `Cargo.toml`, builds the per-target binaries, **publishes
-the crate to crates.io** (`publish-crate` job, gated on a green build matrix), and
-signs the checksums + attaches the SBOM.
+`Cargo.toml` is the single source of truth. Releasing is **landing a version bump on
+`main`** — there is no separate tagging step, and nothing for the tag and the crate
+version to disagree about:
+
+1. Open a PR that bumps `version` in `Cargo.toml`, commits the refreshed
+   `Cargo.lock`, and moves the `Unreleased` changelog notes under a new
+   `## X.Y.Z` heading. The `version bump completeness` CI check (in
+   [`ci.yml`](.github/workflows/ci.yml)) enforces all three — plus a strictly
+   increasing version that has not already been released — before the PR can merge.
+2. Merge it. On the push to `main`,
+   [`release-tag.yml`](.github/workflows/release-tag.yml) reads the version, creates
+   the annotated tag `vX.Y.Z`, and dispatches `release.yml` against it.
+3. `release.yml` verifies the tag matches `Cargo.toml` (a backstop), builds the
+   per-target binaries, **publishes the crate to crates.io** (`publish-crate` job,
+   gated on a green build matrix), signs the checksums, and attaches the SBOM.
+
+**Do not `git tag` by hand.** A manually pushed tag now triggers nothing — only the
+version bump does. To re-run a release for a tag that already exists (e.g. after a
+transient infrastructure failure), dispatch it manually instead of re-tagging:
 
 ```bash
-git tag -a vX.Y.Z -m "vX.Y.Z"
-git push origin vX.Y.Z
+gh workflow run release.yml --ref vX.Y.Z
 ```
 
 A crates.io publish is irreversible — a version can only be yanked, never
 replaced — so the workflow publishes only after every release target compiles. If
 the `publish-crate` job fails after the crate is already live (e.g. a re-run for a
-version that published successfully), do **not** re-tag; bump to the next patch
-version instead.
+version that published successfully), do **not** reuse the version; bump to the next
+patch version instead. Re-merging without a new version is a no-op — the tag already
+exists, so `release-tag.yml` skips — so recover a failed release by bumping forward,
+never by re-tagging.
 
 ### Manual publish (fallback)
 

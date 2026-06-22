@@ -193,6 +193,69 @@ jobs:
           "$bin" check smoke-empty --format json > /dev/null
           echo "release smoke passed"
 
+  version-bump:
+    name: version bump completeness
+    # Bumping the package version in Cargo.toml is what triggers a release on
+    # merge (release-tag.yml derives the tag from the manifest). So guard, at
+    # review time, that the bump is *complete* before it can ship: version
+    # strictly increasing, Cargo.lock refreshed to match, a CHANGELOG section
+    # written, and not a version that was already released. Only runs on PRs —
+    # on push the bump has already merged and release-tag.yml takes over.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # Full history + tags: diff Cargo.toml against the PR base, and reject
+          # reusing an already-released version's tag.
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Check the version bump is complete
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          extract() { sed -E 's/^version = "(.*)"$/\1/'; }
+          new_version="$(grep -m1 '^version = ' Cargo.toml | extract)"
+          old_version="$(git show "$BASE_SHA:Cargo.toml" | grep -m1 '^version = ' | extract)"
+          if [ "$new_version" = "$old_version" ]; then
+            echo "package version unchanged ($new_version); nothing to check"
+            exit 0
+          fi
+          echo "version bump: $old_version -> $new_version"
+          fail=0
+
+          # Strictly increasing — catches a typo'd downgrade or a stale base.
+          highest="$(printf '%s\n%s\n' "$old_version" "$new_version" | sort -V | tail -1)"
+          if [ "$highest" != "$new_version" ]; then
+            echo "::error file=Cargo.toml::version $new_version is not greater than the base version $old_version" >&2
+            fail=1
+          fi
+
+          # Cargo.lock refreshed — else the --locked release build fails.
+          lock_version="$(awk '/^name = "safe-deps"$/{getline; print}' Cargo.lock | extract)"
+          if [ "$lock_version" != "$new_version" ]; then
+            echo "::error file=Cargo.lock::Cargo.lock has safe-deps $lock_version but Cargo.toml is $new_version; run 'cargo build' and commit Cargo.lock" >&2
+            fail=1
+          fi
+
+          # CHANGELOG has a section for the new version (e.g. "## 0.2.3 — ...").
+          if ! grep -qE "^##[[:space:]]+${new_version//./\\.}([[:space:]]|\$)" CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::no '## $new_version' section in CHANGELOG.md; move the Unreleased notes under it" >&2
+            fail=1
+          fi
+
+          # Never re-release a version — a crates.io publish is irreversible.
+          if git rev-parse -q --verify "refs/tags/v$new_version" >/dev/null; then
+            echo "::error file=Cargo.toml::tag v$new_version already exists; bump to an unreleased version" >&2
+            fail=1
+          fi
+
+          [ "$fail" -eq 0 ] || exit 1
+          echo "version bump to $new_version is complete"
+
   msrv:
     name: msrv (1.86)
     runs-on: ubuntu-latest

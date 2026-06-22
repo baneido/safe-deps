@@ -1,0 +1,113 @@
+name: Tag release
+
+# Make `Cargo.toml` the single source of truth for what gets released.
+#
+# Releasing used to be a two-step manual ritual: bump the version in Cargo.toml
+# AND, separately, push a matching `vX.Y.Z` tag. When the two drifted (a tag for
+# a version the manifest didn't carry, or vice versa) the release blew up late,
+# after the tag was already on the remote — forcing a delete-tag/re-tag dance.
+#
+# This workflow removes that whole class of mistake. When a version bump lands on
+# `main`, it derives the tag *from* the manifest and creates it automatically,
+# then kicks off release.yml. The tag can no longer disagree with Cargo.toml
+# because it is computed from it. Maintainers never tag by hand.
+#
+# Why a separate workflow that *dispatches* release.yml, rather than just pushing
+# the tag and letting release.yml's `push: tags` trigger fire: a tag created with
+# the workflow's GITHUB_TOKEN does NOT trigger another workflow run (GitHub's
+# recursion guard). `workflow_dispatch` is the documented exception to that guard,
+# so we create the tag and then explicitly dispatch release.yml against it — no
+# long-lived PAT, staying with the OIDC-only token posture the rest of the
+# release already uses.
+on:
+  push:
+    branches: [main]
+    # Only the package version lives in Cargo.toml, so a change here is the only
+    # thing that can start a release. The job still confirms the version is new
+    # (a dependency-only Cargo.toml edit leaves the existing tag in place and is
+    # a no-op), so this filter is just an optimization, not the gate.
+    paths:
+      - "Cargo.toml"
+
+# Least privilege: read the repo plus the two writes the release-trigger needs.
+permissions:
+  contents: read
+
+concurrency:
+  # One tag-creation per ref; never cancel an in-flight one (a half-created tag
+  # is worse than a queued check).
+  group: release-tag-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: tag and dispatch release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the annotated tag + ref via the git database API
+      actions: write # dispatch release.yml against the new tag
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # We tag and dispatch through the GitHub API with GH_TOKEN, never via
+          # `git push`, so the checkout credentials are not needed afterwards.
+          persist-credentials: false
+      - name: Tag the version and trigger the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # The commit on main that this push delivered — the tag points here.
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Read the package version straight from the manifest (same extraction
+          # release.yml's verify-version uses, so they cannot interpret it
+          # differently). `-m1` stops at the [package] version, before any
+          # dependency `version = ` lines.
+          version="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/^version = "(.*)"$/\1/')"
+          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::could not parse a semver package version from Cargo.toml (got '$version')" >&2
+            exit 1
+          fi
+          tag="v$version"
+          echo "Cargo.toml version: $version -> tag $tag"
+
+          # Idempotent: if the tag already exists this push didn't bump the
+          # version (e.g. a Dependabot edit to a dependency line), so there is
+          # nothing to release. Re-runs of an already-tagged commit also land here.
+          if gh api "repos/$REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "tag $tag already exists; no version bump to release"
+            exit 0
+          fi
+
+          # Create an annotated tag object, then the ref pointing at it. Going
+          # through the API (rather than `git tag && git push`) means no git
+          # credentials are persisted on the runner. Both calls need
+          # `contents: write`.
+          tag_sha="$(gh api "repos/$REPO/git/tags" \
+            -f tag="$tag" \
+            -f message="$tag" \
+            -f object="$SHA" \
+            -f type=commit \
+            --jq '.sha')"
+          gh api "repos/$REPO/git/refs" \
+            -f ref="refs/tags/$tag" \
+            -f sha="$tag_sha" >/dev/null
+          echo "created tag $tag at $SHA"
+
+          # Hand off to release.yml. Dispatching with `--ref $tag` makes
+          # github.ref_name inside that run equal the tag, so every existing
+          # release job keeps working unchanged. A tag just created via the API
+          # can lag a beat before the dispatch ref resolves, so retry briefly.
+          for attempt in 1 2 3 4 5; do
+            if gh workflow run release.yml --ref "$tag"; then
+              echo "dispatched release.yml for $tag"
+              exit 0
+            fi
+            echo "dispatch attempt $attempt failed; retrying in 5s..."
+            sleep 5
+          done
+          echo "::error::tagged $tag but failed to dispatch release.yml; run 'gh workflow run release.yml --ref $tag' manually" >&2
+          exit 1
