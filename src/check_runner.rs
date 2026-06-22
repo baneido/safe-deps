@@ -73,9 +73,16 @@ pub fn run(req: CheckRequest) -> Result<u8, CliError> {
 
     let parse_failures = result.parse_failures;
     let has_error_diagnostic = result.has_error_diagnostic;
+    // The run is treated as a strict-parser failure under exactly the same
+    // condition that drives the exit-4 path below. Compute it before rendering
+    // so reporters (e.g. SARIF `executionSuccessful`) reflect the CLI's view of
+    // the run rather than inferring success solely from diagnostic severity —
+    // parse failures surface as warning-level diagnostics.
+    let strict_parse_failure = req.strict_parser_errors && parse_failures > 0;
     let mut report = Report::new(req.path.clone(), req.profile, TOOL_VERSION);
     report.findings = result.findings;
     report.diagnostics = result.diagnostics;
+    report.strict_parse_failure = strict_parse_failure;
 
     let bytes = reporter_for(req.format)
         .format(&report)
@@ -91,7 +98,6 @@ pub fn run(req: CheckRequest) -> Result<u8, CliError> {
         .findings
         .iter()
         .any(|f| req.fail_on.triggers(f.severity));
-    let strict_parse_failure = req.strict_parser_errors && parse_failures > 0;
 
     if strict_parse_failure {
         Ok(4)

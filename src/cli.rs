@@ -268,6 +268,10 @@ fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
     if offline_unchecked > 0 {
         report.packages_audited = coords.len().saturating_sub(offline_unchecked);
         report.offline_unchecked = offline_unchecked;
+        report.packages_unchecked = offline_unchecked;
+        report.diagnostics.push(format!(
+            "offline: {offline_unchecked} package(s) not in the cache were not checked"
+        ));
     }
 
     // Resolve format with the same precedence as `check` (CLI flag, then config,
