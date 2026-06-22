@@ -102,8 +102,8 @@ pub struct AuditReport {
     pub ignored: Vec<IgnoredAdvisory>,
     /// Non-fatal notes (e.g. expired ignores, offline cache misses).
     pub diagnostics: Vec<String>,
-    /// Number of package coordinates queried (including any that were skipped in
-    /// offline mode due to cache misses).
+    /// Number of package coordinates actually checked (excluding packages skipped
+    /// due to offline cache misses; see `offline_unchecked` for the skipped count).
     pub packages_audited: usize,
     /// Number of packages not checked because they were absent from the local
     /// cache during an `--offline` run. Zero for online runs.

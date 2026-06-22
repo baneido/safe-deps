@@ -838,8 +838,8 @@ fn audit_offline_without_cache_notes_unchecked_packages() {
     // An offline cache miss must surface the unchecked count in the output
     // so it is visible in CI logs.
     assert!(
-        text.contains("not in the cache were not checked"),
-        "expected unchecked-packages note:\n{text}"
+        text.contains("not in the local cache were not checked"),
+        "expected unchecked-packages warning:\n{text}"
     );
     // Exit 1 when packages are unchecked — must not be a silent exit-0 success.
     assert_eq!(
@@ -866,6 +866,12 @@ fn audit_offline_cache_miss_exits_nonzero_with_json_output() {
         .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{}", stdout(&out)));
     // The JSON report must have advisories and packages_audited keys.
     assert!(v.get("advisories").is_some(), "missing advisories: {v}");
+    // offline_unchecked must be non-zero (one package in CARGO_LOCK_LEFTPAD).
+    assert_eq!(
+        v["offline_unchecked"].as_u64(),
+        Some(1),
+        "offline_unchecked must be 1 for a single-package cache miss: {v}"
+    );
     // Exit non-zero when there are unchecked packages.
     assert_eq!(code(&out), 1, "offline cache miss must exit non-zero");
 }
