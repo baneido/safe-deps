@@ -185,8 +185,7 @@ fn run_check(args: CheckArgs) -> Result<u8, CliError> {
     // `explain`); without normalization a short/lowercase id silently drops
     // every finding and the run exits 0.
     let ecosystem = ecosystem_filter(args.ecosystem.as_deref())?;
-    let rules: std::collections::HashSet<String> =
-        args.rules.iter().map(|s| normalize_rule_id(s).0).collect();
+    let rules = validate_rule_ids(&args.rules)?;
 
     let request = CheckRequest {
         path: args.path,
@@ -435,6 +434,31 @@ fn normalize_rule_id(raw: &str) -> RuleId {
     } else {
         format!("SD{upper}")
     })
+}
+
+/// Normalizes each raw rule ID string and validates it against the registered
+/// rule set. Returns a usage error (exit 2) if any ID is unknown.
+fn validate_rule_ids(raw_ids: &[String]) -> Result<std::collections::HashSet<String>, CliError> {
+    if raw_ids.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+    let known: std::collections::HashSet<String> =
+        all_rules().iter().map(|r| r.id().to_string()).collect();
+    let mut normalized = std::collections::HashSet::new();
+    for raw in raw_ids {
+        let id = normalize_rule_id(raw);
+        if !known.contains(id.as_str()) {
+            let mut valid: Vec<&str> = known.iter().map(String::as_str).collect();
+            valid.sort_unstable();
+            return Err(CliError::usage(format!(
+                "unknown rule '{}' (normalized to '{id}'); valid rules: {}",
+                raw,
+                valid.join(", ")
+            )));
+        }
+        normalized.insert(id.0);
+    }
+    Ok(normalized)
 }
 
 /// CLI error with an associated exit code.
