@@ -134,10 +134,18 @@ Notes:
 - pip has no conventional lockfile, so SD001 does not apply; its integrity is
   assessed through `--require-hashes` (SD004) instead.
 - SD006 (unsafe dependency source) covers all four ecosystems: JavaScript and
-  Python manifests, plus Cargo (`git`/`path` dependencies and `[patch]`/`[replace]`
-  redirects) and Go (local-path `replace` targets). Deeper Cargo/Go source
-  detections (Cargo `[source]` `replace-with`, Go `GOPRIVATE`/sumdb opt-outs) are
-  tracked in [#65](https://github.com/baneido/safe-deps/issues/65).
+  Python manifests, plus Cargo (`git`/`path` dependencies, `[patch]`/`[replace]`
+  redirects, and `.cargo/config.toml` `[source]` `replace-with` redirects whose
+  target is a remote `registry`/`git` source — redirects to a local
+  `directory`/`local-registry` vendoring target are deterministic/offline and not
+  flagged; ancestor configs are scanned per Cargo's hierarchical lookup) and Go
+  (local-path `replace` targets, and CI `env` that *globally* disables the module
+  checksum database — `GOSUMDB=off`, or `GONOSUMCHECK`/`GONOSUMDB` set to the
+  wildcard `*`). `GOINSECURE`/`GOFLAGS=-insecure` allow insecure transport rather
+  than disabling the checksum database, so they are not treated as a sumdb bypass.
+  Remaining deeper detections (Cargo sparse-index/VCS-URL nuance, Go `go env -w`
+  command parsing and `GOPRIVATE`/`GONOPROXY` review) are tracked in
+  [#65](https://github.com/baneido/safe-deps/issues/65).
 - For Cargo/Go, SD002 flags a non-reproducible CI build (`cargo build`/`test`
   without `--locked`/`--frozen`; `go build`/`test` with `-mod=mod`). SD008/SD009
   do not yet recognize Cargo/Go commands.
@@ -237,8 +245,9 @@ tracker.
 - Phase 4: additional ecosystems (Cargo, Go) and JUnit output. ✅
 - Phase 5: explicit networked audit mode (OSV). ✅
 
-Planned next: a production Rust CI workflow, more CI providers, SD006 for
-Cargo/Go, and additional ecosystems (Composer, Bundler, Gradle/Maven, NuGet).
+Planned next: a production Rust CI workflow, more CI providers, deeper Cargo/Go
+source detections (see [#65](https://github.com/baneido/safe-deps/issues/65)), and
+additional ecosystems (Composer, Bundler, Gradle/Maven, NuGet).
 
 ## License
 

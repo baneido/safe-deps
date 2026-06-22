@@ -13,6 +13,7 @@
 mod depsource;
 mod lockfile;
 mod manifest;
+mod sourceconfig;
 mod workspace;
 
 use crate::ecosystems::{
@@ -92,14 +93,35 @@ impl Analyzer for CargoAnalyzer {
             project.kind = parsed.kind;
         }
 
+        // Merge manifest dependency sources with `.cargo/config.toml`
+        // `[source]` `replace-with` redirects (honoring Cargo's hierarchical
+        // config lookup up to the scanned workspace root, nearest-wins). A
+        // `configs` entry is added ONLY when an unsafe (remote) redirect is
+        // emitted, pointing at the config that declares the effective redirect,
+        // so reporting/suppressions can reference it; a present-but-safe
+        // (vendored) or malformed config leaves `configs` empty (a malformed one
+        // still becomes a warning diagnostic below).
+        let mut dependencies = parsed.dependencies;
+        let source_config = sourceconfig::source_replacements(ctx, dir);
+        let configs = source_config
+            .dependencies
+            .iter()
+            .map(|d| FileFact {
+                relative: d.file.clone(),
+            })
+            .take(1)
+            .collect();
+        parse_diagnostics.extend(source_config.diagnostics);
+        dependencies.extend(source_config.dependencies);
+
         Ok(ProjectFacts {
             project,
             manifest,
             lockfiles: lockfile::lockfiles(ctx, dir),
-            configs: Vec::new(),
+            configs,
             has_manifest_dependencies: parsed.has_dependencies,
             install_settings: InstallSettings::default(),
-            dependencies: parsed.dependencies,
+            dependencies,
             covered_by_workspace_lockfile: workspace::covered_by_workspace(ctx, dir),
             has_legacy_bun_lockfile: false,
             parse_diagnostics,
@@ -234,6 +256,156 @@ mod tests {
         assert!(
             !sub.covered_by_workspace_lockfile,
             "an excluded crate is not covered by the workspace lock"
+        );
+    }
+
+    #[test]
+    fn cargo_config_source_replace_with_is_a_dependency_source() {
+        let dir = ws(&[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n",
+            ),
+            ("src/main.rs", "fn main() {}\n"),
+            (
+                ".cargo/config.toml",
+                "[source.crates-io]\nreplace-with = \"mirror\"\n[source.mirror]\nregistry = \"https://internal.example/index\"\n",
+            ),
+        ]);
+        let facts = facts_for(&dir);
+        let replaced = facts[0]
+            .dependencies
+            .iter()
+            .find(|d| {
+                matches!(
+                    d.source,
+                    crate::ecosystems::DependencySource::RegistryReplaced { .. }
+                )
+            })
+            .expect("source replacement is extracted");
+        assert_eq!(replaced.name, "crates-io");
+    }
+
+    #[test]
+    fn workspace_root_cargo_config_redirect_applies_to_member() {
+        // Cargo config is hierarchical: a root `.cargo/config.toml` redirect
+        // applies to member crates under `crates/*`.
+        let dir = ws(&[
+            ("Cargo.toml", "[workspace]\nmembers = [\"crates/a\"]\n"),
+            (
+                "crates/a/Cargo.toml",
+                "[package]\nname = \"a\"\n[dependencies]\nserde = \"1\"\n",
+            ),
+            ("crates/a/src/lib.rs", "\n"),
+            ("Cargo.lock", "version = 3\n"),
+            (
+                ".cargo/config.toml",
+                "[source.crates-io]\nreplace-with = \"mirror\"\n[source.mirror]\nregistry = \"https://internal.example/index\"\n",
+            ),
+        ]);
+        let facts = facts_for(&dir);
+        // Only the member crate is detected; it picks up the ancestor redirect.
+        assert_eq!(facts.len(), 1);
+        let replaced = facts[0]
+            .dependencies
+            .iter()
+            .find(|d| {
+                matches!(
+                    d.source,
+                    crate::ecosystems::DependencySource::RegistryReplaced { .. }
+                )
+            })
+            .expect("ancestor source replacement is extracted for the member crate");
+        assert_eq!(replaced.name, "crates-io");
+    }
+
+    #[test]
+    fn nearer_local_override_suppresses_ancestor_remote_redirect() {
+        // Cargo config is hierarchical and NEAREST wins. The member config
+        // redirects `crates-io` to a LOCAL vendored source while the root config
+        // redirects the same source to a REMOTE mirror. The effective redirect is
+        // the member's local one (safe), so SD006 must NOT fire: the ancestor's
+        // remote redirect is overridden, not an additional concern.
+        let dir = ws(&[
+            ("Cargo.toml", "[workspace]\nmembers = [\"crates/a\"]\n"),
+            (
+                "crates/a/Cargo.toml",
+                "[package]\nname = \"a\"\n[dependencies]\nserde = \"1\"\n",
+            ),
+            ("crates/a/src/lib.rs", "\n"),
+            ("Cargo.lock", "version = 3\n"),
+            (
+                ".cargo/config.toml",
+                "[source.crates-io]\nreplace-with = \"mirror\"\n[source.mirror]\nregistry = \"https://internal.example/index\"\n",
+            ),
+            (
+                "crates/a/.cargo/config.toml",
+                "[source.crates-io]\nreplace-with = \"vendored\"\n[source.vendored]\ndirectory = \"vendor\"\n",
+            ),
+        ]);
+        let facts = facts_for(&dir);
+        assert_eq!(facts.len(), 1);
+        assert!(
+            !facts[0].dependencies.iter().any(|d| matches!(
+                d.source,
+                crate::ecosystems::DependencySource::RegistryReplaced { .. }
+            )),
+            "a nearer local/vendored redirect for `crates-io` overrides the ancestor's \
+             remote redirect, so no source replacement should be emitted: {:?}",
+            facts[0].dependencies
+        );
+    }
+
+    #[test]
+    fn ancestor_only_remote_redirect_is_flagged() {
+        // No nearer override exists, so the ancestor's REMOTE redirect is the
+        // effective one and must be flagged (unchanged behavior).
+        let dir = ws(&[
+            ("Cargo.toml", "[workspace]\nmembers = [\"crates/a\"]\n"),
+            (
+                "crates/a/Cargo.toml",
+                "[package]\nname = \"a\"\n[dependencies]\nserde = \"1\"\n",
+            ),
+            ("crates/a/src/lib.rs", "\n"),
+            ("Cargo.lock", "version = 3\n"),
+            (
+                ".cargo/config.toml",
+                "[source.crates-io]\nreplace-with = \"mirror\"\n[source.mirror]\nregistry = \"https://internal.example/index\"\n",
+            ),
+        ]);
+        let facts = facts_for(&dir);
+        assert_eq!(facts.len(), 1);
+        let replaced = facts[0]
+            .dependencies
+            .iter()
+            .find(|d| {
+                matches!(
+                    d.source,
+                    crate::ecosystems::DependencySource::RegistryReplaced { .. }
+                )
+            })
+            .expect("the effective ancestor remote redirect is flagged");
+        assert_eq!(replaced.name, "crates-io");
+    }
+
+    #[test]
+    fn malformed_cargo_config_emits_parse_diagnostic() {
+        let dir = ws(&[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n",
+            ),
+            ("src/main.rs", "fn main() {}\n"),
+            (".cargo/config.toml", "this is = not valid = toml\n"),
+        ]);
+        let facts = facts_for(&dir);
+        assert!(
+            facts[0]
+                .parse_diagnostics
+                .iter()
+                .any(|d| d.message.contains(".cargo/config.toml")),
+            "expected a parse diagnostic for the malformed config: {:?}",
+            facts[0].parse_diagnostics
         );
     }
 
