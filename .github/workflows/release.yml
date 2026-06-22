@@ -1,12 +1,20 @@
 name: Release
 
-# Tag-triggered release: build per-target binaries, publish them to a GitHub
-# Release with SHA-256 checksums, sign a consolidated checksum manifest with
-# cosign (keyless), and attach a CycloneDX SBOM.
+# Build per-target binaries, publish them to a GitHub Release with SHA-256
+# checksums, sign a consolidated checksum manifest with cosign (keyless),
+# publish the crate to crates.io, and attach a CycloneDX SBOM.
+#
+# This workflow is normally driven by release-tag.yml: bumping the version in
+# Cargo.toml on `main` auto-creates the matching `vX.Y.Z` tag and dispatches this
+# workflow against it. Dispatching with `--ref vX.Y.Z` makes `github.ref_name`
+# the tag, so every job below reads the tag exactly as it did under the old
+# `push: tags` trigger.
+#
+# `workflow_dispatch` is also the manual escape hatch: to (re-)release an existing
+# tag, run `gh workflow run release.yml --ref vX.Y.Z`. Pushing a tag by hand does
+# nothing now — Cargo.toml is the single source of truth (see RELEASING.md).
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -29,9 +37,11 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
-      # Guard against a tag/crate-version mismatch (e.g. tagging v0.2.1 while
-      # Cargo.toml still says 0.1.0, which would ship a binary whose --version
-      # disagrees with the release). Fail the whole release before any artifact
+      # Backstop against a tag/crate-version mismatch (a binary whose --version
+      # disagrees with the release it ships in). The normal release-tag.yml path
+      # derives the tag *from* Cargo.toml, so it cannot drift; this guard exists
+      # for the manual `workflow_dispatch --ref` escape hatch, where a human
+      # could dispatch the wrong ref. Fail the whole release before any artifact
       # is built or published.
       - name: Compare tag to package version
         env:
@@ -42,7 +52,7 @@ jobs:
           cargo_version="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/^version = "(.*)"$/\1/')"
           echo "tag=$tag_version cargo=$cargo_version"
           if [ "$tag_version" != "$cargo_version" ]; then
-            echo "::error::tag $TAG (version $tag_version) does not match Cargo.toml version $cargo_version; bump the version and re-tag" >&2
+            echo "::error::tag $TAG (version $tag_version) does not match Cargo.toml version $cargo_version; dispatch the release against the tag whose commit carries that version (normally automatic via release-tag.yml)" >&2
             exit 1
           fi
 
