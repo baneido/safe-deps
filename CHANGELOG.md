@@ -8,7 +8,7 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
-- Fixed SD008 (audit missing) double-counting and misattributing in monorepos
+- Fixed SD008 (audit missing) duplicate findings and cross-package attribution in monorepos
   (#96). It was a project-scoped rule that nonetheless decided from the whole
   workspace's CI facts, so it fired once per package (duplicates) and let one
   package's audit command count as coverage for a sibling. SD008 is now
