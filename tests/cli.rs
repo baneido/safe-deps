@@ -2376,6 +2376,48 @@ fn suppression_dot_slash_glob_matches_nested_finding() {
     );
 }
 
+// --- pip.ini parity (#86) -----------------------------------------------------
+
+#[test]
+fn pip_ini_trusted_host_is_sd003_error() {
+    // pip.ini is the Windows-standard config file; settings must reach SD003.
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        ("pip.ini", "[global]\ntrusted-host = pypi.internal\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    let sd003 = findings_of(&report, "SD003");
+    assert!(!sd003.is_empty(), "SD003 expected from pip.ini: {report}");
+    assert_eq!(sd003[0]["package_manager"], "pip");
+    // Location must point at pip.ini, not a fallback.
+    assert_eq!(sd003[0]["location"]["file"], "pip.ini");
+}
+
+#[test]
+fn pip_ini_insecure_index_url_is_sd003_error() {
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        (
+            "pip.ini",
+            "[global]\nindex-url = http://pypi.example/simple\n",
+        ),
+    ]);
+    let report = check_json(&ws, &[]);
+    let sd003 = findings_of(&report, "SD003");
+    assert!(
+        !sd003.is_empty(),
+        "SD003 expected for HTTP index in pip.ini: {report}"
+    );
+    assert!(
+        sd003[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("http://pypi.example/simple"),
+        "{:?}",
+        sd003[0]
+    );
+}
+
 #[test]
 fn suppression_dot_slash_exact_path_matches() {
     // `./package.json` must suppress a finding at `package.json`.
@@ -2394,5 +2436,89 @@ fn suppression_dot_slash_exact_path_matches() {
             .unwrap()
             .contains("unused suppression")),
         "suppression with `./` prefix must not be reported as unused"
+    );
+}
+
+#[test]
+fn pip_ini_require_hashes_suppresses_sd004() {
+    // pip.ini with require-hashes = true must clear the SD004 finding.
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        ("pip.ini", "[global]\nrequire-hashes = true\n"),
+    ]);
+    let report = check_json(&ws, &["--profile", "strict"]);
+    assert!(
+        findings_of(&report, "SD004").is_empty(),
+        "SD004 should be suppressed when pip.ini sets require-hashes: {report}"
+    );
+}
+
+#[test]
+fn pip_ini_extra_index_url_is_sd007_warning() {
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        (
+            "pip.ini",
+            "[global]\nextra-index-url = https://pypi.internal/simple\n",
+        ),
+    ]);
+    let report = check_json(&ws, &[]);
+    let sd007 = findings_of(&report, "SD007");
+    assert!(
+        !sd007.is_empty(),
+        "SD007 expected from pip.ini extra-index-url: {report}"
+    );
+    assert_eq!(sd007[0]["location"]["file"], "pip.ini");
+}
+
+#[test]
+fn pip_ini_safe_settings_yield_no_findings() {
+    // Sanity: a pip.ini with only an HTTPS index and no bypasses is clean.
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        ("pip.ini", "[global]\nindex-url = https://pypi.org/simple\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    assert!(
+        findings_of(&report, "SD003").is_empty(),
+        "clean pip.ini should not yield SD003: {report}"
+    );
+}
+
+#[test]
+fn sd003_locates_finding_on_the_file_that_declared_it() {
+    // Both pip.conf and pip.ini exist; only pip.ini carries the insecure index.
+    // The finding must point at pip.ini, not the first-existing pip.conf.
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        (
+            "pip.conf",
+            "[global]\nindex-url = https://pypi.org/simple\n",
+        ),
+        ("pip.ini", "[global]\nindex-url = http://internal/simple\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    let sd003 = findings_of(&report, "SD003");
+    assert!(!sd003.is_empty(), "SD003 expected from pip.ini: {report}");
+    assert_eq!(
+        sd003[0]["location"]["file"], "pip.ini",
+        "insecure index lives in pip.ini, so the finding must locate there: {report}"
+    );
+}
+
+#[test]
+fn sd003_locates_finding_on_pip_conf_when_only_pip_conf_is_unsafe() {
+    // Symmetric case: both files exist but only pip.conf is unsafe.
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        ("pip.conf", "[global]\ntrusted-host = pypi.internal\n"),
+        ("pip.ini", "[global]\nindex-url = https://pypi.org/simple\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    let sd003 = findings_of(&report, "SD003");
+    assert!(!sd003.is_empty(), "SD003 expected from pip.conf: {report}");
+    assert_eq!(
+        sd003[0]["location"]["file"], "pip.conf",
+        "trusted-host lives in pip.conf, so the finding must locate there: {report}"
     );
 }

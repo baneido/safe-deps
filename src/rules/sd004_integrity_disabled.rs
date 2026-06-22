@@ -86,7 +86,7 @@ deployment requirements that lack --require-hashes."
                     input,
                     "pip requirements lack --require-hashes; integrity is not enforced.",
                     Some("add --require-hashes and pin all requirements with hashes."),
-                    config_loc(facts, "pip.conf").or_else(|| config_loc(facts, "requirements.txt")),
+                    pip_config_loc(facts).or_else(|| config_loc(facts, "requirements.txt")),
                     severity,
                     Confidence::Medium,
                 ));
@@ -135,6 +135,13 @@ fn config_loc(facts: &crate::ecosystems::ProjectFacts, basename: &str) -> Option
         .find(|c| c.relative.file_name().and_then(|n| n.to_str()) == Some(basename))
         .map(|c| Location::file(&c.relative))
         .or_else(|| facts.manifest.as_ref().map(|m| Location::file(&m.relative)))
+}
+
+/// Returns the location of whichever pip config file (`pip.conf` or `pip.ini`)
+/// is present, or falls back to the manifest. Delegates to the shared helper in
+/// `rules::pip_config_loc` to keep the SD003/SD004 heuristics in sync.
+fn pip_config_loc(facts: &crate::ecosystems::ProjectFacts) -> Option<Location> {
+    crate::rules::pip_config_loc(facts)
 }
 
 /// Like [`config_loc`] but attaches a 1-based line when one is known.

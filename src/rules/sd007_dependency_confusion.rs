@@ -46,14 +46,20 @@ an error under the strict profile and a warning otherwise."
         for url in settings
             .extra_index_urls
             .iter()
-            .filter(|u| seen.insert(u.as_str()))
+            .filter(|u| seen.insert(u.value.as_str()))
         {
             findings.push(finding(
                 facts,
                 severity,
-                format!("extra index URL `{url}` is searched alongside the primary index"),
+                format!(
+                    "extra index URL `{}` is searched alongside the primary index",
+                    url.value
+                ),
                 "drop --extra-index-url, or pin internal packages to a dedicated, owned index.",
-                python_config_loc(facts),
+                url.source
+                    .as_ref()
+                    .map(Location::file)
+                    .or_else(|| python_config_loc(facts)),
             ));
         }
 
