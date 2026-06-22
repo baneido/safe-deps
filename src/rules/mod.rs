@@ -238,7 +238,9 @@ fn apply_suppressions(
 fn unused_suppression_list(suppressions: &[Suppression], used: &HashSet<String>) -> Vec<String> {
     let mut unused = Vec::new();
     for supp in suppressions {
-        let key = format!("{}@{}", supp.rule, supp.path);
+        // Normalize the path the same way `ParsedSuppression` does so the key
+        // matches what `apply_suppressions` inserts into `used`.
+        let key = format!("{}@{}", supp.rule, normalize_suppression_path(&supp.path));
         if !used.contains(&key) {
             unused.push(key);
         }
@@ -249,6 +251,9 @@ fn unused_suppression_list(suppressions: &[Suppression], used: &HashSet<String>)
 
 struct ParsedSuppression {
     rule: String,
+    /// The suppression `path` after normalization (leading `./` stripped,
+    /// separators unified to `/`). Used for glob compilation and exact-match
+    /// comparison against normalized finding paths.
     path: String,
     glob: Glob,
     expired: Option<String>,
@@ -257,9 +262,27 @@ struct ParsedSuppression {
     line: Option<u32>,
 }
 
+/// Normalize a suppression `path` so it can be compiled as a glob and
+/// compared against finding paths that have already been normalized by
+/// [`Finding::location_path_string`].
+///
+/// - converts `\` to `/` (Windows paths written with backslashes)
+/// - strips a leading `./` (backslash conversion happens first so `.\` also
+///   normalizes to `./` before the strip)
+fn normalize_suppression_path(path: &str) -> String {
+    let with_forward_slashes = path.replace('\\', "/");
+    with_forward_slashes
+        .strip_prefix("./")
+        .map(str::to_owned)
+        .unwrap_or(with_forward_slashes)
+}
+
 impl ParsedSuppression {
     fn new(idx: usize, supp: &Suppression) -> Option<Self> {
-        let glob = Glob::new(&supp.path).ok()?;
+        // Normalize before compiling so `./packages/**` and `packages/**`
+        // produce identical matchers and are treated as the same suppression.
+        let normalized_path = normalize_suppression_path(&supp.path);
+        let glob = Glob::new(&normalized_path).ok()?;
         let today = crate::config::today_ymd();
         let expired = supp.expires.as_ref().and_then(|expires| {
             // A suppression is expired on or after its expiry date. Compare
@@ -275,7 +298,7 @@ impl ParsedSuppression {
         let _ = idx;
         Some(Self {
             rule: supp.rule.clone(),
-            path: supp.path.clone(),
+            path: normalized_path,
             glob,
             expired,
             ecosystem: supp.ecosystem.clone(),
@@ -288,10 +311,12 @@ impl ParsedSuppression {
         if finding.rule_id.as_str() != self.rule {
             return false;
         }
-        let path = finding.location_path_string();
-        let path = path.strip_prefix("./").unwrap_or(&path);
-        let target = self.path.strip_prefix("./").unwrap_or(&self.path);
-        if !self.glob.compile_matcher().is_match(path) && path != target {
+        let raw = finding.location_path_string();
+        // `location_path_string` normalizes separators to `/`; strip any
+        // remaining leading `./` so finding paths match suppression globs that
+        // have already been normalized via `normalize_suppression_path`.
+        let path = raw.strip_prefix("./").unwrap_or(raw.as_str());
+        if !self.glob.compile_matcher().is_match(path) && path != self.path {
             return false;
         }
         if let Some(eco) = &self.ecosystem {
@@ -310,5 +335,125 @@ impl ParsedSuppression {
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::config::Suppression;
+    use crate::ecosystems::{Ecosystem, PackageManager};
+    use crate::rule::{Confidence, Finding, Location, RuleId, Severity};
+
+    use super::{normalize_suppression_path, ParsedSuppression};
+
+    fn make_finding(rule: &str, path: &str) -> Finding {
+        Finding {
+            rule_id: RuleId::new(rule),
+            severity: Severity::Warning,
+            confidence: Confidence::High,
+            message: String::new(),
+            location: Some(Location::file(PathBuf::from(path))),
+            project_root: PathBuf::from("."),
+            ecosystem: Ecosystem::JavaScript,
+            package_manager: Some(PackageManager::Npm),
+            remediation: None,
+        }
+    }
+
+    fn make_suppression(rule: &str, path: &str) -> Suppression {
+        Suppression {
+            rule: rule.to_string(),
+            path: path.to_string(),
+            reason: "test".to_string(),
+            expires: None,
+            ecosystem: None,
+            package_manager: None,
+            line: None,
+        }
+    }
+
+    // --- normalize_suppression_path -------------------------------------------
+
+    #[test]
+    fn normalize_strips_dot_slash_prefix() {
+        assert_eq!(normalize_suppression_path("./packages/**"), "packages/**");
+    }
+
+    #[test]
+    fn normalize_leaves_bare_path_unchanged() {
+        assert_eq!(normalize_suppression_path("packages/**"), "packages/**");
+    }
+
+    #[test]
+    fn normalize_converts_backslashes_to_forward_slashes() {
+        assert_eq!(
+            normalize_suppression_path(r"packages\app\package.json"),
+            "packages/app/package.json"
+        );
+    }
+
+    #[test]
+    fn normalize_strips_dot_slash_and_converts_backslashes() {
+        // Backslash conversion happens first so `.\` → `./` is then stripped.
+        assert_eq!(
+            normalize_suppression_path(r".\packages\app\package.json"),
+            "packages/app/package.json"
+        );
+    }
+
+    // --- ParsedSuppression::matches -------------------------------------------
+
+    #[test]
+    fn dot_slash_glob_matches_nested_finding() {
+        // `./packages/**` must match `packages/app/package.json`.
+        let supp = make_suppression("SD001", "./packages/**");
+        let parsed = ParsedSuppression::new(0, &supp).unwrap();
+        let finding = make_finding("SD001", "packages/app/package.json");
+        assert!(
+            parsed.matches(&finding),
+            "`./packages/**` should match `packages/app/package.json`"
+        );
+    }
+
+    #[test]
+    fn bare_glob_matches_nested_finding() {
+        // `packages/**` must still match after the fix.
+        let supp = make_suppression("SD001", "packages/**");
+        let parsed = ParsedSuppression::new(0, &supp).unwrap();
+        let finding = make_finding("SD001", "packages/app/package.json");
+        assert!(
+            parsed.matches(&finding),
+            "`packages/**` should match `packages/app/package.json`"
+        );
+    }
+
+    #[test]
+    fn exact_path_with_dot_slash_matches() {
+        // `./package.json` must exactly match a finding at `package.json`.
+        let supp = make_suppression("SD001", "./package.json");
+        let parsed = ParsedSuppression::new(0, &supp).unwrap();
+        let finding = make_finding("SD001", "package.json");
+        assert!(
+            parsed.matches(&finding),
+            "`./package.json` should match `package.json`"
+        );
+    }
+
+    #[test]
+    fn wrong_rule_does_not_match() {
+        let supp = make_suppression("SD002", "./packages/**");
+        let parsed = ParsedSuppression::new(0, &supp).unwrap();
+        let finding = make_finding("SD001", "packages/app/package.json");
+        assert!(!parsed.matches(&finding));
+    }
+
+    #[test]
+    fn unrelated_path_does_not_match() {
+        let supp = make_suppression("SD001", "./other/**");
+        let parsed = ParsedSuppression::new(0, &supp).unwrap();
+        let finding = make_finding("SD001", "packages/app/package.json");
+        assert!(!parsed.matches(&finding));
     }
 }
