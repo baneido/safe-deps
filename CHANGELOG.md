@@ -8,6 +8,16 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Made the crate publishable to crates.io. The release workflow now publishes
+  `safe-deps` to crates.io on a `vX.Y.Z` tag (the new `publish-crate` job), gated
+  on a green build matrix since a publish is irreversible. Authentication uses
+  crates.io Trusted Publishing over GitHub OIDC — a short-lived, scoped token, no
+  long-lived registry secret — matching the keyless cosign signing the release
+  already does. Added a `Cargo.toml` `exclude` list so the published `.crate`
+  ships only source, tests, and reader-facing docs/licenses (dropping the
+  `examples/` fixtures, the 93 KB `package-lock.json`, the Node lint toolchain,
+  docs, and CI config). The first publish is a one-time manual bootstrap (crates.io
+  has no pending-publisher flow); see [RELEASING.md](RELEASING.md).
 - Fixed SD008 (audit missing) duplicate findings and cross-package attribution in monorepos
   (#96). It was a project-scoped rule that nonetheless decided from the whole
   workspace's CI facts, so it fired once per package (duplicates) and let one

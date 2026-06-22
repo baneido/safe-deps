@@ -110,6 +110,41 @@ jobs:
           checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  publish-crate:
+    name: publish to crates.io
+    # Gate on the full build matrix: a crates.io publish is irreversible (a
+    # version can only be yanked, never replaced), so do not push the crate
+    # unless safe-deps compiled on every release target first.
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # crates.io Trusted Publishing via GitHub OIDC
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          # A fresh release build; the shared CI cache buys little here and a
+          # clean tree avoids any chance of a stale artifact in the package.
+          cache: "false"
+      # Mint a short-lived, scoped publish token via GitHub OIDC — no long-lived
+      # CARGO_REGISTRY_TOKEN secret to store or leak. Mirrors the keyless OIDC
+      # signing the `sign` job already uses. Requires a one-time Trusted
+      # Publisher registration for this repo+workflow on crates.io (see
+      # RELEASING.md). The action's post-step revokes the token when the job ends.
+      - name: Authenticate to crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+      - name: Publish
+        # --locked publishes against the committed Cargo.lock (verify-version
+        # already confirmed the tag matches the crate version). Re-running for an
+        # already-published version fails by design; that is the maintainer's cue.
+        run: cargo publish --locked --token "${{ steps.auth.outputs.token }}"
+
   sign:
     name: sign checksums
     needs: build

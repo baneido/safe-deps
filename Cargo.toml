@@ -13,6 +13,28 @@ repository = "https://github.com/baneido/safe-deps"
 readme = "README.md"
 keywords = ["security", "supply-chain", "linter", "dependencies", "ci"]
 categories = ["command-line-utilities", "development-tools"]
+# Keep the published `.crate` lean: ship only what is needed to build and use the
+# crate (src/, tests/, Cargo.lock, and the reader-facing docs/licenses). Everything
+# excluded here is dev-process tooling or fixtures with no value to a crate
+# consumer — notably the `examples/` linter fixtures (npm/pip projects, not Rust
+# example targets; the 93 KB `package-lock.json` lives under them and at the root)
+# and the Node-based markdown/spell-lint toolchain. `cargo publish` already drops
+# anything in `.gitignore` (target/, node_modules/), so this only trims the rest.
+exclude = [
+    "/.github",
+    "/docs",
+    "/examples",
+    "/package.json",
+    "/package-lock.json",
+    "/.npmrc",
+    "/.cspell.json",
+    "/.markdownlint.json",
+    "/deny.toml",
+    "/CLAUDE.md",
+    "/CONTRIBUTING.md",
+    "/DEVELOPMENT.md",
+    "/RELEASING.md",
+]
 
 [[bin]]
 name = "safe-deps"

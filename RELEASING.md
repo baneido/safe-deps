@@ -1,8 +1,17 @@
 # Releasing
 
-`safe-deps` is **not yet published to crates.io**; it is built from source. This
-document is the checklist for when a tagged release (and eventual crates.io
-publish) is cut. It is for maintainers.
+`safe-deps` is distributed two ways: prebuilt binaries on the GitHub Release and
+the crate on **crates.io** (`cargo install safe-deps` / as a library dependency).
+Both are produced automatically by [`.github/workflows/release.yml`](.github/workflows/release.yml)
+when a `vX.Y.Z` tag is pushed. This document is the maintainer checklist for
+cutting that tag.
+
+> **First publish is a one-time manual bootstrap.** The automated `publish-crate`
+> job authenticates with crates.io Trusted Publishing (GitHub OIDC, no long-lived
+> token) — but unlike PyPI, crates.io has **no "pending publisher"**: the Trusted
+> Publishing settings only appear *after* the crate exists, so they cannot be
+> configured before the first publish. Bootstrap once, then automation takes over —
+> see [Bootstrapping the first crates.io release](#bootstrapping-the-first-cratesio-release).
 
 ## Versioning
 
@@ -26,31 +35,74 @@ flagging a case it previously missed); call this out in the changelog.
    the command in that file's header), and confirm `cargo deny check` passes so no
    new license slipped past the [`deny.toml`](deny.toml) allow-list.
 4. **Bump the version** in `Cargo.toml` and commit the updated `Cargo.lock`.
-5. **Verify the release build:**
+5. **Verify the release build and the package:**
 
    ```bash
    cargo build --release
    cargo run --release -- check .
+   cargo package --locked      # builds the .crate and runs the verify build
+   cargo package --list        # confirm no dev-only files crept in (the `exclude`
+                               # list in Cargo.toml trims examples/, docs/, the
+                               # Node lint toolchain, and CI config)
    ```
 
-## Tagging
+## Bootstrapping the first crates.io release
+
+The very first publish is manual — crates.io has no pending-publisher flow, so the
+Trusted Publishing settings do not exist until the crate does. Do this once:
+
+1. **Create a scoped API token.** On crates.io → *Account Settings → API Tokens*,
+   create one with the `publish-new` scope. Treat it as a secret; you discard it
+   in step 3 — automation never stores a token.
+2. **Publish from your machine** after the pre-release checklist passes:
+
+   ```bash
+   cargo publish --locked --token "$CRATES_IO_TOKEN"
+   ```
+
+   This creates the `safe-deps` crate on crates.io.
+3. **Register the Trusted Publisher.** Now that the crate exists, open the crate's
+   *Settings → Trusted Publishing* and add a GitHub Actions publisher: repository
+   `baneido/safe-deps`, workflow `release.yml`, environment blank. Then revoke the
+   step-1 token.
+
+You can still push the matching `vX.Y.Z` tag for this first version to get its
+binary release, SBOM, and signatures — the `publish-crate` job will fail with
+"crate already uploaded", which is harmless: it is an independent job, so the
+build/sign/sbom jobs still complete. Every version *after* the bootstrap publishes
+fully automatically over OIDC.
+
+## Tagging (this is what publishes)
+
+Pushing the tag is the release action — it triggers `release.yml`, which
+verifies the tag matches `Cargo.toml`, builds the per-target binaries, **publishes
+the crate to crates.io** (`publish-crate` job, gated on a green build matrix), and
+signs the checksums + attaches the SBOM.
 
 ```bash
 git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
-## Publishing to crates.io (when ready)
+A crates.io publish is irreversible — a version can only be yanked, never
+replaced — so the workflow publishes only after every release target compiles. If
+the `publish-crate` job fails after the crate is already live (e.g. a re-run for a
+version that published successfully), do **not** re-tag; bump to the next patch
+version instead.
 
-The crate is not published yet. When it is:
+### Manual publish (fallback)
+
+Only if the automated `publish-crate` job is unavailable. Requires a crates.io API
+token with publish scope:
 
 ```bash
 cargo publish --dry-run     # verify the package contents and metadata
-cargo publish
+cargo publish --locked
 ```
 
-Ensure `Cargo.toml` carries the required metadata (`description`, `license`,
-`repository`, `readme`, `keywords`, `categories`) before the first publish.
+`Cargo.toml` already carries the required metadata (`description`, `license`,
+`repository`, `readme`, `keywords`, `categories`) and an `exclude` list that keeps
+the published `.crate` lean.
 
 ## Advisory baseline
 
