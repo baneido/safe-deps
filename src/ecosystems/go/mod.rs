@@ -86,6 +86,7 @@ impl Analyzer for GoAnalyzer {
             covered_by_workspace_lockfile: false,
             has_legacy_bun_lockfile: false,
             parse_diagnostics,
+            pip_requirements: Vec::new(),
         })
     }
 }

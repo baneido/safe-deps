@@ -91,6 +91,7 @@ impl Analyzer for CargoAnalyzer {
             covered_by_workspace_lockfile: workspace::covered_by_workspace(ctx, dir),
             has_legacy_bun_lockfile: false,
             parse_diagnostics,
+            pip_requirements: Vec::new(),
         })
     }
 }
