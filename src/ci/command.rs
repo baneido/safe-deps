@@ -157,7 +157,6 @@ fn value_taking_options(prog: &str) -> &'static [&'static str] {
         "pnpm" => &[
             "--filter",
             "-F",
-            "--workspace-root",
             "--dir",
             "-C",
             "--reporter",
@@ -173,10 +172,7 @@ fn value_taking_options(prog: &str) -> &'static [&'static str] {
             "--network-timeout",
             "--proxy",
             "--https-proxy",
-            "--offline",
-            "--prefer-offline",
             "--modules-folder",
-            "--emoji",
         ],
         "bun" => &["--cwd", "--registry", "--tag", "--filter", "-F"],
         "uv" => &[
@@ -219,10 +215,7 @@ fn value_taking_options(prog: &str) -> &'static [&'static str] {
             "--exists-action",
             "--cert",
             "--client-cert",
-            "--isolated",
             "--cache-dir",
-            "--no-cache-dir",
-            "--disable-pip-version-check",
         ],
         _ => &[],
     }
@@ -909,5 +902,90 @@ mod tests {
                 sub: Some("sync".into())
             })
         );
+    }
+
+    // Regression tests for boolean flags that must NOT consume the next token
+    // (issue #87 / PR #112 review comment).
+
+    #[test]
+    fn pip_boolean_flag_isolated_does_not_consume_subcommand() {
+        // `--isolated` is a boolean toggle; `install` must not be swallowed as
+        // its value. SD002 must still fire for this hashless full install.
+        let s = seg("pip --isolated install -r requirements.txt");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        assert_eq!(positionals(&s[0]), vec!["install"]);
+        let inv = invocation(&s[0]).unwrap();
+        assert!(is_install(&inv), "pip --isolated install should be install");
+    }
+
+    #[test]
+    fn pip_boolean_flag_no_cache_dir_does_not_consume_subcommand() {
+        // `--no-cache-dir` is a boolean toggle; `install` must survive as the
+        // subcommand so SD002 continues to fire.
+        let s = seg("pip --no-cache-dir install -r requirements.txt");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        let inv = invocation(&s[0]).unwrap();
+        assert!(is_install(&inv));
+    }
+
+    #[test]
+    fn pip_boolean_flag_disable_pip_version_check_does_not_consume_subcommand() {
+        // `--disable-pip-version-check` is a boolean toggle.
+        let s = seg("pip --disable-pip-version-check install -r requirements.txt");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        let inv = invocation(&s[0]).unwrap();
+        assert!(is_install(&inv));
+    }
+
+    #[test]
+    fn yarn_boolean_flag_offline_does_not_consume_subcommand() {
+        // `--offline` is a boolean toggle for yarn; `install` must not be
+        // swallowed as its value. SD002 must still fire.
+        let s = seg("yarn --offline install");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        assert_eq!(positionals(&s[0]), vec!["install"]);
+        let inv = invocation(&s[0]).unwrap();
+        assert!(is_install(&inv), "yarn --offline install should be install");
+    }
+
+    #[test]
+    fn yarn_boolean_flag_prefer_offline_does_not_consume_subcommand() {
+        // `--prefer-offline` is a boolean toggle for yarn.
+        let s = seg("yarn --prefer-offline install");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        let inv = invocation(&s[0]).unwrap();
+        assert!(is_install(&inv));
+    }
+
+    #[test]
+    fn yarn_boolean_flag_emoji_does_not_consume_subcommand() {
+        // `--emoji` is a boolean toggle for yarn.
+        let s = seg("yarn --emoji install");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        let inv = invocation(&s[0]).unwrap();
+        assert!(is_install(&inv));
+    }
+
+    #[test]
+    fn real_value_taking_pip_flags_still_consume_their_value() {
+        // `--cache-dir` truly takes a value; the directory must be consumed and
+        // `install` must still be recognized as the subcommand.
+        let s = seg("pip --cache-dir /tmp/pip-cache install -r requirements.txt");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        assert_eq!(positionals(&s[0]), vec!["install"]);
+    }
+
+    #[test]
+    fn npm_prefix_and_workspace_flags_still_work() {
+        // Existing behaviors must remain intact after the boolean-flag cleanup.
+        let s = seg("npm --prefix web ci");
+        assert_eq!(subcommand(&s[0]), Some("ci"));
+        assert_eq!(positionals(&s[0]), vec!["ci"]);
+
+        let s2 = seg("npm install --workspace packages/app");
+        assert_eq!(positionals(&s2[0]), vec!["install"]);
+
+        let s3 = seg("npm install lodash");
+        assert_eq!(positionals(&s3[0]), vec!["install", "lodash"]);
     }
 }
