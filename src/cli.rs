@@ -442,8 +442,7 @@ fn validate_rule_ids(raw_ids: &[String]) -> Result<std::collections::HashSet<Str
     if raw_ids.is_empty() {
         return Ok(std::collections::HashSet::new());
     }
-    let known: std::collections::HashSet<String> =
-        all_rules().iter().map(|r| r.id().to_string()).collect();
+    let known: std::collections::HashSet<String> = all_rules().iter().map(|r| r.id().0).collect();
     let mut normalized = std::collections::HashSet::new();
     for raw in raw_ids {
         let id = normalize_rule_id(raw);
