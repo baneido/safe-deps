@@ -55,10 +55,13 @@ allow_local_path_dependencies to accept a deliberate choice."
     }
 }
 
-/// Go CI env / `go env -w` assignments that GLOBALLY disable checksum-database
+/// Declarative CI `env:` assignments that GLOBALLY disable Go's checksum-database
 /// verification, weakening module integrity. Returns at most one finding per Go
 /// project, anchored on its `go.mod`, so a multi-module workspace surfaces the
 /// concern per module without duplicating one CI env across unrelated managers.
+///
+/// Note: `go env -w` command invocations in CI scripts are not yet inspected;
+/// only declarative `env:` blocks parsed from GitHub Actions workflows are checked.
 ///
 /// `GOPRIVATE`/`GONOSUMDB`/`GONOSUMCHECK` scoped to specific module path patterns
 /// is intentional, recommended configuration and is deliberately NOT flagged;
@@ -181,7 +184,7 @@ fn classify(dep: &Dependency, policy: &Policy) -> Option<(String, &'static str)>
         }
         DependencySource::RegistryReplaced { replacement } => Some((
             format!(
-                "source `{}` is redirected to `{}` via `.cargo/config.toml` `replace-with`; this reroutes the whole crate graph",
+                "source `{}` is redirected to `{}` via `[source]` `replace-with`; this reroutes the whole crate graph",
                 dep.name, replacement
             ),
             "remove the [source] replace-with redirect, or document and pin the mirror so resolution is reviewed.",
@@ -238,6 +241,8 @@ mod tests {
         // GONOSUMCHECK/GONOSUMDB are pattern lists; only the wildcard `*` is a
         // blanket bypass.
         assert!(go_disabling_env("GONOSUMCHECK", "*").is_some());
+        assert!(go_disabling_env("GONOSUMDB", "*").is_some());
+        // Case-insensitive matching: lowercase variants must also be detected.
         assert!(go_disabling_env("gonosumdb", "*").is_some());
 
         // Pattern-list values like `1`/`on` are literal patterns, not "off".
