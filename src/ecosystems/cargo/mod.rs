@@ -13,6 +13,7 @@
 mod depsource;
 mod lockfile;
 mod manifest;
+mod sourceconfig;
 mod workspace;
 
 use crate::ecosystems::{
@@ -80,14 +81,28 @@ impl Analyzer for CargoAnalyzer {
             project.kind = parsed.kind;
         }
 
+        // Merge manifest dependency sources with `.cargo/config.toml`
+        // `[source]` `replace-with` redirects. The config file is surfaced as a
+        // scanned config so suppressions/reporting can reference it.
+        let mut dependencies = parsed.dependencies;
+        let source_replacements = sourceconfig::source_replacements(ctx, dir);
+        let configs = source_replacements
+            .iter()
+            .map(|d| FileFact {
+                relative: d.file.clone(),
+            })
+            .take(1)
+            .collect();
+        dependencies.extend(source_replacements);
+
         Ok(ProjectFacts {
             project,
             manifest,
             lockfiles: lockfile::lockfiles(ctx, dir),
-            configs: Vec::new(),
+            configs,
             has_manifest_dependencies: parsed.has_dependencies,
             install_settings: InstallSettings::default(),
-            dependencies: parsed.dependencies,
+            dependencies,
             covered_by_workspace_lockfile: workspace::covered_by_workspace(ctx, dir),
             has_legacy_bun_lockfile: false,
             parse_diagnostics,
@@ -222,6 +237,33 @@ mod tests {
             !sub.covered_by_workspace_lockfile,
             "an excluded crate is not covered by the workspace lock"
         );
+    }
+
+    #[test]
+    fn cargo_config_source_replace_with_is_a_dependency_source() {
+        let dir = ws(&[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n",
+            ),
+            ("src/main.rs", "fn main() {}\n"),
+            (
+                ".cargo/config.toml",
+                "[source.crates-io]\nreplace-with = \"mirror\"\n[source.mirror]\nregistry = \"https://internal.example/index\"\n",
+            ),
+        ]);
+        let facts = facts_for(&dir);
+        let replaced = facts[0]
+            .dependencies
+            .iter()
+            .find(|d| {
+                matches!(
+                    d.source,
+                    crate::ecosystems::DependencySource::RegistryReplaced { .. }
+                )
+            })
+            .expect("source replacement is extracted");
+        assert_eq!(replaced.name, "crates-io");
     }
 
     #[test]

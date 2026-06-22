@@ -2,12 +2,16 @@
 //!
 //! Flags dependencies that resolve from something other than a registry version
 //! in a way that weakens reproducibility or integrity: floating Git refs,
-//! SSH-based VCS dependencies, direct tarball URLs, and local path dependencies
-//! in production groups. Registry and internal workspace references are safe.
-//! `[policy] allow_git_dependencies` and `allow_local_path_dependencies` opt out
-//! of the respective findings.
+//! SSH-based VCS dependencies, direct tarball URLs, local path dependencies in
+//! production groups, and Cargo `[source]` `replace-with` registry redirects.
+//! Registry and internal workspace references are safe. For Go, CI environment
+//! that disables checksum-database verification (`GOFLAGS=-insecure`,
+//! `GONOSUMCHECK`, `GOSUMDB=off`, `GOINSECURE`) is also flagged, since it lets
+//! modules resolve without integrity checks. `[policy] allow_git_dependencies`
+//! and `allow_local_path_dependencies` opt out of the respective findings.
 
-use crate::ecosystems::{Dependency, DependencySource, ProjectFacts};
+use crate::ci::CiFacts;
+use crate::ecosystems::{Dependency, DependencySource, Ecosystem, ProjectFacts};
 use crate::rule::{Confidence, Finding, Location, Policy, Rule, RuleId, RuleInput, Severity};
 
 pub struct Sd006;
@@ -24,24 +28,95 @@ impl Rule for Sd006 {
     fn explanation(&self) -> &'static str {
         "Dependencies pulled from a moving Git ref, an SSH VCS URL, a direct \
 tarball, or a local filesystem path are not reproducible or integrity-checked \
-the way registry releases are. Pin Git dependencies to a commit, publish \
-internal packages to a registry, and keep local path dependencies out of \
-production groups. Declare [policy] allow_git_dependencies or \
+the way registry releases are. A Cargo [source] replace-with redirect reroutes \
+the whole crate graph; Go CI that disables the checksum database (GOFLAGS=-insecure, \
+GONOSUMCHECK, GOSUMDB=off, GOINSECURE) installs modules without integrity checks. \
+Pin Git dependencies to a commit, publish internal packages to a registry, keep \
+local path dependencies out of production groups, review source redirects, and \
+leave Go's checksum database enabled. Declare [policy] allow_git_dependencies or \
 allow_local_path_dependencies to accept a deliberate choice."
     }
 
     fn evaluate(&self, input: &RuleInput) -> Vec<Finding> {
         let facts = input.facts;
         let policy = input.policy;
-        facts
+        let mut findings: Vec<Finding> = facts
             .dependencies
             .iter()
             .filter_map(|dep| {
                 classify(dep, policy)
                     .map(|(message, remediation)| finding(facts, dep, message, remediation))
             })
-            .collect()
+            .collect();
+        findings.extend(go_sumdb_findings(facts, input.ci));
+        findings
     }
+}
+
+/// Go CI env / `go env -w` assignments that disable checksum-database
+/// verification, weakening module integrity. Returns at most one finding per Go
+/// project, anchored on its `go.mod`, so a multi-module workspace surfaces the
+/// concern per module without duplicating one CI env across unrelated managers.
+///
+/// Bare `GOPRIVATE`/`GONOSUMDB` for private paths is intentional, recommended
+/// configuration and is deliberately NOT flagged; only blanket
+/// integrity-disabling values are.
+fn go_sumdb_findings(facts: &ProjectFacts, ci: &CiFacts) -> Vec<Finding> {
+    if facts.project.ecosystem != Ecosystem::Go {
+        return Vec::new();
+    }
+    let Some(manifest) = facts.manifest.as_ref() else {
+        return Vec::new();
+    };
+    let Some((var, value)) = ci
+        .env
+        .iter()
+        .find_map(|e| go_disabling_env(&e.name, &e.value))
+    else {
+        return Vec::new();
+    };
+    vec![Finding {
+        rule_id: RuleId::new("SD006"),
+        severity: Severity::Warning,
+        confidence: Confidence::Medium,
+        message: format!(
+            "CI sets `{var}={value}`, disabling Go's module checksum database; modules resolve without integrity checks"
+        ),
+        location: Some(Location::file(&manifest.relative)),
+        project_root: facts.project.root.clone(),
+        ecosystem: facts.project.ecosystem,
+        package_manager: Some(facts.project.package_manager),
+        remediation: Some(
+            "leave the Go checksum database (GOSUMDB) enabled; scope GOPRIVATE/GONOSUMDB to specific private module paths instead of disabling verification globally."
+                .to_string(),
+        ),
+    }]
+}
+
+/// Whether a CI env assignment disables Go checksum-database verification.
+/// Returns the normalized `(name, value)` to surface in the finding.
+fn go_disabling_env(name: &str, value: &str) -> Option<(String, String)> {
+    let upper = name.to_ascii_uppercase();
+    let v = value.trim();
+    match upper.as_str() {
+        // The legacy switches: any truthy/`1`/`on` value disables verification.
+        "GONOSUMCHECK" | "GONOSUMDB" if is_truthy(v) => Some((upper, v.to_string())),
+        // Turning the checksum database off entirely.
+        "GOSUMDB" if v.eq_ignore_ascii_case("off") => Some((upper, "off".to_string())),
+        // `GOFLAGS=-insecure` (or containing it) permits insecure module fetches.
+        "GOFLAGS" if v.split_whitespace().any(|f| f == "-insecure") => {
+            Some((upper, "-insecure".to_string()))
+        }
+        // `GOINSECURE=*` disables HTTPS/sumdb checks for matching modules; a
+        // wildcard applies to everything.
+        "GOINSECURE" if v == "*" => Some((upper, "*".to_string())),
+        _ => None,
+    }
+}
+
+/// Whether an env value is a truthy on/enabled marker.
+fn is_truthy(v: &str) -> bool {
+    matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes")
 }
 
 /// Returns a `(message, remediation)` for an unsafe dependency, or `None` when
@@ -103,6 +178,13 @@ fn classify(dep: &Dependency, policy: &Policy) -> Option<(String, &'static str)>
                 None
             }
         }
+        DependencySource::RegistryReplaced { replacement } => Some((
+            format!(
+                "source `{}` is redirected to `{}` via `.cargo/config.toml` `replace-with`; this reroutes the whole crate graph",
+                dep.name, replacement
+            ),
+            "remove the [source] replace-with redirect, or document and pin the mirror so resolution is reviewed.",
+        )),
     }
 }
 
@@ -124,5 +206,45 @@ fn finding(
         ecosystem: facts.project.ecosystem,
         package_manager: Some(facts.project.package_manager),
         remediation: Some(remediation.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_replacement_is_classified_unsafe() {
+        let dep = Dependency {
+            name: "crates-io".to_string(),
+            spec: "replace-with = \"mirror\"".to_string(),
+            group: crate::ecosystems::DependencyGroup::Production,
+            source: DependencySource::RegistryReplaced {
+                replacement: "mirror".to_string(),
+            },
+            file: std::path::PathBuf::from(".cargo/config.toml"),
+        };
+        let (message, _) = classify(&dep, &Policy::default()).expect("flagged");
+        assert!(message.contains("crates-io"), "{message}");
+        assert!(message.contains("mirror"), "{message}");
+    }
+
+    #[test]
+    fn go_disabling_env_matches_only_integrity_off_values() {
+        assert!(go_disabling_env("GONOSUMCHECK", "1").is_some());
+        assert!(go_disabling_env("gonosumcheck", "on").is_some());
+        assert!(go_disabling_env("GOSUMDB", "off").is_some());
+        assert!(go_disabling_env("GOSUMDB", "OFF").is_some());
+        assert!(go_disabling_env("GOFLAGS", "-mod=mod -insecure").is_some());
+        assert!(go_disabling_env("GOINSECURE", "*").is_some());
+
+        // Recommended/benign configurations are not flagged.
+        assert!(go_disabling_env("GOSUMDB", "sum.golang.org").is_none());
+        assert!(go_disabling_env("GONOSUMCHECK", "0").is_none());
+        assert!(go_disabling_env("GOPRIVATE", "github.com/me/*").is_none());
+        assert!(go_disabling_env("GONOSUMDB", "github.com/me/*").is_none());
+        assert!(go_disabling_env("GOFLAGS", "-mod=readonly").is_none());
+        assert!(go_disabling_env("GOINSECURE", "internal.example/*").is_none());
+        assert!(go_disabling_env("GOOS", "linux").is_none());
     }
 }

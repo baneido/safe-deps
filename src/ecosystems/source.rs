@@ -48,6 +48,11 @@ pub enum DependencySource {
     Tarball,
     /// An internal workspace/catalog reference (never a finding).
     Workspace,
+    /// A registry whose resolution is globally redirected to another source via
+    /// Cargo `[source]` `replace-with` in `.cargo/config.toml`. `replacement`
+    /// is the name of the source it points at. This reroutes the whole crate
+    /// graph for everyone who builds the project, so it is integrity-relevant.
+    RegistryReplaced { replacement: String },
 }
 
 /// A single declared dependency, normalized across ecosystems.

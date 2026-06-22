@@ -1707,6 +1707,92 @@ fn sd006_go_normal_requires_are_clean() {
     assert!(findings_of(&check_json(&ws, &[]), "SD006").is_empty());
 }
 
+#[test]
+fn sd006_flags_cargo_source_replace_with() {
+    let manifest = "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n";
+    let config = "\
+[source.crates-io]
+replace-with = \"mirror\"
+
+[source.mirror]
+registry = \"https://internal.example/index\"
+";
+    let ws = workspace(&[
+        ("Cargo.toml", manifest),
+        ("Cargo.lock", "version = 3\n"),
+        (".cargo/config.toml", config),
+    ]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{sd006:?}");
+    let msg = sd006[0]["message"].as_str().unwrap();
+    assert!(msg.contains("crates-io"), "{msg}");
+    assert!(msg.contains("mirror"), "{msg}");
+    assert_eq!(sd006[0]["location"]["file"], ".cargo/config.toml");
+}
+
+#[test]
+fn sd006_cargo_source_without_replace_with_is_clean() {
+    let manifest = "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n";
+    // A custom registry definition without `replace-with` is not a redirect.
+    let config = "[source.mirror]\nregistry = \"https://internal.example/index\"\n";
+    let ws = workspace(&[
+        ("Cargo.toml", manifest),
+        ("Cargo.lock", "version = 3\n"),
+        (".cargo/config.toml", config),
+    ]);
+    assert!(findings_of(&check_json(&ws, &[]), "SD006").is_empty());
+}
+
+#[test]
+fn sd006_flags_go_sumdb_disabling_ci_env() {
+    let go_mod = "module m\ngo 1.21\nrequire github.com/x/y v1.2.3\n";
+    let workflow = "\
+name: ci
+on: [push]
+env:
+  GOFLAGS: -insecure
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: go build ./...
+";
+    let ws = workspace(&[
+        ("go.mod", go_mod),
+        ("go.sum", "github.com/x/y v1.2.3 h1:abc=\n"),
+        (".github/workflows/ci.yml", workflow),
+    ]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{sd006:?}");
+    let msg = sd006[0]["message"].as_str().unwrap();
+    assert!(msg.contains("GOFLAGS"), "{msg}");
+    assert!(msg.contains("checksum"), "{msg}");
+    assert_eq!(sd006[0]["location"]["file"], "go.mod");
+}
+
+#[test]
+fn sd006_go_with_safe_ci_env_is_clean() {
+    let go_mod = "module m\ngo 1.21\nrequire github.com/x/y v1.2.3\n";
+    // GOPRIVATE for a private path is recommended, not an integrity bypass.
+    let workflow = "\
+name: ci
+on: [push]
+env:
+  GOPRIVATE: github.com/me/*
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: go build ./...
+";
+    let ws = workspace(&[
+        ("go.mod", go_mod),
+        ("go.sum", "github.com/x/y v1.2.3 h1:abc=\n"),
+        (".github/workflows/ci.yml", workflow),
+    ]);
+    assert!(findings_of(&check_json(&ws, &[]), "SD006").is_empty());
+}
+
 // --- workspace-scan error surfacing (#18) ------------------------------------
 
 #[test]
