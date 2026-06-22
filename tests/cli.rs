@@ -1525,6 +1525,23 @@ fn ci_audit_command_clears_sd008() {
 }
 
 #[test]
+fn ci_bootstrap_install_without_ecosystem_deps_does_not_report_sd008() {
+    // A Rust repo whose CI bootstraps a Python helper (`pip install tox`) has
+    // no Python project dependencies. SD008 must not fire for Python: the
+    // dependency-presence gate requires real deps in the ecosystem, not just a
+    // CI install command (regression for review on src/rules/sd008).
+    let manifest = "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n";
+    let ws = workspace(&[("Cargo.toml", manifest), ("Cargo.lock", "version = 3\n")]);
+    let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "pip install tox");
+    write(ws.path(), ".github/workflows/ci.yml", &workflow);
+    let report = check_json(&ws, &[]);
+    assert!(
+        findings_for(&report, "SD008").is_empty(),
+        "a bootstrap helper install with no Python deps must not trip SD008: {report}"
+    );
+}
+
+#[test]
 fn external_audit_policy_opts_out_of_sd008() {
     let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "npm ci");
     let ws = workspace(&[

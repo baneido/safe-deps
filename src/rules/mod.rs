@@ -108,6 +108,7 @@ pub fn analyze(ctx: &WorkspaceContext, profile: Profile, ci_facts: &CiFacts) -> 
     // command is not duplicated across every project in a monorepo.
     let ws_input = WorkspaceInput {
         ci: ci_facts,
+        facts: &facts_list,
         profile,
         policy: &ctx.config.policy,
     };

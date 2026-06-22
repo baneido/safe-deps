@@ -203,6 +203,12 @@ pub struct RuleInput<'a> {
 /// finding regardless of how many projects the workspace contains.
 pub struct WorkspaceInput<'a> {
     pub ci: &'a CiFacts,
+    /// Facts for every detected member project in the workspace. Workspace
+    /// rules that key off CI commands (which are not tied to a single project)
+    /// can aggregate per-project dependency facts here — e.g. to require that
+    /// an ecosystem actually has manifest dependencies somewhere in the
+    /// workspace before reasoning about its CI installs.
+    pub facts: &'a [ProjectFacts],
     pub profile: Profile,
     pub policy: &'a Policy,
 }

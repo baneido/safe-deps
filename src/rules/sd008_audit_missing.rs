@@ -15,7 +15,7 @@
 
 use crate::ci::command::{self};
 use crate::ci::{CiCommand, CiFacts};
-use crate::ecosystems::{Ecosystem, PackageManager};
+use crate::ecosystems::{Ecosystem, PackageManager, ProjectFacts};
 use crate::rule::{Confidence, Finding, Location, Rule, RuleId, Severity, WorkspaceInput};
 
 pub struct Sd008;
@@ -53,6 +53,17 @@ CircleCI configurations."
         }
         let mut findings = Vec::new();
         for &ecosystem in AUDITED_ECOSYSTEMS {
+            // Require the workspace to actually declare dependencies for this
+            // ecosystem before reasoning about its CI installs. Without this,
+            // a CI bootstrap/helper install (a Rust repo running `pip install
+            // tox`, or `npm install` of a release helper) would trip SD008 even
+            // though the repo has no project dependencies for that ecosystem.
+            // This is the workspace-scoped equivalent of the per-project
+            // `has_manifest_dependencies` gate the rule used before it moved to
+            // workspace scope.
+            if !workspace_has_dependencies(input.facts, ecosystem) {
+                continue;
+            }
             // Anchor the finding to the first install command for this ecosystem;
             // its absence is also the install gate (no install -> nothing to
             // audit). An audit anywhere in the workspace's CI clears it.
@@ -81,6 +92,17 @@ CircleCI configurations."
         }
         findings
     }
+}
+
+/// Whether any detected project in the workspace declares manifest
+/// dependencies for `ecosystem`. Aggregates the per-project
+/// `has_manifest_dependencies` fact so a CI install only matters when the
+/// workspace really has dependencies in that ecosystem (not just a CI
+/// bootstrap/helper install).
+fn workspace_has_dependencies(facts: &[ProjectFacts], ecosystem: Ecosystem) -> bool {
+    facts
+        .iter()
+        .any(|f| f.project.ecosystem == ecosystem && f.has_manifest_dependencies)
 }
 
 /// The first CI command (in `(file, line)` order) that installs `ecosystem`'s
@@ -134,6 +156,7 @@ fn audit_remediation(ecosystem: Ecosystem) -> &'static str {
 mod tests {
     use super::*;
     use crate::ci::CiCommand;
+    use crate::ecosystems::{InstallSettings, Project, ProjectKind};
     use crate::rule::{Policy, Profile};
 
     fn ci(commands: &[&str]) -> CiFacts {
@@ -151,14 +174,48 @@ mod tests {
         }
     }
 
-    fn findings(ci: &CiFacts) -> Vec<Finding> {
+    /// A member project that declares (or does not declare) manifest
+    /// dependencies for `pm`'s ecosystem.
+    fn project_facts(pm: PackageManager, has_dependencies: bool) -> ProjectFacts {
+        ProjectFacts {
+            project: Project {
+                root: std::path::PathBuf::from("pkg"),
+                ecosystem: pm.ecosystem(),
+                package_manager: pm,
+                kind: ProjectKind::Application,
+            },
+            manifest: None,
+            lockfiles: Vec::new(),
+            configs: Vec::new(),
+            has_manifest_dependencies: has_dependencies,
+            dependencies: Vec::new(),
+            install_settings: InstallSettings::default(),
+            covered_by_workspace_lockfile: false,
+            has_legacy_bun_lockfile: false,
+            parse_diagnostics: Vec::new(),
+        }
+    }
+
+    fn findings_with_facts(ci: &CiFacts, facts: &[ProjectFacts]) -> Vec<Finding> {
         let policy = Policy::default();
         let input = WorkspaceInput {
             ci,
+            facts,
             profile: Profile::Balanced,
             policy: &policy,
         };
         Sd008.evaluate_workspace(&input)
+    }
+
+    /// Default harness for the CI-logic tests: assume the workspace has real
+    /// JavaScript and Python dependencies, so each test exercises the
+    /// CI-install/audit logic rather than the dependency-presence gate.
+    fn findings(ci: &CiFacts) -> Vec<Finding> {
+        let facts = [
+            project_facts(PackageManager::Npm, true),
+            project_facts(PackageManager::Pip, true),
+        ];
+        findings_with_facts(ci, &facts)
     }
 
     fn install_present(ci: &CiFacts, eco: Ecosystem) -> bool {
@@ -242,16 +299,64 @@ mod tests {
 
     #[test]
     fn external_audit_policy_opts_out() {
-        let facts = ci(&["npm ci"]);
+        let ci = ci(&["npm ci"]);
+        let project_facts = [project_facts(PackageManager::Npm, true)];
         let policy = Policy {
             external_audit: true,
             ..Policy::default()
         };
         let input = WorkspaceInput {
-            ci: &facts,
+            ci: &ci,
+            facts: &project_facts,
             profile: Profile::Balanced,
             policy: &policy,
         };
         assert!(Sd008.evaluate_workspace(&input).is_empty());
+    }
+
+    #[test]
+    fn ci_bootstrap_install_without_workspace_deps_does_not_fire() {
+        // A Rust repo whose CI bootstraps a Python helper (`pip install tox`)
+        // has no Python project dependencies, so SD008 must not fire for
+        // Python even though CI "installs" Python.
+        let ci = ci(&["pip install tox"]);
+        assert!(install_present(&ci, Ecosystem::Python));
+        // Only Rust deps exist in the workspace; no Python manifest deps.
+        let facts = [project_facts(PackageManager::Cargo, true)];
+        assert!(findings_with_facts(&ci, &facts).is_empty());
+    }
+
+    #[test]
+    fn workspace_deps_plus_unaudited_install_fires() {
+        // The workspace has real Python deps and CI installs them without an
+        // audit step: SD008 fires (the historical behavior the gate preserves).
+        let ci = ci(&["pip install -r requirements.txt"]);
+        let facts = [project_facts(PackageManager::Pip, true)];
+        let f = findings_with_facts(&ci, &facts);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].ecosystem, Ecosystem::Python);
+    }
+
+    #[test]
+    fn workspace_with_empty_manifest_does_not_fire() {
+        // A Python project that declares no dependencies (empty manifest)
+        // should not trip SD008 for a CI install of that ecosystem.
+        let ci = ci(&["pip install -r requirements.txt"]);
+        let facts = [project_facts(PackageManager::Pip, false)];
+        assert!(findings_with_facts(&ci, &facts).is_empty());
+    }
+
+    #[test]
+    fn dependency_presence_is_aggregated_across_members() {
+        // No single member has Python deps via the same manager, but one
+        // sibling does — aggregation across members must satisfy the gate.
+        let ci = ci(&["pip install -r requirements.txt"]);
+        let facts = [
+            project_facts(PackageManager::Npm, true),
+            project_facts(PackageManager::Uv, true),
+        ];
+        let f = findings_with_facts(&ci, &facts);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].ecosystem, Ecosystem::Python);
     }
 }
