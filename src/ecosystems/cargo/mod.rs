@@ -328,4 +328,100 @@ mod tests {
             "workspace path dep should be extracted: {dep_names:?}"
         );
     }
+
+    #[test]
+    fn inherited_workspace_dependency_is_production() {
+        // A [workspace.dependencies] git entry inherited by a member's normal
+        // [dependencies] is an active production dependency edge.
+        let dir = ws(&[
+            (
+                "Cargo.toml",
+                "[workspace]\nmembers = [\"crates/a\"]\n\n[workspace.dependencies]\nfoo = { git = \"https://github.com/example/foo\", branch = \"main\" }\n",
+            ),
+            (
+                "crates/a/Cargo.toml",
+                "[package]\nname = \"a\"\n[dependencies]\nfoo = { workspace = true }\n",
+            ),
+            ("crates/a/src/lib.rs", "\n"),
+            ("Cargo.lock", "version = 3\n"),
+        ]);
+        let facts = facts_for(&dir);
+        let root = facts
+            .iter()
+            .find(|f| f.project.root == std::path::Path::new("."))
+            .expect("virtual workspace root should be detected");
+        let foo = root
+            .dependencies
+            .iter()
+            .find(|d| d.name == "foo")
+            .expect("inherited workspace dep should be extracted");
+        assert_eq!(foo.group, crate::ecosystems::DependencyGroup::Production);
+    }
+
+    #[test]
+    fn unused_workspace_dependency_is_not_extracted() {
+        // A [workspace.dependencies] entry no member inherits is just a pool
+        // entry, not an active edge, so it must not be surfaced to SD006.
+        let dir = ws(&[
+            (
+                "Cargo.toml",
+                "[workspace]\nmembers = [\"crates/a\"]\n\n[workspace.dependencies]\nfoo = { git = \"https://github.com/example/foo\", branch = \"main\" }\n",
+            ),
+            (
+                "crates/a/Cargo.toml",
+                "[package]\nname = \"a\"\n[dependencies]\nserde = \"1\"\n",
+            ),
+            ("crates/a/src/lib.rs", "\n"),
+            ("Cargo.lock", "version = 3\n"),
+        ]);
+        let facts = facts_for(&dir);
+        // No member inherits `foo`, so the virtual root has no unsafe sources
+        // and is not even emitted as a project.
+        assert!(
+            facts
+                .iter()
+                .all(|f| f.project.root != std::path::Path::new(".")),
+            "unused workspace dep must not produce a virtual-root project"
+        );
+        assert!(
+            facts
+                .iter()
+                .all(|f| f.dependencies.iter().all(|d| d.name != "foo")),
+            "unused workspace dep must not be extracted"
+        );
+    }
+
+    #[test]
+    fn workspace_dependency_inherited_only_via_dev_is_not_production() {
+        // A [workspace.dependencies] entry inherited solely through a member's
+        // [dev-dependencies] is a development edge, so it must not be classified
+        // as Production (a path dev dep must not become an SD006 prod finding).
+        let dir = ws(&[
+            (
+                "Cargo.toml",
+                "[workspace]\nmembers = [\"crates/a\"]\n\n[workspace.dependencies]\nfoo = { path = \"../foo\" }\n",
+            ),
+            (
+                "crates/a/Cargo.toml",
+                "[package]\nname = \"a\"\n[dev-dependencies]\nfoo = { workspace = true }\n",
+            ),
+            ("crates/a/src/lib.rs", "\n"),
+            ("Cargo.lock", "version = 3\n"),
+        ]);
+        let facts = facts_for(&dir);
+        let root = facts
+            .iter()
+            .find(|f| f.project.root == std::path::Path::new("."))
+            .expect("virtual workspace root should be detected");
+        let foo = root
+            .dependencies
+            .iter()
+            .find(|d| d.name == "foo")
+            .expect("dev-inherited workspace dep should be extracted");
+        assert_eq!(foo.group, crate::ecosystems::DependencyGroup::Development);
+        assert!(
+            !foo.group.is_production(),
+            "dev-only inherited dep must not be production"
+        );
+    }
 }

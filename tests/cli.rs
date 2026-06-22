@@ -1759,6 +1759,57 @@ serde = \"1\"
 }
 
 #[test]
+fn sd006_unused_workspace_dependency_is_clean() {
+    // A [workspace.dependencies] git entry that no member inherits via
+    // `workspace = true` is just a pool entry, not an active edge, so it must
+    // not produce a false-positive SD006 finding.
+    let root_manifest = "\
+[workspace]
+members = [\"crates/app\"]
+
+[workspace.dependencies]
+foo = { git = \"https://github.com/example/foo\", branch = \"main\" }
+";
+    let member_manifest = "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n";
+    let ws = workspace(&[
+        ("Cargo.toml", root_manifest),
+        ("crates/app/Cargo.toml", member_manifest),
+        ("crates/app/src/main.rs", "fn main() {}\n"),
+        ("Cargo.lock", "version = 3\n"),
+    ]);
+    assert!(
+        findings_of(&check_json(&ws, &[]), "SD006").is_empty(),
+        "unused workspace dependency must not be flagged"
+    );
+}
+
+#[test]
+fn sd006_workspace_dependency_inherited_via_dev_only_is_not_production() {
+    // A [workspace.dependencies] path entry inherited solely through a member's
+    // [dev-dependencies] is a development edge. SD006 only flags production path
+    // deps, so this must produce no finding (rather than a wrong production one).
+    let root_manifest = "\
+[workspace]
+members = [\"crates/app\"]
+
+[workspace.dependencies]
+foo = { path = \"../foo\" }
+";
+    let member_manifest =
+        "[package]\nname = \"app\"\n[dev-dependencies]\nfoo = { workspace = true }\n";
+    let ws = workspace(&[
+        ("Cargo.toml", root_manifest),
+        ("crates/app/Cargo.toml", member_manifest),
+        ("crates/app/src/main.rs", "fn main() {}\n"),
+        ("Cargo.lock", "version = 3\n"),
+    ]);
+    assert!(
+        findings_of(&check_json(&ws, &[]), "SD006").is_empty(),
+        "dev-only inherited path dep must not be a production SD006 finding"
+    );
+}
+
+#[test]
 fn sd006_flags_go_local_path_replace() {
     let go_mod = "\
 module example.com/m
