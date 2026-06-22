@@ -271,10 +271,14 @@ struct ParsedSuppression {
 ///   normalizes to `./` before the strip)
 fn normalize_suppression_path(path: &str) -> String {
     let with_forward_slashes = path.replace('\\', "/");
-    with_forward_slashes
-        .strip_prefix("./")
-        .map(str::to_owned)
-        .unwrap_or(with_forward_slashes)
+    // Only strip the leading `./` when non-empty content remains after it.
+    // `"./"` alone must not become `""` — leave it as `"."` so the resulting
+    // glob/key is never empty for a non-empty input.
+    match with_forward_slashes.strip_prefix("./") {
+        Some("") => ".".to_owned(),
+        Some(rest) => rest.to_owned(),
+        None => with_forward_slashes,
+    }
 }
 
 impl ParsedSuppression {
@@ -403,6 +407,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn normalize_dot_slash_only_does_not_become_empty() {
+        // `"./"` (and `".\\"` after backslash normalization) must not collapse
+        // to an empty string — the result must be non-empty for a non-empty input.
+        let result = normalize_suppression_path("./");
+        assert!(
+            !result.is_empty(),
+            "`./` must not normalize to an empty string"
+        );
+        // The canonical form is `"."` (the leading `./` is kept when there is
+        // nothing after it).
+        assert_eq!(result, ".");
+
+        // Windows variant: `".\\"` → `"./"` → same result.
+        let result_win = normalize_suppression_path(r".\");
+        assert!(
+            !result_win.is_empty(),
+            r"`.\` must not normalize to an empty string"
+        );
+        assert_eq!(result_win, ".");
+    }
+
     // --- ParsedSuppression::matches -------------------------------------------
 
     #[test]
@@ -455,5 +481,32 @@ mod tests {
         let parsed = ParsedSuppression::new(0, &supp).unwrap();
         let finding = make_finding("SD001", "packages/app/package.json");
         assert!(!parsed.matches(&finding));
+    }
+
+    #[test]
+    fn windows_backslash_glob_matches_normalized_finding() {
+        // A suppression written with Windows-style backslash separators must
+        // match a finding whose path has already been normalized to forward
+        // slashes by `Finding::location_path_string`.
+        let supp = make_suppression("SD001", r"packages\app\**");
+        let parsed = ParsedSuppression::new(0, &supp).unwrap();
+        let finding = make_finding("SD001", "packages/app/package.json");
+        assert!(
+            parsed.matches(&finding),
+            r"`packages\app\**` (Windows separators) should match `packages/app/package.json`"
+        );
+    }
+
+    #[test]
+    fn windows_dot_backslash_glob_matches_normalized_finding() {
+        // A suppression beginning with `.\` (Windows `.\`) must also match
+        // after the `.\` → `./` → strip-prefix normalisation chain.
+        let supp = make_suppression("SD001", r".\packages\**");
+        let parsed = ParsedSuppression::new(0, &supp).unwrap();
+        let finding = make_finding("SD001", "packages/app/package.json");
+        assert!(
+            parsed.matches(&finding),
+            r"`.\packages\**` (Windows dot+backslash) should match `packages/app/package.json`"
+        );
     }
 }
