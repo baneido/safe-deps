@@ -367,9 +367,9 @@ mod tests {
         assert!(one("npm install lodash", Profile::Balanced).is_none());
         // `-w` short form of --workspace should also work.
         assert!(one("npm install -w packages/app", Profile::Balanced).is_some());
-        // `npm install --workspace packages/app` with frozen flag should not fire.
-        // (No frozen flag for `npm install`, only `npm ci` is fully frozen,
-        // but verify that detecting the install itself still works.)
+        // `npm ci` is the frozen form, so a workspace-scoped `npm ci` must NOT
+        // fire even though the workspace value is a positional.
+        assert!(one("npm --prefix packages/app ci", Profile::Balanced).is_none());
     }
 
     #[test]

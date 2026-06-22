@@ -225,10 +225,18 @@ fn value_taking_options(prog: &str) -> &'static [&'static str] {
 /// consumed by a value-taking option in its space-separated form.  Only tokens
 /// after the real program start are examined; the program token itself is at
 /// `start`.
+///
+/// The leaf program at `start` may be a wrapper around `pip`/`pip3` in a
+/// normalized form (`python -m pip …`, `uv --project . pip …`). Once the wrapper's
+/// own option values are consumed and the effective first positional is seen to be
+/// `pip`/`pip3`, pip's value-taking option allowlist is also applied to the tokens
+/// after that `pip` token — otherwise a pip option value (e.g. the `<url>` in
+/// `--proxy <url>`) would leak into [`positionals`] and shift the derived
+/// subcommand away from `install`.
 fn option_value_indices(tokens: &[String], start: usize) -> std::collections::HashSet<usize> {
-    let prog = leaf(&tokens[start]);
-    let vto = value_taking_options(prog);
+    let mut vto = value_taking_options(leaf(&tokens[start]));
     let mut skip = std::collections::HashSet::new();
+    let mut seen_pip = false;
     let mut i = start + 1;
     while i < tokens.len() {
         let t = &tokens[i];
@@ -239,6 +247,16 @@ fn option_value_indices(tokens: &[String], start: usize) -> std::collections::Ha
                 skip.insert(i + 1);
                 i += 2;
                 continue;
+            }
+        }
+        // The first non-flag token that is not itself a consumed value is the
+        // effective program/subcommand. If it is `pip`/`pip3`, switch to pip's
+        // option allowlist for everything after it so `--proxy <url>` and friends
+        // are consumed rather than leaking into the positionals.
+        if !seen_pip && !t.starts_with('-') && !skip.contains(&i) {
+            seen_pip = true;
+            if matches!(leaf(t), "pip" | "pip3") {
+                vto = value_taking_options("pip");
             }
         }
         i += 1;
@@ -987,5 +1005,43 @@ mod tests {
 
         let s3 = seg("npm install lodash");
         assert_eq!(positionals(&s3[0]), vec!["install", "lodash"]);
+    }
+
+    // Nested pip wrappers: a pip value-taking option (e.g. `--proxy <url>`) must
+    // not leak into the positionals and shift the subcommand off `install`
+    // (PR #112 review comment).
+
+    #[test]
+    fn python_m_pip_value_option_does_not_leak_into_subcommand() {
+        // `python -m pip --proxy <url> install -r ...` — `<url>` is the value of
+        // pip's `--proxy`, not a positional. The effective program is pip even
+        // though the leaf token is `python`, so it must not leak in and shift the
+        // derived subcommand off `install`. (`subcommand`/`positionals` keep the
+        // raw `pip` token; `invocation` unwraps `python -m pip` to pip + install.)
+        let s = seg("python -m pip --proxy http://x install -r requirements.txt");
+        assert_eq!(positionals(&s[0]), vec!["pip", "install"]);
+        assert_eq!(
+            invocation(&s[0]),
+            Some(Invocation {
+                pm: PackageManager::Pip,
+                sub: Some("install".into())
+            })
+        );
+    }
+
+    #[test]
+    fn uv_pip_value_option_does_not_leak_into_subcommand() {
+        // `uv --project . pip --proxy <url> install ...` — `.` is consumed by uv's
+        // `--project` and `<url>` by pip's `--proxy`, leaving `install` as the
+        // recognized subcommand once `uv pip` is unwrapped to pip.
+        let s = seg("uv --project . pip --proxy http://x install -r requirements.txt");
+        assert_eq!(positionals(&s[0]), vec!["pip", "install"]);
+        assert_eq!(
+            invocation(&s[0]),
+            Some(Invocation {
+                pm: PackageManager::Pip,
+                sub: Some("install".into())
+            })
+        );
     }
 }
