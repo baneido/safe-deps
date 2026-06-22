@@ -1538,6 +1538,58 @@ fn external_audit_policy_opts_out_of_sd008() {
 }
 
 #[test]
+fn monorepo_audit_missing_reports_sd008_once() {
+    // A monorepo where the workflow installs every package but only one audits.
+    // SD008 is workspace-scoped: it must fire exactly once (not once per
+    // package) and one package's audit must not be misused as coverage that
+    // clears the rule for a sibling.
+    let pkg = |name: &str| format!(r#"{{ "name": "{name}", "dependencies": {{ "x": "^1" }} }}"#);
+    let ws = workspace(&[
+        ("package.json", r#"{ "name": "root", "private": true }"#),
+        ("package-lock.json", NPM_LOCK),
+        ("packages/app/package.json", &pkg("app")),
+        ("packages/lib/package.json", &pkg("lib")),
+    ]);
+    write(
+        ws.path(),
+        ".github/workflows/ci.yml",
+        "name: ci\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          cd packages/app && npm ci\n          cd packages/lib && npm ci\n",
+    );
+    let report = check_json(&ws, &[]);
+    let sd008 = findings_for(&report, "SD008");
+    assert_eq!(
+        sd008.len(),
+        1,
+        "SD008 must fire once for the workspace, not once per package: {report}"
+    );
+    assert_eq!(sd008[0]["ecosystem"], "javascript");
+    assert_eq!(sd008[0]["location"]["file"], ".github/workflows/ci.yml");
+}
+
+#[test]
+fn monorepo_single_package_audit_clears_sd008() {
+    // Same monorepo, but now the CI audits (anywhere) for the ecosystem. SD008
+    // is cleared workspace-wide; it does not duplicate or partially fire.
+    let pkg = |name: &str| format!(r#"{{ "name": "{name}", "dependencies": {{ "x": "^1" }} }}"#);
+    let ws = workspace(&[
+        ("package.json", r#"{ "name": "root", "private": true }"#),
+        ("package-lock.json", NPM_LOCK),
+        ("packages/app/package.json", &pkg("app")),
+        ("packages/lib/package.json", &pkg("lib")),
+    ]);
+    write(
+        ws.path(),
+        ".github/workflows/ci.yml",
+        "name: ci\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          cd packages/app && npm ci && npm audit\n          cd packages/lib && npm ci\n",
+    );
+    let report = check_json(&ws, &[]);
+    assert!(
+        findings_for(&report, "SD008").is_empty(),
+        "an audit in CI clears SD008 for the whole ecosystem: {report}"
+    );
+}
+
+#[test]
 fn sarif_output_is_valid_and_maps_results() {
     let ws = workspace(&[
         ("package.json", NPM_DEPS),

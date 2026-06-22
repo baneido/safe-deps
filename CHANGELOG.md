@@ -8,6 +8,14 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Fixed SD008 (audit missing) double-counting and misattributing in monorepos
+  (#96). It was a project-scoped rule that nonetheless decided from the whole
+  workspace's CI facts, so it fired once per package (duplicates) and let one
+  package's audit command count as coverage for a sibling. SD008 is now
+  workspace-scoped like SD002/SD009: it emits at most one finding per ecosystem
+  when CI installs that ecosystem's dependencies but never audits them, anchored
+  to the install command's workflow line. Behavior is identical across GitHub
+  Actions, GitLab CI, and CircleCI.
 - Added `examples/` onboarding fixtures: small self-contained projects that each
   trip one rule (`missing-lockfile` → SD001, `npm-insecure-registry` → SD003,
   `pip-extra-index` → SD007), plus a hardened `clean-baseline` that stays clean.
