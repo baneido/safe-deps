@@ -20,10 +20,24 @@ impl CiProvider for GitlabCi {
         "GitLab CI"
     }
     fn matches(&self, relative: &Path) -> bool {
-        relative
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.eq_ignore_ascii_case(".gitlab-ci.yml"))
+        // GitLab CI's canonical configuration file is **only** the
+        // repository-root `.gitlab-ci.yml`.  A file with the same name under a
+        // subdirectory (e.g. `vendor/example/.gitlab-ci.yml`) is not executed
+        // by GitLab — treating it as real CI would produce phantom findings.
+        // Anchoring to a single-component path mirrors how GitHub Actions
+        // anchors to `.github/workflows/` and CircleCI anchors to
+        // `.circleci/config.yml`.
+        let comps: Vec<&std::ffi::OsStr> = relative
+            .components()
+            .filter_map(|c| match c {
+                std::path::Component::Normal(n) => Some(n),
+                _ => None,
+            })
+            .collect();
+        comps.len() == 1
+            && comps[0]
+                .to_str()
+                .is_some_and(|n| n.eq_ignore_ascii_case(".gitlab-ci.yml"))
     }
     fn parse(&self, relative: &Path, text: &str) -> ParsedCi {
         ParsedCi {
@@ -189,9 +203,22 @@ mod tests {
     }
 
     #[test]
-    fn matches_gitlab_ci_file() {
+    fn matches_only_root_gitlab_ci_file() {
+        // Root-level canonical file must match.
         assert!(GitlabCi.matches(Path::new(".gitlab-ci.yml")));
+        // Case-insensitive match still anchored to root.
+        assert!(GitlabCi.matches(Path::new(".GITLAB-CI.YML")));
+
+        // A file with the same name under any subdirectory must NOT match —
+        // GitLab only reads the repository-root `.gitlab-ci.yml`.
+        assert!(!GitlabCi.matches(Path::new("vendor/example/.gitlab-ci.yml")));
+        assert!(!GitlabCi.matches(Path::new("sub/.gitlab-ci.yml")));
+        assert!(!GitlabCi.matches(Path::new("a/b/c/.gitlab-ci.yml")));
+
+        // Unrelated files must not match.
         assert!(!GitlabCi.matches(Path::new(".github/workflows/ci.yml")));
+        assert!(!GitlabCi.matches(Path::new(".circleci/config.yml")));
+        assert!(!GitlabCi.matches(Path::new("gitlab-ci.yml")));
     }
 
     #[test]

@@ -158,4 +158,26 @@ mod tests {
         );
         assert_eq!(redact_url_userinfo("plain-value"), "plain-value");
     }
+
+    #[test]
+    fn providers_match_root_gitlab_ci_but_not_nested() {
+        // The root `.gitlab-ci.yml` must be recognized by a provider.
+        let root = Path::new(".gitlab-ci.yml");
+        assert!(
+            providers().iter().any(|p| p.matches(root)),
+            "no provider matched root .gitlab-ci.yml"
+        );
+        // A nested file with the same name must NOT be matched by any provider —
+        // it is not the canonical GitLab CI configuration file for the repository.
+        let nested = Path::new("vendor/example/.gitlab-ci.yml");
+        assert!(
+            !providers().iter().any(|p| p.matches(nested)),
+            "a provider incorrectly matched nested .gitlab-ci.yml"
+        );
+        let subdir = Path::new("sub/.gitlab-ci.yml");
+        assert!(
+            !providers().iter().any(|p| p.matches(subdir)),
+            "a provider incorrectly matched sub/.gitlab-ci.yml"
+        );
+    }
 }
