@@ -1242,6 +1242,81 @@ dev = [\"internal @ git+https://h/r.git\"]
 }
 
 #[test]
+fn sd006_flags_poetry_git_dependency() {
+    // A floating git dep in [tool.poetry.dependencies] must trigger SD006.
+    let pyproject = r#"
+[tool.poetry.dependencies]
+python = "^3.12"
+foo = { git = "https://github.com/example/foo.git", branch = "main" }
+requests = "^2.31"
+"#;
+    let ws = workspace(&[("pyproject.toml", pyproject)]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "expected 1 SD006 finding: {sd006:?}");
+    assert!(
+        sd006[0]["message"].as_str().unwrap().contains("foo"),
+        "message should mention `foo`: {:?}",
+        sd006[0]["message"]
+    );
+}
+
+#[test]
+fn sd006_flags_poetry_path_dependency() {
+    // A local path dep in [tool.poetry.dependencies] must trigger SD006.
+    let pyproject = r#"
+[tool.poetry.dependencies]
+python = "^3.12"
+bar = { path = "../bar" }
+"#;
+    let ws = workspace(&[("pyproject.toml", pyproject)]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "expected 1 SD006 finding: {sd006:?}");
+    assert!(
+        sd006[0]["message"].as_str().unwrap().contains("bar"),
+        "message should mention `bar`: {:?}",
+        sd006[0]["message"]
+    );
+}
+
+#[test]
+fn sd006_flags_poetry_group_git_dependency() {
+    // A floating git dep in [tool.poetry.group.*.dependencies] must trigger SD006.
+    let pyproject = r#"
+[tool.poetry.dependencies]
+python = "^3.12"
+requests = "^2.31"
+
+[tool.poetry.group.dev.dependencies]
+internal = { git = "https://github.com/example/internal.git", branch = "main" }
+"#;
+    let ws = workspace(&[("pyproject.toml", pyproject)]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "expected 1 SD006 finding: {sd006:?}");
+    assert!(
+        sd006[0]["message"].as_str().unwrap().contains("internal"),
+        "message should mention `internal`: {:?}",
+        sd006[0]["message"]
+    );
+}
+
+#[test]
+fn sd006_poetry_registry_deps_are_safe() {
+    // Plain version constraints in [tool.poetry.dependencies] must not fire SD006.
+    let pyproject = r#"
+[tool.poetry.dependencies]
+python = "^3.12"
+requests = "^2.31"
+flask = ">=2.0"
+"#;
+    let ws = workspace(&[("pyproject.toml", pyproject)]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert!(
+        sd006.is_empty(),
+        "registry-only Poetry deps should not fire SD006: {sd006:?}"
+    );
+}
+
+#[test]
 fn sd005_flags_bun_trusted_wildcard_in_package_json() {
     // Bun reads trustedDependencies from package.json, not bunfig.toml.
     let ws = workspace(&[

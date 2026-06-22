@@ -191,6 +191,40 @@ pub fn classify_cargo_dependency(value: &toml::Value) -> DependencySource {
     DependencySource::Registry
 }
 
+/// Classifies a Poetry dependency value from `[tool.poetry.dependencies]` or
+/// `[tool.poetry.group.*.dependencies]`. A plain string is a version constraint
+/// (Registry). An inline table may carry `git` (+ optional `branch`/`rev`/`tag`),
+/// `path`, or `url`; everything else is a Registry install.
+pub fn classify_poetry_dependency(value: &toml::Value) -> DependencySource {
+    if value.is_str() {
+        return DependencySource::Registry;
+    }
+    let Some(table) = value.as_table() else {
+        return DependencySource::Registry;
+    };
+    if let Some(git) = table.get("git").and_then(|v| v.as_str()) {
+        let pinned = table.contains_key("rev")
+            || table
+                .get("tag")
+                .and_then(|v| v.as_str())
+                .is_some_and(is_pinned_ref);
+        return DependencySource::Git {
+            floating: !pinned,
+            ssh: git.starts_with("ssh://") || git.starts_with("git+ssh"),
+        };
+    }
+    if table.contains_key("path") {
+        return DependencySource::Path;
+    }
+    if let Some(url) = table.get("url").and_then(|v| v.as_str()) {
+        // A direct archive URL (tarball/wheel).
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return DependencySource::Tarball;
+        }
+    }
+    DependencySource::Registry
+}
+
 /// Classifies the right-hand side of a Go `replace` directive. A local
 /// filesystem path is unsafe (replace directives are ignored outside the main
 /// module, so consumers cannot resolve it); a replacement to another module is

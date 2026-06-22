@@ -16,8 +16,8 @@ pub mod python;
 pub mod source;
 
 pub use source::{
-    classify_cargo_dependency, classify_go_replace_target, Dependency, DependencyGroup,
-    DependencySource,
+    classify_cargo_dependency, classify_go_replace_target, classify_poetry_dependency, Dependency,
+    DependencyGroup, DependencySource,
 };
 
 /// Whether a URL uses the plaintext `http` scheme. URL schemes are
