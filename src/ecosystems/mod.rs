@@ -189,6 +189,36 @@ pub struct FileFact {
     pub relative: PathBuf,
 }
 
+/// A setting value paired with the config/manifest file it was declared in.
+///
+/// `source` lets rules point a finding at the file that *actually* supplied the
+/// offending value rather than guessing the first config file that happens to
+/// exist. `None` means the originating file is unknown (the rule then falls back
+/// to its usual location heuristic).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sourced<T> {
+    pub value: T,
+    pub source: Option<PathBuf>,
+}
+
+impl<T> Sourced<T> {
+    /// A value whose originating file is known.
+    pub fn from(value: T, source: PathBuf) -> Self {
+        Self {
+            value,
+            source: Some(source),
+        }
+    }
+
+    /// A value whose originating file is unknown.
+    pub fn anonymous(value: T) -> Self {
+        Self {
+            value,
+            source: None,
+        }
+    }
+}
+
 /// Yarn major generation. SD002 and SD004 apply different settings by version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum YarnGeneration {
@@ -221,13 +251,19 @@ pub struct InstallSettings {
     pub checksum_behavior: Option<String>,
     pub unsafe_http_whitelist: Vec<String>,
 
-    // pip (pip.conf, requirements flags) and uv (uv.toml, pyproject [tool.uv])
-    pub trusted_hosts: Vec<String>,
-    pub index_urls: Vec<String>,
-    pub extra_index_urls: Vec<String>,
+    // pip (pip.conf, requirements flags) and uv (uv.toml, pyproject [tool.uv]).
+    // Index/host settings carry the file that declared each one so a finding
+    // points at the real source when several config files coexist (e.g. both
+    // `pip.conf` and `pip.ini`).
+    pub trusted_hosts: Vec<Sourced<String>>,
+    pub index_urls: Vec<Sourced<String>>,
+    pub extra_index_urls: Vec<Sourced<String>>,
     pub allow_insecure_hosts: Vec<String>,
     pub index_strategy: Option<String>,
     pub require_hashes: Option<bool>,
+    /// File that supplied an enabling `require-hashes`/hash-pin signal, when one
+    /// did. Used by SD004 only as informational provenance.
+    pub require_hashes_source: Option<PathBuf>,
 
     // bun (bunfig.toml)
     pub trusted_dependencies: Vec<String>,

@@ -4,7 +4,7 @@
 //! npm/pnpm `strict-ssl=false` and HTTP registries, Yarn `unsafeHttpWhitelist`,
 //! pip `--trusted-host` and HTTP indexes, and uv `allow-insecure-host`.
 
-use crate::ecosystems::PackageManager;
+use crate::ecosystems::{PackageManager, Sourced};
 use crate::rule::{Confidence, Finding, Location, Rule, RuleId, RuleInput, Severity};
 
 pub struct Sd003;
@@ -68,22 +68,29 @@ allow-insecure-host. Local test exceptions should be scoped narrowly."
                 for host in &settings.trusted_hosts {
                     findings.push(finding(
                         input,
-                        format!("trusted-host '{host}' bypasses TLS verification for pip."),
+                        format!(
+                            "trusted-host '{}' bypasses TLS verification for pip.",
+                            host.value
+                        ),
                         Some("remove --trusted-host or scope it to a pinned internal host."),
-                        pip_config_loc(facts).or_else(|| config_loc(facts, "requirements.txt")),
+                        sourced_loc(host, || {
+                            pip_config_loc(facts).or_else(|| config_loc(facts, "requirements.txt"))
+                        }),
                     ));
                 }
                 for url in settings
                     .index_urls
                     .iter()
                     .chain(settings.extra_index_urls.iter())
-                    .filter(|u| crate::ecosystems::is_http_url(u))
+                    .filter(|u| crate::ecosystems::is_http_url(&u.value))
                 {
                     findings.push(finding(
                         input,
-                        format!("pip index URL uses plaintext HTTP: {url}"),
+                        format!("pip index URL uses plaintext HTTP: {}", url.value),
                         Some("use an https:// index URL."),
-                        pip_config_loc(facts).or_else(|| config_loc(facts, "requirements.txt")),
+                        sourced_loc(url, || {
+                            pip_config_loc(facts).or_else(|| config_loc(facts, "requirements.txt"))
+                        }),
                     ));
                 }
             }
@@ -101,14 +108,16 @@ allow-insecure-host. Local test exceptions should be scoped narrowly."
                     .index_urls
                     .iter()
                     .chain(settings.extra_index_urls.iter())
-                    .filter(|u| crate::ecosystems::is_http_url(u))
+                    .filter(|u| crate::ecosystems::is_http_url(&u.value))
                 {
                     findings.push(finding(
                         input,
-                        format!("uv index URL uses plaintext HTTP: {url}"),
+                        format!("uv index URL uses plaintext HTTP: {}", url.value),
                         Some("use an https:// index URL."),
-                        config_loc(facts, "uv.toml")
-                            .or_else(|| config_loc(facts, "pyproject.toml")),
+                        sourced_loc(url, || {
+                            config_loc(facts, "uv.toml")
+                                .or_else(|| config_loc(facts, "pyproject.toml"))
+                        }),
                     ));
                 }
             }
@@ -156,6 +165,19 @@ fn config_only_loc(facts: &crate::ecosystems::ProjectFacts, basename: &str) -> O
         .iter()
         .find(|c| c.relative.file_name().and_then(|n| n.to_str()) == Some(basename))
         .map(|c| Location::file(&c.relative))
+}
+
+/// Locates a finding on the exact file that declared `setting`, falling back to
+/// `default` (the usual config heuristic) when the source file is unknown. This
+/// keeps a `pip.ini`-only setting off `pip.conf` when both files exist.
+fn sourced_loc<T>(
+    setting: &Sourced<T>,
+    default: impl FnOnce() -> Option<Location>,
+) -> Option<Location> {
+    match &setting.source {
+        Some(path) => Some(Location::file(path)),
+        None => default(),
+    }
 }
 
 /// Returns the location of whichever pip config file (`pip.conf` or `pip.ini`)

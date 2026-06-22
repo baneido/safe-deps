@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::ecosystems::source::classify_python_source;
 use crate::ecosystems::{
     Dependency, DependencyGroup, EcoError, Ecosystem, FileFact, InstallSettings, PackageManager,
-    Project, ProjectFacts, ProjectKind,
+    Project, ProjectFacts, ProjectKind, Sourced,
 };
 use crate::filesystem::{files_named, project_join, WorkspaceContext};
 
@@ -64,6 +64,21 @@ impl crate::ecosystems::Analyzer for PythonAnalyzer {
             _ => Err(EcoError::UnknownEcosystem("non-python".to_string())),
         }
     }
+}
+
+/// Appends each parsed value to `target`, tagging it with the file it came from
+/// so rules can locate a finding on the exact source config when several config
+/// files (e.g. both `pip.conf` and `pip.ini`) declare overlapping settings.
+fn extend_sourced(
+    target: &mut Vec<Sourced<String>>,
+    values: impl IntoIterator<Item = String>,
+    source: &Path,
+) {
+    target.extend(
+        values
+            .into_iter()
+            .map(|v| Sourced::from(v, source.to_path_buf())),
+    );
 }
 
 fn project_dir(path: &Path) -> PathBuf {
@@ -282,9 +297,17 @@ fn build_uv_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFa
     if let Some(p) = &py {
         settings.allow_insecure_hosts = p.uv.allow_insecure_hosts.clone();
         settings.index_strategy = p.uv.index_strategy.clone();
-        settings.index_urls = p.uv.index_urls.clone();
-        settings.extra_index_urls = p.uv.extra_index_urls.clone();
-        settings.trusted_hosts = p.uv.trusted_hosts.clone();
+        extend_sourced(&mut settings.index_urls, p.uv.index_urls.clone(), &py_path);
+        extend_sourced(
+            &mut settings.extra_index_urls,
+            p.uv.extra_index_urls.clone(),
+            &py_path,
+        );
+        extend_sourced(
+            &mut settings.trusted_hosts,
+            p.uv.trusted_hosts.clone(),
+            &py_path,
+        );
     }
     let uv_toml = project_join(dir, "uv.toml");
     if has_file_in(ctx, dir, "uv.toml") {
@@ -292,11 +315,17 @@ fn build_uv_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFa
             settings
                 .allow_insecure_hosts
                 .extend(uv_settings.allow_insecure_hosts);
-            settings.index_urls.extend(uv_settings.index_urls);
-            settings
-                .extra_index_urls
-                .extend(uv_settings.extra_index_urls);
-            settings.trusted_hosts.extend(uv_settings.trusted_hosts);
+            extend_sourced(&mut settings.index_urls, uv_settings.index_urls, &uv_toml);
+            extend_sourced(
+                &mut settings.extra_index_urls,
+                uv_settings.extra_index_urls,
+                &uv_toml,
+            );
+            extend_sourced(
+                &mut settings.trusted_hosts,
+                uv_settings.trusted_hosts,
+                &uv_toml,
+            );
             if settings.index_strategy.is_none() {
                 settings.index_strategy = uv_settings.index_strategy;
             }
@@ -348,10 +377,13 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
         if let Ok(r) = requirements::load(ctx, req) {
             if r.require_hashes {
                 settings.require_hashes = Some(true);
+                settings
+                    .require_hashes_source
+                    .get_or_insert_with(|| req.clone());
             }
-            settings.trusted_hosts.extend(r.trusted_hosts);
-            settings.index_urls.extend(r.index_urls);
-            settings.extra_index_urls.extend(r.extra_index_urls);
+            extend_sourced(&mut settings.trusted_hosts, r.trusted_hosts, req);
+            extend_sourced(&mut settings.index_urls, r.index_urls, req);
+            extend_sourced(&mut settings.extra_index_urls, r.extra_index_urls, req);
             requirement_count += r.requirement_count;
             any_hashes |= r.has_hash_pins;
         }
@@ -366,12 +398,16 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
             Some("pip.conf") | Some("pip.ini")
         )
     }) {
-        if let Ok(pc) = pip::load(ctx, &pip_config.relative) {
-            settings.trusted_hosts.extend(pc.trusted_hosts);
-            settings.index_urls.extend(pc.index_urls);
-            settings.extra_index_urls.extend(pc.extra_index_urls);
+        let source = &pip_config.relative;
+        if let Ok(pc) = pip::load(ctx, source) {
+            extend_sourced(&mut settings.trusted_hosts, pc.trusted_hosts, source);
+            extend_sourced(&mut settings.index_urls, pc.index_urls, source);
+            extend_sourced(&mut settings.extra_index_urls, pc.extra_index_urls, source);
             if pc.require_hashes {
                 settings.require_hashes = Some(true);
+                settings
+                    .require_hashes_source
+                    .get_or_insert_with(|| source.clone());
             }
         }
     }
@@ -425,6 +461,19 @@ mod tests {
         }
     }
 
+    /// Whether any sourced value matches `needle`.
+    fn has_value(values: &[Sourced<String>], needle: &str) -> bool {
+        values.iter().any(|s| s.value == needle)
+    }
+
+    /// The source file recorded for the sourced value equal to `needle`.
+    fn source_of<'a>(values: &'a [Sourced<String>], needle: &str) -> Option<&'a Path> {
+        values
+            .iter()
+            .find(|s| s.value == needle)
+            .and_then(|s| s.source.as_deref())
+    }
+
     #[test]
     fn pip_ini_trusted_host_is_collected() {
         let (_dir, ctx) = make_ctx(&[
@@ -433,10 +482,7 @@ mod tests {
         ]);
         let facts = build_pip_facts(&ctx, &pip_project()).unwrap();
         assert!(
-            facts
-                .install_settings
-                .trusted_hosts
-                .contains(&"pypi.internal".to_string()),
+            has_value(&facts.install_settings.trusted_hosts, "pypi.internal"),
             "trusted_hosts: {:?}",
             facts.install_settings.trusted_hosts
         );
@@ -450,10 +496,7 @@ mod tests {
         ]);
         let facts = build_pip_facts(&ctx, &pip_project()).unwrap();
         assert!(
-            facts
-                .install_settings
-                .index_urls
-                .contains(&"http://internal/simple".to_string()),
+            has_value(&facts.install_settings.index_urls, "http://internal/simple"),
             "index_urls: {:?}",
             facts.install_settings.index_urls
         );
@@ -484,10 +527,10 @@ mod tests {
         ]);
         let facts = build_pip_facts(&ctx, &pip_project()).unwrap();
         assert!(
-            facts
-                .install_settings
-                .extra_index_urls
-                .contains(&"https://internal/simple".to_string()),
+            has_value(
+                &facts.install_settings.extra_index_urls,
+                "https://internal/simple"
+            ),
             "extra_index_urls: {:?}",
             facts.install_settings.extra_index_urls
         );
@@ -522,12 +565,56 @@ mod tests {
         let facts = build_pip_facts(&ctx, &pip_project()).unwrap();
         let hosts = &facts.install_settings.trusted_hosts;
         assert!(
-            hosts.contains(&"host1.internal".to_string()),
+            has_value(hosts, "host1.internal"),
             "host from pip.conf missing: {hosts:?}"
         );
         assert!(
-            hosts.contains(&"host2.internal".to_string()),
+            has_value(hosts, "host2.internal"),
             "host from pip.ini missing: {hosts:?}"
+        );
+    }
+
+    #[test]
+    fn pip_settings_carry_their_originating_file() {
+        // With both files present, each host must record the file it came from
+        // so a rule does not attribute a pip.ini setting to pip.conf.
+        let (_dir, ctx) = make_ctx(&[
+            ("requirements.txt", "requests==2.31.0\n"),
+            ("pip.conf", "[global]\ntrusted-host = host1.internal\n"),
+            ("pip.ini", "[global]\ntrusted-host = host2.internal\n"),
+        ]);
+        let facts = build_pip_facts(&ctx, &pip_project()).unwrap();
+        let hosts = &facts.install_settings.trusted_hosts;
+        assert_eq!(
+            source_of(hosts, "host1.internal"),
+            Some(Path::new("pip.conf")),
+            "host1 must be attributed to pip.conf: {hosts:?}"
+        );
+        assert_eq!(
+            source_of(hosts, "host2.internal"),
+            Some(Path::new("pip.ini")),
+            "host2 must be attributed to pip.ini: {hosts:?}"
+        );
+    }
+
+    #[test]
+    fn index_url_only_in_pip_ini_is_sourced_to_pip_ini() {
+        // pip.conf has a safe index; pip.ini has the insecure one. The insecure
+        // index must be attributed to pip.ini, not the first-existing pip.conf.
+        let (_dir, ctx) = make_ctx(&[
+            ("requirements.txt", "requests==2.31.0\n"),
+            (
+                "pip.conf",
+                "[global]\nindex-url = https://pypi.org/simple\n",
+            ),
+            ("pip.ini", "[global]\nindex-url = http://internal/simple\n"),
+        ]);
+        let facts = build_pip_facts(&ctx, &pip_project()).unwrap();
+        assert_eq!(
+            source_of(&facts.install_settings.index_urls, "http://internal/simple"),
+            Some(Path::new("pip.ini")),
+            "insecure index from pip.ini must be sourced to pip.ini: {:?}",
+            facts.install_settings.index_urls
         );
     }
 }
