@@ -1,0 +1,3 @@
+# An internal index alongside PyPI invites dependency confusion (SD007).
+--extra-index-url https://internal.example.com/simple
+requests==2.31.0

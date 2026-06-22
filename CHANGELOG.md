@@ -8,6 +8,10 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Added `examples/` onboarding fixtures: small self-contained projects that each
+  trip one rule (`missing-lockfile` → SD001, `npm-insecure-registry` → SD003,
+  `pip-extra-index` → SD007), plus a hardened `clean-baseline` that stays clean.
+  README links them under a "Try it" section.
 - Corrected the SD006 coverage docs: the README rule matrix and `CLAUDE.md` said
   SD006 (unsafe dependency source) did not cover Cargo/Go, but it has since #35 —
   it flags Cargo `git`/`path` deps and `[patch]`/`[replace]` redirects and Go
