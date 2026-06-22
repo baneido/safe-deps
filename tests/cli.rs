@@ -1814,7 +1814,11 @@ fn requirements_subdir_base_txt_deps_enter_facts_for_sd006() {
         "internal @ git+https://github.com/org/repo.git\n",
     )]);
     let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
-    assert_eq!(sd006.len(), 1, "expected SD006 from requirements/base.txt: {sd006:?}");
+    assert_eq!(
+        sd006.len(),
+        1,
+        "expected SD006 from requirements/base.txt: {sd006:?}"
+    );
     assert!(
         sd006[0]["message"].as_str().unwrap().contains("internal"),
         "{sd006:?}"
@@ -1833,11 +1837,7 @@ fn requirements_txt_r_include_deps_enter_facts_for_sd006() {
         ),
     ]);
     let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
-    assert_eq!(
-        sd006.len(),
-        1,
-        "expected SD006 via -r include: {sd006:?}"
-    );
+    assert_eq!(sd006.len(), 1, "expected SD006 via -r include: {sd006:?}");
 }
 
 #[test]
@@ -1875,5 +1875,8 @@ fn requirements_subdir_layout_produces_single_project() {
         .map(|f| f["project_root"].as_str().unwrap().to_string())
         .collect();
     // At most one pip project root (could be zero findings if workspace is clean).
-    assert!(projects.len() <= 1, "expected at most one pip project root: {projects:?}");
+    assert!(
+        projects.len() <= 1,
+        "expected at most one pip project root: {projects:?}"
+    );
 }
