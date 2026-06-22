@@ -73,8 +73,15 @@ impl Advisory {
 }
 
 /// A source of vulnerability data for a set of package coordinates.
+///
+/// The `Ok` variant carries both the advisories and any non-fatal diagnostic
+/// strings (e.g. cache write failures) the source encountered. Callers should
+/// surface those strings alongside the rest of the report diagnostics.
 pub trait VulnerabilitySource {
-    fn query(&self, coords: &[PackageCoordinate]) -> Result<Vec<Advisory>, AuditError>;
+    fn query(
+        &self,
+        coords: &[PackageCoordinate],
+    ) -> Result<(Vec<Advisory>, Vec<String>), AuditError>;
 }
 
 /// Errors produced during an audit run.
@@ -147,7 +154,8 @@ pub fn run_audit(
         }
     }
 
-    let mut advisories = source.query(coords)?;
+    let (mut advisories, source_diagnostics) = source.query(coords)?;
+    report.diagnostics.extend(source_diagnostics);
     // Deterministic ordering: by package (incl. version, since a name can appear
     // at multiple versions) then advisory id.
     advisories.sort_by_key(|a| {
@@ -241,8 +249,11 @@ mod tests {
 
     struct Fake(Vec<Advisory>);
     impl VulnerabilitySource for Fake {
-        fn query(&self, _coords: &[PackageCoordinate]) -> Result<Vec<Advisory>, AuditError> {
-            Ok(self.0.clone())
+        fn query(
+            &self,
+            _coords: &[PackageCoordinate],
+        ) -> Result<(Vec<Advisory>, Vec<String>), AuditError> {
+            Ok((self.0.clone(), vec![]))
         }
     }
 

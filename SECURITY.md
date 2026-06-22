@@ -24,6 +24,20 @@ In scope:
 - Incorrect handling of secrets in diagnostics or reports (the GitHub Actions
   parser redacts `env` values; a regression that leaks them is in scope).
 
+## Audit cache
+
+The OSV result cache defaults to `$XDG_CACHE_HOME/safe-deps/osv` or
+`$HOME/.cache/safe-deps/osv`. When **neither** `$HOME` nor `$XDG_CACHE_HOME` is
+set the cache falls back to `<temp_dir>/safe-deps/osv` (e.g. `/tmp/safe-deps/osv`
+on Linux). In that fallback location the cache directory is typically
+world-writable, not namespaced per user, and may be cleared on reboot — cache
+entries could be read or replaced by other local users. Ensure `$HOME` or
+`$XDG_CACHE_HOME` is set in production environments to keep cache files in a
+user-private, persistent location.
+
+Cache writes use a temp-file-then-rename pattern so a concurrent or interrupted
+run cannot leave a partial entry on disk.
+
 Out of scope:
 
 - Findings `safe-deps` reports about package-manager behavior in the third-party

@@ -334,7 +334,10 @@ impl<T: HttpTransport> OsvSource<T> {
 }
 
 impl<T: HttpTransport> VulnerabilitySource for OsvSource<T> {
-    fn query(&self, coords: &[PackageCoordinate]) -> Result<Vec<Advisory>, AuditError> {
+    fn query(
+        &self,
+        coords: &[PackageCoordinate],
+    ) -> Result<(Vec<Advisory>, Vec<String>), AuditError> {
         let mut out = Vec::new();
         let mut to_fetch = Vec::new();
 
@@ -356,10 +359,12 @@ impl<T: HttpTransport> VulnerabilitySource for OsvSource<T> {
             to_fetch.push(coord.clone());
         }
 
-        if !to_fetch.is_empty() {
-            out.extend(self.fetch(&to_fetch)?);
+        if to_fetch.is_empty() {
+            return Ok((out, vec![]));
         }
-        Ok(out)
+        let (fetched, diagnostics) = self.fetch(&to_fetch)?;
+        out.extend(fetched);
+        Ok((out, diagnostics))
     }
 }
 
@@ -367,17 +372,26 @@ impl<T: HttpTransport> VulnerabilitySource for OsvSource<T> {
 const MAX_BATCH: usize = 1000;
 
 impl<T: HttpTransport> OsvSource<T> {
-    fn fetch(&self, coords: &[PackageCoordinate]) -> Result<Vec<Advisory>, AuditError> {
+    fn fetch(
+        &self,
+        coords: &[PackageCoordinate],
+    ) -> Result<(Vec<Advisory>, Vec<String>), AuditError> {
         // Chunk against OSV's per-request query cap so a large monorepo does not
         // overflow the batch and fail.
         let mut out = Vec::new();
+        let mut diagnostics = Vec::new();
         for chunk in coords.chunks(MAX_BATCH) {
-            out.extend(self.fetch_chunk(chunk)?);
+            let (advisories, diags) = self.fetch_chunk(chunk)?;
+            out.extend(advisories);
+            diagnostics.extend(diags);
         }
-        Ok(out)
+        Ok((out, diagnostics))
     }
 
-    fn fetch_chunk(&self, coords: &[PackageCoordinate]) -> Result<Vec<Advisory>, AuditError> {
+    fn fetch_chunk(
+        &self,
+        coords: &[PackageCoordinate],
+    ) -> Result<(Vec<Advisory>, Vec<String>), AuditError> {
         let body = querybatch_body(coords);
         let response = self.transport.post_json(QUERYBATCH_URL, &body)?;
         let ids_per_coord = parse_querybatch(&response, coords.len())?;
@@ -399,6 +413,7 @@ impl<T: HttpTransport> OsvSource<T> {
         }
 
         let mut out = Vec::new();
+        let mut diagnostics = Vec::new();
         for (coord, ids) in coords.iter().zip(ids_per_coord.iter()) {
             let advisories: Vec<Advisory> = ids
                 .iter()
@@ -414,11 +429,13 @@ impl<T: HttpTransport> OsvSource<T> {
                 })
                 .collect();
             if let Some(cache) = &self.cache {
-                cache.put(coord, &advisories);
+                if let Some(diag) = cache.put(coord, &advisories) {
+                    diagnostics.push(diag);
+                }
             }
             out.extend(advisories);
         }
-        Ok(out)
+        Ok((out, diagnostics))
     }
 }
 
@@ -588,9 +605,10 @@ mod tests {
             gets: RefCell::new(Vec::new()),
         };
         let source = OsvSource::new(transport, None, false);
-        let advisories = source
+        let (advisories, diags) = source
             .query(&[coord("vuln-pkg"), coord("safe-pkg")])
             .unwrap();
+        assert!(diags.is_empty());
         assert_eq!(advisories.len(), 1);
         assert_eq!(advisories[0].id, "RUSTSEC-1");
         assert_eq!(advisories[0].package.name, "vuln-pkg");
@@ -619,7 +637,8 @@ mod tests {
             None,
             false,
         );
-        let advisories = source.query(&[coord("vuln-pkg")]).unwrap();
+        let (advisories, diags) = source.query(&[coord("vuln-pkg")]).unwrap();
+        assert!(diags.is_empty());
         assert_eq!(advisories.len(), 1);
         assert_eq!(advisories[0].id, "RUSTSEC-1");
         assert_eq!(advisories[0].summary, "RUSTSEC-1");
@@ -633,7 +652,8 @@ mod tests {
             gets: RefCell::new(Vec::new()),
         };
         let source = OsvSource::new(transport, None, true);
-        let advisories = source.query(&[coord("a")]).unwrap();
+        let (advisories, diags) = source.query(&[coord("a")]).unwrap();
+        assert!(diags.is_empty());
         assert!(advisories.is_empty());
     }
 }
