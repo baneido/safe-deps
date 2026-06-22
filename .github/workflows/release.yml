@@ -249,9 +249,13 @@ jobs:
           # then look up each per-target hash by archive name. Format is "<sha256>  <filename>".
           gh release download "$TAG" --repo "$REPO" --pattern 'SHA256SUMS' -O SHA256SUMS
           gh release download "$TAG" --repo "$REPO" --pattern 'SHA256SUMS.cosign.bundle' -O SHA256SUMS.cosign.bundle
+          # Bind verification to this exact tag's signing identity, not any v* tag:
+          # a regexp over refs/tags/v.* would accept a valid bundle signed for a
+          # different release, letting an attacker replay another tag's SHA256SUMS.
+          expected_identity="https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/${TAG}"
           cosign verify-blob \
             --bundle SHA256SUMS.cosign.bundle \
-            --certificate-identity-regexp '^https://github\.com/baneido/safe-deps/\.github/workflows/release\.yml@refs/tags/v.*$' \
+            --certificate-identity "$expected_identity" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             SHA256SUMS >/dev/null
           sha() {
