@@ -529,11 +529,32 @@ fn strict_parser_errors_exit_code_four() {
     assert_eq!(code(&out), 4);
 }
 
+// --- invalid path handling (exit 2, not exit 3) ---------------------------------
+
 #[test]
-fn missing_path_is_usage_or_internal_error() {
+fn check_invalid_path_is_usage_error() {
+    // A non-existent target path is a user input error → exit 2, not exit 3.
     let ws = workspace(&[]);
     let out = run(&ws, &["check", "does-not-exist"]);
-    assert_ne!(code(&out), 0);
+    assert_eq!(
+        code(&out),
+        2,
+        "non-existent check path should be usage error (exit 2), got: {}",
+        code(&out)
+    );
+}
+
+#[test]
+fn audit_invalid_path_is_usage_error() {
+    // Same contract for `audit`: a missing path → exit 2.
+    let ws = workspace(&[]);
+    let out = run(&ws, &["audit", "does-not-exist"]);
+    assert_eq!(
+        code(&out),
+        2,
+        "non-existent audit path should be usage error (exit 2), got: {}",
+        code(&out)
+    );
 }
 
 // --- review regressions ------------------------------------------------------

@@ -359,6 +359,16 @@ pub enum FsError {
     Internal(String),
 }
 
+impl FsError {
+    /// Returns `true` for errors that originate from user-supplied input
+    /// (a path that does not exist or is not a directory), so callers can
+    /// map them to a usage error (exit 2) rather than an internal error
+    /// (exit 3).
+    pub fn is_user_input_error(&self) -> bool {
+        matches!(self, FsError::NotADirectory(_))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,5 +471,50 @@ mod tests {
         assert!(has_file_suffix(&ctx, &["bin", "tool.rs"]));
         assert!(!has_file_suffix(&ctx, &["a", "main.rs"]));
         assert!(!has_file_suffix(&ctx, &[]));
+    }
+
+    #[test]
+    fn scan_nonexistent_path_is_user_input_error() {
+        let err = scan(
+            Path::new("/tmp/safe-deps-test-does-not-exist-xyz"),
+            Config::default(),
+            &ScanOptions::default(),
+        )
+        .unwrap_err();
+        assert!(
+            err.is_user_input_error(),
+            "expected user input error for non-existent path, got: {err}"
+        );
+        assert!(
+            matches!(err, FsError::NotADirectory(_)),
+            "expected NotADirectory variant, got: {err}"
+        );
+    }
+
+    #[test]
+    fn scan_file_path_is_user_input_error() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("not-a-dir.txt");
+        std::fs::write(&file, "contents").unwrap();
+        let err = scan(&file, Config::default(), &ScanOptions::default()).unwrap_err();
+        assert!(
+            err.is_user_input_error(),
+            "expected user input error when path is a file, got: {err}"
+        );
+    }
+
+    #[test]
+    fn fserror_internal_is_not_user_input_error() {
+        let err = FsError::Internal("something went wrong".into());
+        assert!(!err.is_user_input_error());
+    }
+
+    #[test]
+    fn fserror_glob_is_not_user_input_error() {
+        let err = FsError::Glob {
+            pattern: "[bad".into(),
+            message: "invalid syntax".into(),
+        };
+        assert!(!err.is_user_input_error());
     }
 }

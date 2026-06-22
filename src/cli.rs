@@ -214,7 +214,13 @@ fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
         no_gitignore: args.no_gitignore,
         ..Default::default()
     };
-    let ctx = scan(&args.path, config.clone(), &scan_options).map_err(CliError::internal)?;
+    let ctx = scan(&args.path, config.clone(), &scan_options).map_err(|e| {
+        if e.is_user_input_error() {
+            CliError::usage(e.to_string())
+        } else {
+            CliError::internal(e)
+        }
+    })?;
 
     let collected = crate::audit::collect::collect(&ctx);
     let coords = collected.coordinates;
@@ -452,7 +458,7 @@ enum CliErrorKind {
 }
 
 impl CliError {
-    fn usage(message: impl Into<String>) -> Self {
+    pub(crate) fn usage(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             kind: CliErrorKind::Usage,

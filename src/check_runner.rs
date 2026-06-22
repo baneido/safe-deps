@@ -41,7 +41,13 @@ pub struct CheckRequest {
 /// (`0` clean, `1` findings at/above `fail_on`, `4` parse failure under
 /// `strict_parser_errors`).
 pub fn run(req: CheckRequest) -> Result<u8, CliError> {
-    let ctx = scan(&req.path, req.config, &req.scan_options).map_err(CliError::internal)?;
+    let ctx = scan(&req.path, req.config, &req.scan_options).map_err(|e| {
+        if e.is_user_input_error() {
+            CliError::usage(e.to_string())
+        } else {
+            CliError::internal(e)
+        }
+    })?;
 
     if req.verbose {
         eprintln!(
