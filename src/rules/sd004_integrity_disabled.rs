@@ -96,8 +96,8 @@ deployment requirements that lack --require-hashes."
                         Confidence::Medium,
                     ));
                 } else {
-                    // Emit one finding per requirements file that is missing hash coverage,
-                    // so a hash-pinned dev file does not mask an unhashed production file.
+                    // Emit one finding per requirements file that lacks require-hashes
+                    // enforcement, so a file with enforcement does not mask one without.
                     for req_file in &facts.pip_requirements {
                         if !req_file.has_requirements || req_file.has_hashes {
                             continue;

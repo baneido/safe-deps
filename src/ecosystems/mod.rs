@@ -247,8 +247,9 @@ pub struct InstallSettings {
 pub struct PipRequirementFile {
     /// Path relative to the workspace root.
     pub relative: PathBuf,
-    /// Whether this file enforces hash pinning for all of its requirements
-    /// (via `--require-hashes` or full per-requirement `--hash=` coverage).
+    /// Whether this file has require-hashes enforcement enabled (i.e.
+    /// `--require-hashes` is present or implied). This reflects enforcement
+    /// policy, not whether every individual requirement line carries a hash.
     pub has_hashes: bool,
     /// Whether this file contains any requirement lines at all. Files with no
     /// requirements are skipped by SD004 to avoid noise on option-only files.
