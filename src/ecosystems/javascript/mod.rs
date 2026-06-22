@@ -402,11 +402,14 @@ fn covered_by_workspace(ctx: &WorkspaceContext, dir: &Path, manager: PackageMana
     false
 }
 
-/// Returns the workspace package globs declared by a workspace root.
+/// Returns the workspace package globs declared by a workspace root, in
+/// declaration order (so include/exclude `!`-negation can be applied in order
+/// by [`is_workspace_member`]).
 ///
 /// For pnpm the authoritative source is `pnpm-workspace.yaml` `packages:`; for
 /// all managers the `package.json` `workspaces` field (array or object form) is
-/// also consulted. The union of all non-empty glob lists is returned.
+/// also consulted. Globs from `pnpm-workspace.yaml` are listed before those
+/// from `package.json`. An empty result means no member globs were declared.
 fn workspace_globs(
     ctx: &WorkspaceContext,
     root_dir: &Path,
@@ -430,9 +433,18 @@ fn workspace_globs(
     globs
 }
 
-/// Returns `true` when `dir` is matched by at least one of the workspace
-/// member globs declared at `root_dir`.  Globs are relative to the workspace
-/// root and use `/`-separated paths.
+/// Returns `true` when `dir` is a workspace member declared at `root_dir`.
+///
+/// Globs are relative to the workspace root and use `/`-separated paths, and
+/// are evaluated with ordered include/exclude semantics: patterns apply in
+/// declaration order, and a `!`-prefixed pattern excludes a path that an
+/// earlier pattern included (matching the behaviour of npm/Yarn `workspaces`
+/// and pnpm's `pnpm-workspace.yaml` `packages`). A path is a member only if,
+/// after applying every pattern in order, it ends up included.
+///
+/// When no (positive) globs are declared, child packages are NOT members:
+/// pnpm with an empty/omitted `packages` includes only the root, and an
+/// empty/missing npm/Yarn `workspaces` array likewise declares no members.
 fn is_workspace_member(
     ctx: &WorkspaceContext,
     root_dir: &Path,
@@ -441,8 +453,8 @@ fn is_workspace_member(
 ) -> bool {
     let globs = workspace_globs(ctx, root_dir, package_json_path);
     if globs.is_empty() {
-        // Workspace root with no globs: treat all descendants as members.
-        return true;
+        // No globs declared: only the root is a member, never its children.
+        return false;
     }
 
     // Compute the path of `dir` relative to `root_dir`, normalised to `/`.
@@ -453,11 +465,22 @@ fn is_workspace_member(
     };
     let rel_str = rel.to_string_lossy().replace('\\', "/");
 
-    globs.iter().any(|g| {
-        globset::Glob::new(g)
+    // Apply include/exclude patterns in order: a positive glob marks the path
+    // included, a `!`-prefixed glob un-includes a previously-included path.
+    let mut included = false;
+    for g in &globs {
+        let (pattern, negated) = match g.strip_prefix('!') {
+            Some(rest) => (rest, true),
+            None => (g.as_str(), false),
+        };
+        let matches = globset::Glob::new(pattern)
             .map(|glob| glob.compile_matcher().is_match(&rel_str))
-            .unwrap_or(false)
-    })
+            .unwrap_or(false);
+        if matches {
+            included = !negated;
+        }
+    }
+    included
 }
 
 #[cfg(test)]
@@ -579,6 +602,63 @@ mod tests {
         assert!(
             !non_member.covered_by_workspace_lockfile,
             "examples/demo is not in packages/* glob and must not be covered"
+        );
+    }
+
+    /// pnpm workspace with a `!`-negated glob: an excluded package is NOT
+    /// covered (SD001 fires) even though an earlier include matched it.
+    #[test]
+    fn pnpm_workspace_negated_glob_excludes_package() {
+        let dir = ws(&[
+            (
+                "package.json",
+                r#"{ "name": "root", "private": true, "packageManager": "pnpm@9" }"#,
+            ),
+            (
+                "pnpm-workspace.yaml",
+                "packages:\n  - \"packages/*\"\n  - \"!packages/excluded\"\n",
+            ),
+            ("pnpm-lock.yaml", "lockfileVersion: 9\n"),
+            ("packages/included/package.json", PKG_DEPS),
+            ("packages/excluded/package.json", PKG_DEPS),
+        ]);
+        let facts = facts_for(&dir);
+
+        let included =
+            facts_for_dir(&facts, "packages/included").expect("packages/included not detected");
+        assert!(
+            included.covered_by_workspace_lockfile,
+            "packages/included matches packages/* and should be covered"
+        );
+
+        let excluded =
+            facts_for_dir(&facts, "packages/excluded").expect("packages/excluded not detected");
+        assert!(
+            !excluded.covered_by_workspace_lockfile,
+            "packages/excluded is negated by !packages/excluded and must not be covered"
+        );
+    }
+
+    /// pnpm workspace whose `pnpm-workspace.yaml` omits `packages`: only the
+    /// root is a member, so a child package is NOT covered (SD001 fires).
+    #[test]
+    fn pnpm_workspace_empty_packages_excludes_children() {
+        let dir = ws(&[
+            (
+                "package.json",
+                r#"{ "name": "root", "private": true, "packageManager": "pnpm@9" }"#,
+            ),
+            // No `packages:` key at all (only an unrelated setting present).
+            ("pnpm-workspace.yaml", "dangerouslyAllowAllBuilds: false\n"),
+            ("pnpm-lock.yaml", "lockfileVersion: 9\n"),
+            ("packages/lib/package.json", PKG_DEPS),
+        ]);
+        let facts = facts_for(&dir);
+
+        let child = facts_for_dir(&facts, "packages/lib").expect("packages/lib not detected");
+        assert!(
+            !child.covered_by_workspace_lockfile,
+            "with no `packages` globs only the root is a member; the child must not be covered"
         );
     }
 
