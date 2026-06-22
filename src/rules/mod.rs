@@ -51,6 +51,12 @@ pub struct AnalysisResult {
     /// Number of files the analyzers could not parse. Used by
     /// `--strict-parser-errors` to escalate the run to exit code 4.
     pub parse_failures: usize,
+    /// Whether any [`DiagnosticLevel::Error`] diagnostic was produced. An
+    /// error-level diagnostic indicates a linter-side configuration or
+    /// suppression problem that must not pass silently, so the exit-code
+    /// decision in `check_runner` treats this as a failure condition
+    /// independent of the finding threshold.
+    pub has_error_diagnostic: bool,
 }
 
 /// Runs all rules over all detected projects.
@@ -162,11 +168,16 @@ pub fn analyze(ctx: &WorkspaceContext, profile: Profile, ci_facts: &CiFacts) -> 
         }
     }
 
+    let has_error_diagnostic = diagnostics
+        .iter()
+        .any(|d| d.level == DiagnosticLevel::Error);
+
     AnalysisResult {
         findings,
         diagnostics,
         unused_suppressions,
         parse_failures,
+        has_error_diagnostic,
     }
 }
 
@@ -310,5 +321,58 @@ impl ParsedSuppression {
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diagnostics::{Diagnostic, DiagnosticLevel};
+
+    /// Helper: build an [`AnalysisResult`] with the given diagnostics and no
+    /// findings/parse-failures, to test `has_error_diagnostic` in isolation.
+    fn result_with_diagnostics(diags: Vec<Diagnostic>) -> AnalysisResult {
+        let has_error = diags.iter().any(|d| d.level == DiagnosticLevel::Error);
+        AnalysisResult {
+            findings: vec![],
+            diagnostics: diags,
+            unused_suppressions: vec![],
+            parse_failures: 0,
+            has_error_diagnostic: has_error,
+        }
+    }
+
+    #[test]
+    fn has_error_diagnostic_is_false_with_no_diagnostics() {
+        let r = result_with_diagnostics(vec![]);
+        assert!(!r.has_error_diagnostic);
+    }
+
+    #[test]
+    fn has_error_diagnostic_is_false_for_warning_only() {
+        let r = result_with_diagnostics(vec![
+            Diagnostic::warn("some warning"),
+            Diagnostic {
+                level: DiagnosticLevel::Info,
+                message: "info msg".into(),
+                location: None,
+            },
+        ]);
+        assert!(!r.has_error_diagnostic);
+    }
+
+    #[test]
+    fn has_error_diagnostic_is_true_for_error_level() {
+        let r = result_with_diagnostics(vec![
+            Diagnostic::warn("a warning"),
+            Diagnostic::error("an error"),
+        ]);
+        assert!(r.has_error_diagnostic);
+    }
+
+    #[test]
+    fn has_error_diagnostic_is_true_for_error_only() {
+        let r = result_with_diagnostics(vec![Diagnostic::error("fatal config problem")]);
+        assert!(r.has_error_diagnostic);
     }
 }
