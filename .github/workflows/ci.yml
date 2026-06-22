@@ -40,6 +40,11 @@ jobs:
         # The curl fallback is a distinct feature set (no native TLS crate); lint
         # it too so a feature-gating regression in that build is caught.
         run: cargo clippy --all-targets --locked --no-default-features --features curl-transport -- -D warnings
+      - name: Test (curl-transport fallback)
+        # The default `test` matrix builds native-http; the curl fallback's
+        # transport (binary resolution, process boundary) is only exercised
+        # under this feature, so run its tests here too.
+        run: cargo test --locked --no-default-features --features curl-transport
 
   test:
     name: test (${{ matrix.os }})

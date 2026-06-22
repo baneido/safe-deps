@@ -75,6 +75,11 @@ pub struct AuditArgs {
     /// Ignore .gitignore while scanning for lockfiles.
     #[arg(long)]
     pub no_gitignore: bool,
+
+    /// Print transport details (e.g. the resolved curl path under the
+    /// `curl-transport` build).
+    #[arg(long)]
+    pub verbose: bool,
 }
 
 #[derive(Args, Default)]
@@ -235,11 +240,16 @@ fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
         0
     };
 
-    let source = crate::audit::osv::OsvSource::new(
-        crate::audit::osv::default_transport(),
-        cache,
-        args.offline,
-    );
+    let transport = crate::audit::osv::default_transport();
+    // Surface exactly which external binary the curl fallback will invoke so an
+    // operator can audit the process boundary. Only meaningful (and only
+    // compiled) for the curl-transport build; the default native-http build has
+    // no external process to report.
+    #[cfg(all(not(feature = "native-http"), feature = "curl-transport"))]
+    if args.verbose {
+        eprintln!("audit: using curl at {}", transport.curl_path().display());
+    }
+    let source = crate::audit::osv::OsvSource::new(transport, cache, args.offline);
 
     let mut report = crate::audit::run_audit(
         &coords,
