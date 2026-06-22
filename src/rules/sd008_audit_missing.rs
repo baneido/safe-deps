@@ -1,8 +1,8 @@
 //! SD008: Audit missing or disabled.
 //!
 //! Warns when CI installs an ecosystem's dependencies but never runs a
-//! dependency audit (`npm audit`, `yarn audit`, `pnpm audit`, `pip-audit`,
-//! `safety`). The check never runs audits itself. Teams that audit elsewhere
+//! dependency audit (`npm audit`, `yarn audit`, `pnpm audit`, `bun audit`,
+//! `pip-audit`, `safety`). The check never runs audits itself. Teams that audit elsewhere
 //! (a separate workflow, SaaS scanner, or scheduled job) declare
 //! `[policy] external_audit = true` to opt out.
 //!
@@ -36,7 +36,7 @@ impl Rule for Sd008 {
 
     fn explanation(&self) -> &'static str {
         "When CI installs dependencies, a dependency audit step gives a path to \
-catch known-vulnerable packages. Use npm/yarn/pnpm audit or pip-audit/safety. \
+catch known-vulnerable packages. Use npm/yarn/pnpm/bun audit or pip-audit/safety. \
 If audits run in a separate workflow, a SaaS scanner, or an organization-wide \
 schedule, declare [policy] external_audit = true to acknowledge that control. \
 This rule reads CI command facts extracted from GitHub Actions, GitLab CI, and \
