@@ -126,6 +126,22 @@ fn load_recursive_inner(
         return RequirementsSettings::default();
     }
 
+    // Reject any include that escapes the workspace root. `normalize_rel`
+    // preserves leading `..` segments, so a `ParentDir` component here means the
+    // path resolves outside the workspace. Reading it would let
+    // `read_text` (root.join(relative)) escape the tree, so emit a warning and
+    // skip it instead of following the include (path-traversal safety).
+    if key
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        diagnostics.push(crate::diagnostics::Diagnostic::warn_at(
+            format!("requirements include outside workspace: {}", key.display()),
+            key.clone(),
+        ));
+        return RequirementsSettings::default();
+    }
+
     if in_progress.contains(&key) {
         // The file is currently on the active DFS include-stack — a genuine
         // cyclic include.
@@ -218,9 +234,15 @@ fn load_recursive_inner(
 }
 
 /// Normalizes a workspace-relative include path to a canonical form: forward
-/// slashes, with `.` and empty segments dropped and `..` segments resolved.
-/// This makes the `visited` key and the `read_text` lookup identical for the
-/// same file regardless of platform path separators or `./` spellings.
+/// slashes, with `.` and empty segments dropped and interior `..` segments
+/// collapsed. This makes the `visited` key and the `read_text` lookup identical
+/// for the same file regardless of platform path separators or `./` spellings.
+///
+/// Leading `..` segments that would escape the workspace root are **preserved**
+/// (rather than silently dropped), so an out-of-tree include like
+/// `../missing.txt` stays recognizable as an escape and can be rejected by the
+/// caller instead of collapsing onto an unrelated in-tree file. Only `..` that
+/// cancels a real preceding segment (e.g. `a/../b` → `b`) is collapsed.
 fn normalize_rel(path: &Path) -> PathBuf {
     let raw = path.to_string_lossy().replace('\\', "/");
     let mut parts: Vec<&str> = Vec::new();
@@ -228,7 +250,15 @@ fn normalize_rel(path: &Path) -> PathBuf {
         match seg {
             "" | "." => {}
             ".." => {
-                parts.pop();
+                // Collapse against a real preceding segment, but never against a
+                // leading `..` (that would let the path escape the root while
+                // appearing in-tree). When there is nothing to cancel, keep the
+                // `..` so the escape is preserved for the caller to reject.
+                if matches!(parts.last(), Some(&p) if p != "..") {
+                    parts.pop();
+                } else {
+                    parts.push("..");
+                }
             }
             other => parts.push(other),
         }
@@ -628,6 +658,73 @@ mod tests {
         );
         // Despite the cycle we still get the non-cyclic requirements.
         assert!(s.requirement_count >= 1);
+    }
+
+    // --- normalize_rel --------------------------------------------------------
+
+    #[test]
+    fn normalize_rel_collapses_interior_parent_dir() {
+        // a/../b → b (interior `..` cancels a real preceding segment).
+        assert_eq!(normalize_rel(Path::new("a/../b")), PathBuf::from("b"));
+        assert_eq!(
+            normalize_rel(Path::new("./reqs/./base.txt")),
+            PathBuf::from("reqs/base.txt")
+        );
+    }
+
+    #[test]
+    fn normalize_rel_preserves_leading_parent_dir() {
+        // Leading `..` must survive instead of collapsing onto an unrelated
+        // in-tree file (`../missing.txt` must NOT become `missing.txt`).
+        assert_eq!(
+            normalize_rel(Path::new("../missing.txt")),
+            PathBuf::from("../missing.txt")
+        );
+        assert_eq!(
+            normalize_rel(Path::new("../../escape.txt")),
+            PathBuf::from("../../escape.txt")
+        );
+        // A `..` that climbs past the only real segment escapes the root.
+        assert_eq!(
+            normalize_rel(Path::new("a/../../escape.txt")),
+            PathBuf::from("../escape.txt")
+        );
+    }
+
+    #[test]
+    fn load_recursive_rejects_out_of_workspace_include() {
+        // requirements.txt includes ../missing.txt. The escaping include must be
+        // rejected with an "outside workspace" diagnostic and never read from
+        // outside the workspace — and must not collapse onto an in-tree
+        // `missing.txt` and read the WRONG file.
+        let (ctx, _d) = make_ctx(&[
+            ("requirements.txt", "-r ../missing.txt\nflask==3.0.0\n"),
+            // A same-named file outside the workspace dir is *not* created here;
+            // the point is that even the normalized in-tree spelling is rejected.
+            ("missing.txt", "requests==2.31.0\n"),
+        ]);
+        let mut completed = std::collections::HashSet::new();
+        let mut diags = Vec::new();
+        let s = load_recursive(
+            &ctx,
+            std::path::Path::new("requirements.txt"),
+            &mut completed,
+            &mut diags,
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("outside workspace")),
+            "expected out-of-workspace diagnostic, got: {diags:?}"
+        );
+        // The wrong in-tree file must NOT have been read in place of the escape.
+        assert!(
+            !s.specs.contains(&"requests==2.31.0".to_string()),
+            "escaping include must not read the wrong in-tree file: {:?}",
+            s.specs
+        );
+        // The entry-point's own direct dependency is still collected.
+        assert!(s.specs.contains(&"flask==3.0.0".to_string()));
     }
 
     #[test]

@@ -293,13 +293,17 @@ fn python_dependencies(
         .into_iter()
         .filter(|p| requirements_project_dir(p) == *dir)
     {
-        // A `requirements-dev.txt` / `requirements/test.txt` holds dev deps, so
-        // a local editable path there is not a production-source finding.
-        let group = requirements_group(&req);
         let r = requirements::load_recursive(ctx, &req, &mut completed, &mut diagnostics);
         for origin in r.spec_origins {
             let spec = origin.spec;
             let bare = spec.strip_prefix("-e ").unwrap_or(&spec).trim();
+            // Classify production-vs-development from the DECLARING file, not the
+            // entry-point. A spec pulled in via `-r`/`-c` from a dev-role file
+            // (e.g. `requirements-dev.txt`) is a dev dependency even when the
+            // traversal started at a production entry-point, so SD006's
+            // path-dependency classification follows the file that declared it
+            // and is not order-dependent on which entry-point is walked first.
+            let group = requirements_group(&origin.file);
             out.push(Dependency {
                 name: pyproject::pep508_name(bare),
                 source: classify_python_source(&spec),
@@ -747,6 +751,48 @@ mod tests {
             .find(|d| d.name == "flask")
             .unwrap_or_else(|| panic!("flask dep missing: {:?}", facts.dependencies));
         assert_eq!(flask.file, PathBuf::from("requirements.txt"));
+    }
+
+    #[test]
+    fn dep_group_follows_declaring_file_not_entry_point() {
+        // A production entry-point (requirements.txt) `-r`s a dev-role file
+        // (requirements/dev.txt). The dev file's dependency must be classified as
+        // Development (from the declaring file), not Production (the entry-point).
+        // SD006 path-dep classification anchors to the declaring file too.
+        use crate::ecosystems::DependencyGroup;
+        let (ctx, _d) = make_ctx(&[
+            (
+                "requirements.txt",
+                "-r requirements/dev.txt\nflask==3.0.0\n",
+            ),
+            (
+                "requirements/dev.txt",
+                "pytest @ git+https://example.com/pytest.git\n",
+            ),
+        ]);
+        let projects = PythonAnalyzer.detect(&ctx);
+        assert_eq!(projects.len(), 1);
+        let facts = PythonAnalyzer.facts(&projects[0], &ctx).unwrap();
+
+        let pytest = facts
+            .dependencies
+            .iter()
+            .find(|d| d.name == "pytest")
+            .unwrap_or_else(|| panic!("pytest dep missing: {:?}", facts.dependencies));
+        assert_eq!(
+            pytest.group,
+            DependencyGroup::Development,
+            "included spec must be grouped by its declaring file (dev), not the entry-point"
+        );
+        assert_eq!(pytest.file, PathBuf::from("requirements/dev.txt"));
+
+        // The entry-point's own dependency stays Production.
+        let flask = facts
+            .dependencies
+            .iter()
+            .find(|d| d.name == "flask")
+            .unwrap_or_else(|| panic!("flask dep missing: {:?}", facts.dependencies));
+        assert_eq!(flask.group, DependencyGroup::Production);
     }
 
     #[test]
