@@ -90,7 +90,9 @@ warning Diagnostics and analysis continues;
 2. Register it in `rules::all_rules()` in `src/rules/mod.rs`.
 3. Add CLI integration coverage in `tests/cli.rs` (one safe + one unsafe fixture).
 4. Update the rule tables in [README.md](README.md) and the taxonomy in
-   `docs/design/safe-deps-cli-design.md`.
+   `docs/design/safe-deps-cli-design.md`. The README rule table is treated as a
+   mirror of `Rule::summary()`: `tests/rule_metadata.rs` fails if the two drift,
+   so a missed README update is caught in CI rather than rotting silently.
 
 Severity is often a function of both `Profile` (balanced/strict/permissive) and
 `ProjectKind` (Application/Library/ToolingOnly/Unknown); `Unknown` stays

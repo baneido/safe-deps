@@ -8,6 +8,12 @@ unreleased and not yet tagged.
 
 ## Unreleased
 
+- Added a single-source guard for rule metadata (`tests/rule_metadata.rs`): the
+  README rule table must match `Rule::summary()` for every registered rule (and
+  list the same ids), so documentation can no longer silently drift from the
+  code that `list-rules`/`explain` print. Reconciled two pre-existing drifts
+  (SD003, SD006) by regenerating the README table from the registry. First
+  increment toward #66.
 - Hardened the optional `curl-transport` audit fallback: the system `curl` is now
   resolved to a concrete path up front — honoring a `SAFE_DEPS_CURL` override,
   then preferring trusted absolute directories over `PATH`, and skipping relative
