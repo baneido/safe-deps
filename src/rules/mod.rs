@@ -408,6 +408,8 @@ mod tests {
     fn has_error_diagnostic_is_true_for_error_only() {
         let r = result_with_diagnostics(vec![Diagnostic::error("fatal config problem")]);
         assert!(r.has_error_diagnostic);
+    }
+
     fn make_finding(rule: &str, path: &str) -> Finding {
         Finding {
             rule_id: RuleId::new(rule),
