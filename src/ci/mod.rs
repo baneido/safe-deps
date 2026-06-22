@@ -158,10 +158,12 @@ pub fn redact_url_credentials(value: &str) -> String {
 
     // --- query / fragment redaction ------------------------------------------
     // Find the query string: first `?` after the scheme authority.
-    // The authority ends at the first `/` following `://host`.
+    // The authority ends at the first `/`, `?`, or `#` following `://host`.
+    // Treating `?` and `#` as terminators handles URLs with no path component,
+    // e.g. `https://registry.example.com?token=abc`.
     let scheme_plus = scheme_end + 3; // points past `://`
     let authority_end = base[scheme_plus..]
-        .find('/')
+        .find(['/', '?', '#'])
         .map(|i| scheme_plus + i)
         .unwrap_or(base.len());
 
@@ -333,5 +335,37 @@ mod tests {
             redact_url_credentials("https://host/path?token=abc#section"),
             "https://host/path?token=#section"
         );
+    }
+
+    // --- no-path URL regression tests (reviewer comment, issue #88) ----------
+
+    #[test]
+    fn redacts_token_in_no_path_url() {
+        // `?` immediately follows the authority — no `/` in the URL.
+        assert_eq!(
+            redact_url_credentials("https://registry.example.com?token=abc"),
+            "https://registry.example.com?token="
+        );
+    }
+
+    #[test]
+    fn redacts_secret_and_preserves_non_secret_in_no_path_url() {
+        assert_eq!(
+            redact_url_credentials("https://host.example?api_key=abc&keep=1"),
+            "https://host.example?api_key=&keep=1"
+        );
+    }
+
+    #[test]
+    fn redacts_fragment_query_secret_in_no_path_url() {
+        // Fragment immediately follows the authority with a secret-like key.
+        // `?` is absent; the URL has no query, only a fragment — the function
+        // preserves this (no query to redact) but must not expose the fragment
+        // as a query. Verify no panic and that the value is returned unchanged
+        // (fragments are not query params and have no `=`-key structure we parse).
+        let result = redact_url_credentials("https://host.example#token=abc");
+        // The fragment is not a query string — we do not strip it — but we must
+        // not accidentally include it as a secret query param.
+        assert_eq!(result, "https://host.example#token=abc");
     }
 }
