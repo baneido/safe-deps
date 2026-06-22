@@ -2,11 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/). The CLI
-is implemented but not yet published to crates.io, so everything below is
-unreleased and not yet tagged.
+The format is based on [Keep a Changelog](https://keepachangelog.com/) and the
+project follows [Semantic Versioning](https://semver.org/). `0.2.2` is the first
+release published to crates.io via the automated, OIDC-authenticated release
+workflow; it gathers the work accumulated during pre-`0.2.2` development.
 
 ## Unreleased
+
+## 0.2.2 — 2026-06-23
 
 - Made the crate publishable to crates.io. The release workflow now publishes
   `safe-deps` to crates.io on a `vX.Y.Z` tag (the new `publish-crate` job), gated
