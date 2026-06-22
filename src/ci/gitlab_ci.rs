@@ -105,7 +105,9 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
             }
             let indent = leading_spaces(line);
             let content = strip_comment(line).trim();
-            let is_seq_item = content.starts_with("- ");
+            // A bare `-` (exactly `-`, or `-` followed by whitespace/comment
+            // that strips away) is also a valid YAML empty sequence item.
+            let is_seq_item = content.starts_with("- ") || content == "-";
             if indent < key_indent || (indent == key_indent && !is_seq_item) {
                 break;
             }
@@ -304,5 +306,21 @@ deploy:
             cmds(text),
             vec!["npm ci", "npm run build", "npm run deploy"]
         );
+    }
+
+    // A bare `-` (empty YAML sequence item, optionally followed by a comment)
+    // must be treated as a sequence item so the parser does not exit the block
+    // early and drop subsequent commands.
+    #[test]
+    fn indentless_sequence_bare_dash_skipped_collection_continues() {
+        let text = "\
+job:
+  script:
+  - npm ci
+  -
+  - # this is just a comment
+  - npm test
+";
+        assert_eq!(cmds(text), vec!["npm ci", "npm test"]);
     }
 }
