@@ -9,6 +9,8 @@ workflow; it gathers the work accumulated during pre-`0.2.2` development.
 
 ## Unreleased
 
+## 0.2.3 — 2026-06-23
+
 - Made `Cargo.toml` the single source of truth for releases, eliminating the
   recurring tag/crate-version drift. Bumping the `version` on `main` is now the
   release action: the new
