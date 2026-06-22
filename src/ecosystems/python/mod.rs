@@ -297,14 +297,17 @@ fn python_dependencies(
         // a local editable path there is not a production-source finding.
         let group = requirements_group(&req);
         let r = requirements::load_recursive(ctx, &req, &mut completed, &mut diagnostics);
-        for spec in r.specs {
+        for origin in r.spec_origins {
+            let spec = origin.spec;
             let bare = spec.strip_prefix("-e ").unwrap_or(&spec).trim();
             out.push(Dependency {
                 name: pyproject::pep508_name(bare),
                 source: classify_python_source(&spec),
                 spec,
                 group,
-                file: req.clone(),
+                // Anchor to the file that declared this spec (the included file
+                // for a transitive `-r`/`-c` include), not the entry-point.
+                file: origin.file,
             });
         }
     }
@@ -429,8 +432,19 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
     let mut parse_diagnostics: Vec<crate::diagnostics::Diagnostic> =
         pyproject_parse_diagnostic(ctx, dir).into_iter().collect();
 
+    // The dependency pass below (`python_dependencies`) re-traverses the same
+    // include graph and surfaces missing/cyclic-include diagnostics. Discard the
+    // settings-pass copies here so each include diagnostic appears exactly once
+    // in `parse_diagnostics`.
+    let mut settings_include_diagnostics: Vec<crate::diagnostics::Diagnostic> = Vec::new();
+
     for req in &reqs {
-        let r = requirements::load_recursive(ctx, req, &mut completed, &mut parse_diagnostics);
+        let r = requirements::load_recursive(
+            ctx,
+            req,
+            &mut completed,
+            &mut settings_include_diagnostics,
+        );
         if r.require_hashes {
             settings.require_hashes = Some(true);
         }
@@ -695,6 +709,90 @@ mod tests {
             1,
             "requests should appear once: {:?}",
             facts.dependencies
+        );
+    }
+
+    #[test]
+    fn dep_from_transitive_include_is_attributed_to_included_file() {
+        // requirements.txt -r requirements/base.txt, and base.txt declares a
+        // git dependency. SD006's finding location must anchor to base.txt (the
+        // file that declared the dep), not the entry-point requirements.txt.
+        let (ctx, _d) = make_ctx(&[
+            (
+                "requirements.txt",
+                "-r requirements/base.txt\nflask==3.0.0\n",
+            ),
+            (
+                "requirements/base.txt",
+                "evil @ git+https://example.com/evil.git\n",
+            ),
+        ]);
+        let projects = PythonAnalyzer.detect(&ctx);
+        assert_eq!(projects.len(), 1);
+        let facts = PythonAnalyzer.facts(&projects[0], &ctx).unwrap();
+        let evil = facts
+            .dependencies
+            .iter()
+            .find(|d| d.name == "evil")
+            .unwrap_or_else(|| panic!("evil dep missing: {:?}", facts.dependencies));
+        assert_eq!(
+            evil.file,
+            PathBuf::from("requirements/base.txt"),
+            "transitive include dep must anchor to the included file, not the entry-point"
+        );
+        // The entry-point's own dep is still attributed to it.
+        let flask = facts
+            .dependencies
+            .iter()
+            .find(|d| d.name == "flask")
+            .unwrap_or_else(|| panic!("flask dep missing: {:?}", facts.dependencies));
+        assert_eq!(flask.file, PathBuf::from("requirements.txt"));
+    }
+
+    #[test]
+    fn missing_include_emits_exactly_one_diagnostic() {
+        // The settings pass and the dependency pass both traverse the include
+        // graph; the missing-include diagnostic must appear exactly once.
+        let (ctx, _d) = make_ctx(&[("requirements.txt", "-r missing.txt\nflask==3.0.0\n")]);
+        let projects = PythonAnalyzer.detect(&ctx);
+        assert_eq!(projects.len(), 1);
+        let facts = PythonAnalyzer.facts(&projects[0], &ctx).unwrap();
+        let count = facts
+            .parse_diagnostics
+            .iter()
+            .filter(|d| d.message.contains("missing.txt"))
+            .count();
+        assert_eq!(
+            count, 1,
+            "missing-include diagnostic must appear exactly once: {:?}",
+            facts.parse_diagnostics
+        );
+    }
+
+    #[test]
+    fn cyclic_include_emits_exactly_one_diagnostic() {
+        let (ctx, _d) = make_ctx(&[
+            (
+                "requirements.txt",
+                "-r requirements/a.txt\nrequests==2.31.0\n",
+            ),
+            (
+                "requirements/a.txt",
+                "-r ../requirements/a.txt\nflask==3.0.0\n",
+            ),
+        ]);
+        let projects = PythonAnalyzer.detect(&ctx);
+        assert_eq!(projects.len(), 1);
+        let facts = PythonAnalyzer.facts(&projects[0], &ctx).unwrap();
+        let count = facts
+            .parse_diagnostics
+            .iter()
+            .filter(|d| d.message.contains("cyclic"))
+            .count();
+        assert_eq!(
+            count, 1,
+            "cyclic-include diagnostic must appear exactly once: {:?}",
+            facts.parse_diagnostics
         );
     }
 

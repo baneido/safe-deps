@@ -11,6 +11,18 @@ use std::path::{Path, PathBuf};
 
 use crate::ecosystems::EcoError;
 
+/// A requirement spec together with the requirements file that declared it.
+///
+/// When a spec originates in a transitive `-r`/`-c` include, `file` points at
+/// the included file rather than the entry-point, so SD006 finding locations
+/// and suppressions anchor to the manifest that actually declared the
+/// dependency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecOrigin {
+    pub file: PathBuf,
+    pub spec: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RequirementsSettings {
     pub require_hashes: bool,
@@ -27,6 +39,12 @@ pub struct RequirementsSettings {
     /// Raw requirement specs (and `-e`/`--editable` targets) for SD006 source
     /// classification.
     pub specs: Vec<String>,
+    /// Requirement specs paired with the file that declared them. Populated
+    /// during recursive loading so a spec from a transitive include is
+    /// attributed to the included file, not the entry-point. (`parse` alone does
+    /// not know its own path, so the origin is filled in by
+    /// `load_recursive_inner`.)
+    pub spec_origins: Vec<SpecOrigin>,
     /// Include paths referenced by `-r`/`--requirement` directives.
     pub requirement_includes: Vec<PathBuf>,
     /// Include paths referenced by `-c`/`--constraint` directives.
@@ -141,6 +159,18 @@ fn load_recursive_inner(
 
     let mut merged = parse(&text);
 
+    // Attribute this file's own specs to `key`. Specs pulled in from `-r`/`-c`
+    // includes below already carry their own (included-file) origin, so this
+    // must happen before the include traversal merges them in.
+    merged.spec_origins = merged
+        .specs
+        .iter()
+        .map(|spec| SpecOrigin {
+            file: key.clone(),
+            spec: spec.clone(),
+        })
+        .collect();
+
     // The parent directory of the including file, for resolving relative paths.
     let parent = key
         .parent()
@@ -223,6 +253,7 @@ fn merge_settings(base: &mut RequirementsSettings, other: RequirementsSettings) 
     base.index_urls.extend(other.index_urls);
     base.extra_index_urls.extend(other.extra_index_urls);
     base.specs.extend(other.specs);
+    base.spec_origins.extend(other.spec_origins);
     base.requirement_count += other.requirement_count;
     base.hashed_requirement_count += other.hashed_requirement_count;
     // Recompute hash pin enforcement after merging counts.
@@ -671,6 +702,44 @@ mod tests {
         // Each entrypoint still gets its own direct specs.
         assert!(prod.specs.contains(&"flask==3.0.0".to_string()));
         assert!(dev.specs.contains(&"pytest==7.0".to_string()));
+    }
+
+    #[test]
+    fn load_recursive_attributes_specs_to_declaring_file() {
+        // requirements.txt -r requirements/base.txt. Each spec's origin must be
+        // the file that declared it, not the entry-point.
+        let (ctx, _d) = make_ctx(&[
+            (
+                "requirements.txt",
+                "-r requirements/base.txt\nflask==3.0.0\n",
+            ),
+            ("requirements/base.txt", "requests==2.31.0\n"),
+        ]);
+        let mut completed = std::collections::HashSet::new();
+        let mut diags = Vec::new();
+        let s = load_recursive(
+            &ctx,
+            std::path::Path::new("requirements.txt"),
+            &mut completed,
+            &mut diags,
+        );
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        let flask = s
+            .spec_origins
+            .iter()
+            .find(|o| o.spec == "flask==3.0.0")
+            .expect("flask origin present");
+        assert_eq!(flask.file, PathBuf::from("requirements.txt"));
+        let requests = s
+            .spec_origins
+            .iter()
+            .find(|o| o.spec == "requests==2.31.0")
+            .expect("requests origin present");
+        assert_eq!(
+            requests.file,
+            PathBuf::from("requirements/base.txt"),
+            "included spec must be attributed to the included file"
+        );
     }
 
     #[test]
