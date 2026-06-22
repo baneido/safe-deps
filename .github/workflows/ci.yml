@@ -227,6 +227,11 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      # Surface known advisories in the docs-lint tooling. These deps are
+      # dev-only (markdownlint/cspell) and pinned via package-lock.json, so
+      # gate on high/critical to avoid churn from low/moderate transitive noise.
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
       - name: Markdown lint
         run: npm run lint:markdown
       - name: Spell check
