@@ -261,9 +261,11 @@ fn requirements_group(path: &Path) -> DependencyGroup {
 ///
 /// Returns the dependencies and any diagnostics emitted while following
 /// `-r`/`-c` includes (cyclic or missing includes become warning diagnostics).
-/// A shared `visited` set is passed through `load_recursive` calls to prevent
-/// double-processing a file that appears both as an entry-point and as an
-/// include target.
+/// A shared `completed` set is passed through `load_recursive` calls so a file
+/// reachable from more than one entry-point contributes its specs once instead
+/// of being double-counted. Cycle detection is per-traversal (see
+/// `requirements::load_recursive`), so two entry-points that both `-r` a shared
+/// base file do not produce a bogus "cyclic" diagnostic.
 fn python_dependencies(
     ctx: &WorkspaceContext,
     dir: &Path,
@@ -282,9 +284,10 @@ fn python_dependencies(
         out.extend(py.classified_dependencies(&py_path));
     }
 
-    // Shared visited set so a file that is both an entry-point and an include
-    // target is not processed twice (which would double-count specs/settings).
-    let mut visited = std::collections::HashSet::new();
+    // Shared `completed` set so a file reachable from more than one entry-point
+    // contributes its specs/settings once (de-dup), without being flagged as a
+    // cycle. Cycle detection is per-traversal inside `load_recursive`.
+    let mut completed = std::collections::HashSet::new();
 
     for req in requirements_files(ctx)
         .into_iter()
@@ -293,7 +296,7 @@ fn python_dependencies(
         // A `requirements-dev.txt` / `requirements/test.txt` holds dev deps, so
         // a local editable path there is not a production-source finding.
         let group = requirements_group(&req);
-        let r = requirements::load_recursive(ctx, &req, &mut visited, &mut diagnostics);
+        let r = requirements::load_recursive(ctx, &req, &mut completed, &mut diagnostics);
         for spec in r.specs {
             let bare = spec.strip_prefix("-e ").unwrap_or(&spec).trim();
             out.push(Dependency {
@@ -419,14 +422,15 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
     let mut requirement_count = 0;
     let mut any_hashes = false;
 
-    // Use a shared visited set so a file that is both an entry-point and an
-    // include target is not double-counted for settings.
-    let mut visited = std::collections::HashSet::new();
+    // Use a shared `completed` set so a file reachable from more than one
+    // entry-point is counted once for settings (de-dup), not flagged as a
+    // cycle. Cycle detection is per-traversal inside `load_recursive`.
+    let mut completed = std::collections::HashSet::new();
     let mut parse_diagnostics: Vec<crate::diagnostics::Diagnostic> =
         pyproject_parse_diagnostic(ctx, dir).into_iter().collect();
 
     for req in &reqs {
-        let r = requirements::load_recursive(ctx, req, &mut visited, &mut parse_diagnostics);
+        let r = requirements::load_recursive(ctx, req, &mut completed, &mut parse_diagnostics);
         if r.require_hashes {
             settings.require_hashes = Some(true);
         }
@@ -645,6 +649,52 @@ mod tests {
                 .any(|d| d.message.contains("cyclic")),
             "expected cyclic diagnostic, got: {:?}",
             facts.parse_diagnostics
+        );
+    }
+
+    #[test]
+    fn shared_base_across_two_entrypoints_no_bogus_cycle_and_base_deps_kept() {
+        // Both requirements.txt and requirements-dev.txt include requirements/base.txt.
+        // The previous shared-`visited` design flagged base.txt as cyclic on the
+        // second entrypoint and dropped its deps; this asserts the fix.
+        let (ctx, _d) = make_ctx(&[
+            (
+                "requirements.txt",
+                "-r requirements/base.txt\nflask==3.0.0\n",
+            ),
+            (
+                "requirements-dev.txt",
+                "-r requirements/base.txt\npytest==7.0\n",
+            ),
+            ("requirements/base.txt", "requests==2.31.0\n"),
+        ]);
+        let projects = PythonAnalyzer.detect(&ctx);
+        assert_eq!(projects.len(), 1, "expected one project: {projects:?}");
+        let facts = PythonAnalyzer.facts(&projects[0], &ctx).unwrap();
+
+        assert!(
+            !facts
+                .parse_diagnostics
+                .iter()
+                .any(|d| d.message.contains("cyclic")),
+            "no bogus cyclic diagnostic expected, got: {:?}",
+            facts.parse_diagnostics
+        );
+
+        let names: Vec<&str> = facts.dependencies.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"requests"), "base dep dropped: {names:?}");
+        assert!(names.contains(&"flask"), "{names:?}");
+        assert!(names.contains(&"pytest"), "{names:?}");
+        // base.txt's dependency is de-duplicated, not duplicated.
+        assert_eq!(
+            facts
+                .dependencies
+                .iter()
+                .filter(|d| d.name == "requests")
+                .count(),
+            1,
+            "requests should appear once: {:?}",
+            facts.dependencies
         );
     }
 

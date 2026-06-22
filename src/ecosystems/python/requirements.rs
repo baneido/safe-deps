@@ -45,7 +45,7 @@ pub fn load(
 }
 
 /// Maximum include nesting depth. Real requirement trees are shallow; this is
-/// a safety net so a cycle that escapes the `visited` check (e.g. via an
+/// a safety net so a cycle that escapes the in-progress check (e.g. via an
 /// unexpected path spelling) can never cause unbounded recursion / stack
 /// overflow on any platform.
 const MAX_INCLUDE_DEPTH: usize = 50;
@@ -54,27 +54,47 @@ const MAX_INCLUDE_DEPTH: usize = 50;
 /// merging the resulting settings. Cyclic includes are detected and skipped;
 /// missing includes are reported as diagnostics. Include paths are normalized
 /// to a canonical workspace-relative form (forward slashes, `.`/`..` resolved)
-/// before they are read or recorded in `visited`, so the same file maps to a
-/// single key on every platform.
+/// before they are read or recorded, so the same file maps to a single key on
+/// every platform.
+///
+/// `completed` is shared across every entrypoint traversal of a project. It
+/// records files that have already been fully processed (merged) so a file
+/// reachable from more than one entrypoint contributes its specs/settings
+/// exactly **once** rather than being double-counted. (Project-level
+/// aggregation in `python_dependencies`/`build_pip_facts` then accumulates the
+/// per-entrypoint results; collapsing here keeps `requirement_count` and specs
+/// from being inflated by shared base files.) Re-encountering a `completed`
+/// file from a different entrypoint is a silent skip — *not* a cycle.
+///
+/// Cycle detection is tracked separately, per traversal, by an in-progress DFS
+/// stack inside `load_recursive_inner`; only re-entry of a file still on that
+/// stack is a true cycle.
 pub fn load_recursive(
     ctx: &crate::filesystem::WorkspaceContext,
     relative: &Path,
-    visited: &mut HashSet<PathBuf>,
+    completed: &mut HashSet<PathBuf>,
     diagnostics: &mut Vec<crate::diagnostics::Diagnostic>,
 ) -> RequirementsSettings {
-    load_recursive_inner(ctx, relative, visited, diagnostics, 0)
+    // `in_progress` is scoped to this single root traversal: it is the active
+    // DFS include-stack and drives cycle detection only. It is intentionally
+    // *not* shared across entrypoints, so two entrypoints reaching the same
+    // base file never see each other's frames as a "cycle".
+    let mut in_progress = HashSet::new();
+    load_recursive_inner(ctx, relative, &mut in_progress, completed, diagnostics, 0)
 }
 
 fn load_recursive_inner(
     ctx: &crate::filesystem::WorkspaceContext,
     relative: &Path,
-    visited: &mut HashSet<PathBuf>,
+    in_progress: &mut HashSet<PathBuf>,
+    completed: &mut HashSet<PathBuf>,
     diagnostics: &mut Vec<crate::diagnostics::Diagnostic>,
     depth: usize,
 ) -> RequirementsSettings {
     // Canonical, platform-independent key (forward slashes, no `.`/`..`). Using
-    // it for both `visited` and the read keeps cycle detection reliable and the
-    // `read_text` lookup consistent with the workspace's normalized entries.
+    // it for the in-progress/completed sets and the read keeps cycle detection
+    // reliable and the `read_text` lookup consistent with the workspace's
+    // normalized entries.
     let key = normalize_rel(relative);
 
     if depth > MAX_INCLUDE_DEPTH {
@@ -88,12 +108,20 @@ fn load_recursive_inner(
         return RequirementsSettings::default();
     }
 
-    if !visited.insert(key.clone()) {
-        // Already visited — cyclic include.
+    if in_progress.contains(&key) {
+        // The file is currently on the active DFS include-stack — a genuine
+        // cyclic include.
         diagnostics.push(crate::diagnostics::Diagnostic::warn_at(
             format!("cyclic requirements include detected: {}", key.display()),
             key.clone(),
         ));
+        return RequirementsSettings::default();
+    }
+
+    if completed.contains(&key) {
+        // Already fully processed (and merged) by an earlier traversal or
+        // include path — silently de-duplicate so its specs/settings are
+        // counted once. This is not a cycle, so no diagnostic is emitted.
         return RequirementsSettings::default();
     }
 
@@ -108,6 +136,9 @@ fn load_recursive_inner(
         }
     };
 
+    // Push onto the active include-stack for the duration of this subtree.
+    in_progress.insert(key.clone());
+
     let mut merged = parse(&text);
 
     // The parent directory of the including file, for resolving relative paths.
@@ -121,7 +152,14 @@ fn load_recursive_inner(
     let req_includes: Vec<PathBuf> = merged.requirement_includes.clone();
     for inc_path in req_includes {
         let resolved = resolve_include(&parent, &inc_path);
-        let included = load_recursive_inner(ctx, &resolved, visited, diagnostics, depth + 1);
+        let included = load_recursive_inner(
+            ctx,
+            &resolved,
+            in_progress,
+            completed,
+            diagnostics,
+            depth + 1,
+        );
         merge_settings(&mut merged, included);
     }
 
@@ -130,9 +168,21 @@ fn load_recursive_inner(
     let con_includes: Vec<PathBuf> = merged.constraint_includes.clone();
     for inc_path in con_includes {
         let resolved = resolve_include(&parent, &inc_path);
-        let included = load_recursive_inner(ctx, &resolved, visited, diagnostics, depth + 1);
+        let included = load_recursive_inner(
+            ctx,
+            &resolved,
+            in_progress,
+            completed,
+            diagnostics,
+            depth + 1,
+        );
         merge_settings(&mut merged, included);
     }
+
+    // Done with this subtree: pop from the active stack and mark it completed so
+    // later traversals de-duplicate it without re-walking or re-merging.
+    in_progress.remove(&key);
+    completed.insert(key);
 
     merged
 }
@@ -564,6 +614,63 @@ mod tests {
             diags.iter().any(|d| d.message.contains("missing.txt")),
             "expected missing-file diagnostic, got: {diags:?}"
         );
+    }
+
+    #[test]
+    fn shared_completed_set_dedups_across_entrypoints_without_cyclic_diagnostic() {
+        // requirements.txt and requirements-dev.txt both `-r requirements/base.txt`.
+        // With a single shared set used for cycle detection, the second traversal
+        // would falsely flag base.txt as cyclic and drop its contribution. With a
+        // per-traversal in-progress set + a shared `completed` set, the second
+        // traversal silently de-duplicates base.txt: no cyclic diagnostic, and the
+        // first traversal already merged base.txt's specs.
+        let (ctx, _d) = make_ctx(&[
+            (
+                "requirements.txt",
+                "-r requirements/base.txt\nflask==3.0.0\n",
+            ),
+            (
+                "requirements-dev.txt",
+                "-r requirements/base.txt\npytest==7.0\n",
+            ),
+            ("requirements/base.txt", "requests==2.31.0\n"),
+        ]);
+        let mut completed = std::collections::HashSet::new();
+        let mut diags = Vec::new();
+
+        let prod = load_recursive(
+            &ctx,
+            std::path::Path::new("requirements.txt"),
+            &mut completed,
+            &mut diags,
+        );
+        let dev = load_recursive(
+            &ctx,
+            std::path::Path::new("requirements-dev.txt"),
+            &mut completed,
+            &mut diags,
+        );
+
+        assert!(
+            !diags.iter().any(|d| d.message.contains("cyclic")),
+            "shared base file must not be reported as cyclic across entrypoints: {diags:?}"
+        );
+        // base.txt's spec is attributed to the first entrypoint that reached it
+        // (de-dup once), so it is not dropped.
+        assert!(
+            prod.specs.contains(&"requests==2.31.0".to_string()),
+            "base.txt spec should be merged into the first entrypoint: {:?}",
+            prod.specs
+        );
+        // The second entrypoint silently de-dups base.txt: counted once total.
+        assert!(
+            !dev.specs.contains(&"requests==2.31.0".to_string()),
+            "base.txt spec must not be double-counted on the second entrypoint: {:?}",
+            dev.specs
+        );
+        // Each entrypoint still gets its own direct specs.
+        assert!(prod.specs.contains(&"flask==3.0.0".to_string()));
+        assert!(dev.specs.contains(&"pytest==7.0".to_string()));
     }
 
     #[test]
