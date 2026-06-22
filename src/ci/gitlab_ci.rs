@@ -27,17 +27,19 @@ impl CiProvider for GitlabCi {
         // Anchoring to a single-component path mirrors how GitHub Actions
         // anchors to `.github/workflows/` and CircleCI anchors to
         // `.circleci/config.yml`.
-        let comps: Vec<&std::ffi::OsStr> = relative
-            .components()
-            .filter_map(|c| match c {
-                std::path::Component::Normal(n) => Some(n),
-                _ => None,
-            })
-            .collect();
-        comps.len() == 1
-            && comps[0]
+        // Exactly one normal path component equal to `.gitlab-ci.yml`. Iterate
+        // and short-circuit rather than collecting into a Vec — this runs once
+        // per scanned file.
+        let mut normals = relative.components().filter_map(|c| match c {
+            std::path::Component::Normal(n) => Some(n),
+            _ => None,
+        });
+        match (normals.next(), normals.next()) {
+            (Some(name), None) => name
                 .to_str()
-                .is_some_and(|n| n.eq_ignore_ascii_case(".gitlab-ci.yml"))
+                .is_some_and(|n| n.eq_ignore_ascii_case(".gitlab-ci.yml")),
+            _ => false,
+        }
     }
     fn parse(&self, relative: &Path, text: &str) -> ParsedCi {
         ParsedCi {
