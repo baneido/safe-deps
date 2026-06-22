@@ -6,6 +6,7 @@
 
 use crate::ecosystems::{PackageManager, YarnGeneration};
 use crate::rule::{Confidence, Finding, Location, Profile, Rule, RuleId, RuleInput, Severity};
+use crate::rules::{config_loc, config_loc_at};
 
 pub struct Sd004;
 
@@ -126,26 +127,4 @@ fn finding(
         package_manager: Some(facts.project.package_manager),
         remediation: remediation.map(|s| s.to_string()),
     }
-}
-
-fn config_loc(facts: &crate::ecosystems::ProjectFacts, basename: &str) -> Option<Location> {
-    facts
-        .configs
-        .iter()
-        .find(|c| c.relative.file_name().and_then(|n| n.to_str()) == Some(basename))
-        .map(|c| Location::file(&c.relative))
-        .or_else(|| facts.manifest.as_ref().map(|m| Location::file(&m.relative)))
-}
-
-/// Like [`config_loc`] but attaches a 1-based line when one is known.
-fn config_loc_at(
-    facts: &crate::ecosystems::ProjectFacts,
-    basename: &str,
-    line: Option<u32>,
-) -> Option<Location> {
-    let mut loc = config_loc(facts, basename)?;
-    if let Some(line) = line {
-        loc.line = Some(line);
-    }
-    Some(loc)
 }

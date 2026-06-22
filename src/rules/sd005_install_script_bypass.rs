@@ -10,6 +10,7 @@
 
 use crate::ecosystems::{PackageManager, ProjectFacts};
 use crate::rule::{Confidence, Finding, Location, Rule, RuleId, RuleInput, Severity};
+use crate::rules::config_loc;
 
 pub struct Sd005;
 
@@ -77,14 +78,4 @@ fn finding(
         package_manager: Some(facts.project.package_manager),
         remediation: Some(remediation.to_string()),
     }
-}
-
-/// Locates a config file by basename, falling back to the manifest.
-fn config_loc(facts: &ProjectFacts, basename: &str) -> Option<Location> {
-    facts
-        .configs
-        .iter()
-        .find(|c| c.relative.file_name().and_then(|n| n.to_str()) == Some(basename))
-        .map(|c| Location::file(&c.relative))
-        .or_else(|| facts.manifest.as_ref().map(|m| Location::file(&m.relative)))
 }

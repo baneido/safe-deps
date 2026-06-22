@@ -8,7 +8,8 @@
 use std::path::Path;
 
 use crate::ci::yaml::{
-    is_block_scalar_indicator, leading_spaces, mapping_key, strip_comment, unquote,
+    is_block_scalar_indicator, leading_spaces, mapping_key, push_command, scalar_to_string,
+    strip_comment, unquote,
 };
 use crate::ci::{redact_env_value, CiCommand, CiProvider, EnvAssignment, ParsedCi};
 
@@ -63,7 +64,7 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
                     break;
                 }
                 if is_script {
-                    push(
+                    push_command(
                         &mut commands,
                         relative,
                         j,
@@ -82,7 +83,7 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
         }
         // Inline single command: `script: npm ci`.
         if !value.is_empty() {
-            push(
+            push_command(
                 &mut commands,
                 relative,
                 i,
@@ -105,28 +106,17 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
             let content = strip_comment(line).trim();
             if let Some(item) = content.strip_prefix("- ") {
                 if !is_block_scalar_indicator(item.trim()) {
-                    push(&mut commands, relative, j, unquote(item.trim()));
+                    push_command(&mut commands, relative, j, unquote(item.trim()));
                 }
             } else if content != "-" && !is_block_scalar_indicator(content) {
                 // Block-scalar content line under a `- |` array item.
-                push(&mut commands, relative, j, unquote(content));
+                push_command(&mut commands, relative, j, unquote(content));
             }
             j += 1;
         }
         i = j;
     }
     commands
-}
-
-fn push(commands: &mut Vec<CiCommand>, relative: &Path, line_idx: usize, command: &str) {
-    if command.is_empty() {
-        return;
-    }
-    commands.push(CiCommand {
-        file: relative.to_path_buf(),
-        line: (line_idx as u32) + 1,
-        command: command.to_string(),
-    });
 }
 
 /// Extracts `variables:` mappings (top-level and per-job) structurally; secret
@@ -147,7 +137,7 @@ fn collect_variables(node: &serde_yaml::Value, out: &mut Vec<EnvAssignment>) {
                 if let serde_yaml::Value::Mapping(vars) = v {
                     for (name, value) in vars {
                         if let Some(name) = name.as_str() {
-                            let raw = scalar_to_string(value);
+                            let raw = variable_value(value);
                             out.push(EnvAssignment {
                                 name: name.to_string(),
                                 value: redact_env_value(name, &raw),
@@ -162,17 +152,16 @@ fn collect_variables(node: &serde_yaml::Value, out: &mut Vec<EnvAssignment>) {
     }
 }
 
-fn scalar_to_string(v: &serde_yaml::Value) -> String {
+/// A GitLab variable value: usually a scalar, but GitLab also allows the
+/// expanded `VAR: { value: "...", description: "..." }` form, whose `value`
+/// field carries the actual value.
+fn variable_value(v: &serde_yaml::Value) -> String {
     match v {
-        serde_yaml::Value::String(s) => s.clone(),
-        serde_yaml::Value::Bool(b) => b.to_string(),
-        serde_yaml::Value::Number(n) => n.to_string(),
-        // GitLab also allows `VAR: { value: "...", description: "..." }`.
         serde_yaml::Value::Mapping(m) => m
             .get(serde_yaml::Value::String("value".into()))
-            .map(scalar_to_string)
+            .map(variable_value)
             .unwrap_or_default(),
-        _ => String::new(),
+        other => scalar_to_string(other),
     }
 }
 

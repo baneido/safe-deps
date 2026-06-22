@@ -15,7 +15,7 @@ use crate::ecosystems::{detect_all, facts_for};
 use crate::filesystem::WorkspaceContext;
 use crate::project::refine_kinds;
 use crate::report::sort_findings;
-use crate::rule::{Finding, Profile, Rule, RuleInput, WorkspaceInput};
+use crate::rule::{Finding, Location, Profile, Rule, RuleInput, WorkspaceInput};
 
 pub mod sd001_lockfile_missing;
 pub mod sd002_non_frozen_ci_install;
@@ -40,6 +40,35 @@ pub fn all_rules() -> Vec<Box<dyn Rule>> {
         Box::new(sd008_audit_missing::Sd008),
         Box::new(sd009_dangerous_flags::Sd009),
     ]
+}
+
+/// Locates a config file in a project's facts by basename, falling back to the
+/// manifest. Shared by the config-based rules (SD003/SD004/SD005) so they point
+/// findings at the file that declared the offending setting.
+pub(crate) fn config_loc(
+    facts: &crate::ecosystems::ProjectFacts,
+    basename: &str,
+) -> Option<Location> {
+    facts
+        .configs
+        .iter()
+        .find(|c| c.relative.file_name().and_then(|n| n.to_str()) == Some(basename))
+        .map(|c| Location::file(&c.relative))
+        .or_else(|| facts.manifest.as_ref().map(|m| Location::file(&m.relative)))
+}
+
+/// Like [`config_loc`] but attaches a 1-based line when one is known, so that
+/// line-scoped suppressions and precise output can target the exact setting.
+pub(crate) fn config_loc_at(
+    facts: &crate::ecosystems::ProjectFacts,
+    basename: &str,
+    line: Option<u32>,
+) -> Option<Location> {
+    let mut loc = config_loc(facts, basename)?;
+    if let Some(line) = line {
+        loc.line = Some(line);
+    }
+    Some(loc)
 }
 
 /// Result of running the analysis engine.

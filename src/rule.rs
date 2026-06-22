@@ -183,8 +183,6 @@ pub struct Policy {
     #[serde(default)]
     pub allow_git_dependencies: bool,
     #[serde(default)]
-    pub require_audit_in_ci: bool,
-    #[serde(default)]
     pub external_audit: bool,
     #[serde(default)]
     pub external_audit_reason: Option<String>,

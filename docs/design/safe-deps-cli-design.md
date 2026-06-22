@@ -331,7 +331,7 @@ application_roots = ["apps/**", "services/**"]
 library_roots = ["packages/**"]
 allow_local_path_dependencies = false
 allow_git_dependencies = false
-require_audit_in_ci = true
+external_audit = false
 
 [rules.SD001]
 level = "error"

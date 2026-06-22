@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use crate::ci::yaml::{
-    is_block_scalar_indicator, leading_spaces, mapping_key, strip_comment, unquote,
+    is_block_scalar_indicator, leading_spaces, mapping_key, push_command, strip_comment, unquote,
 };
 use crate::ci::{redact_env_value, CiCommand, CiProvider, EnvAssignment, ParsedCi};
 
@@ -71,7 +71,7 @@ fn extract_run_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
                     break;
                 }
                 if carries_command {
-                    push(&mut commands, relative, j, strip_comment(line).trim());
+                    push_command(&mut commands, relative, j, strip_comment(line).trim());
                 }
                 j += 1;
             }
@@ -79,7 +79,7 @@ fn extract_run_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
             continue;
         }
         if carries_command && !value.is_empty() {
-            push(
+            push_command(
                 &mut commands,
                 relative,
                 i,
@@ -89,17 +89,6 @@ fn extract_run_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
         i += 1;
     }
     commands
-}
-
-fn push(commands: &mut Vec<CiCommand>, relative: &Path, line_idx: usize, command: &str) {
-    if command.is_empty() {
-        return;
-    }
-    commands.push(CiCommand {
-        file: relative.to_path_buf(),
-        line: (line_idx as u32) + 1,
-        command: command.to_string(),
-    });
 }
 
 /// Extracts `environment:` mappings structurally; secret values are redacted.

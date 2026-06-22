@@ -8,7 +8,9 @@
 
 use std::path::Path;
 
-use crate::ci::yaml::{dedent, is_block_scalar_indicator, leading_spaces, mapping_key};
+use crate::ci::yaml::{
+    dedent, is_block_scalar_indicator, leading_spaces, mapping_key, scalar_to_string,
+};
 use crate::ci::{redact_env_value, CiCommand, CiProvider, EnvAssignment, ParsedCi};
 
 /// The GitHub Actions provider (`.github/workflows/*.yml|yaml`).
@@ -254,16 +256,6 @@ fn collect_env(node: &serde_yaml::Value, out: &mut Vec<EnvAssignment>) {
             name: name.to_string(),
             value: redact_env_value(name, &value),
         });
-    }
-}
-
-fn scalar_to_string(v: &serde_yaml::Value) -> String {
-    match v {
-        serde_yaml::Value::String(s) => s.clone(),
-        serde_yaml::Value::Bool(b) => b.to_string(),
-        serde_yaml::Value::Number(n) => n.to_string(),
-        serde_yaml::Value::Null => String::new(),
-        _ => String::new(),
     }
 }
 

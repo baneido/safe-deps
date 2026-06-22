@@ -497,7 +497,7 @@ exclude = []
 # library_roots = [\"packages/**\"]
 allow_local_path_dependencies = false
 allow_git_dependencies = false
-require_audit_in_ci = true
+# external_audit = true  # set when audits run in a separate workflow/scanner
 
 # [[suppressions]]
 # rule = \"SD006\"

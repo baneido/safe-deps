@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use crate::ecosystems::source::classify_python_source;
 use crate::ecosystems::{
-    Dependency, DependencyGroup, EcoError, Ecosystem, FileFact, InstallSettings, PackageManager,
-    Project, ProjectFacts, ProjectKind,
+    is_proper_ancestor, Dependency, DependencyGroup, EcoError, Ecosystem, FileFact,
+    InstallSettings, PackageManager, Project, ProjectFacts, ProjectKind,
 };
 use crate::filesystem::{files_named, project_join, WorkspaceContext};
 
@@ -95,13 +95,6 @@ fn detect_python_manager(
 fn has_file_in(ctx: &WorkspaceContext, dir: &Path, name: &str) -> bool {
     let target = project_join(dir, name);
     ctx.contains(&target)
-}
-
-fn is_proper_ancestor(ancestor: &Path, descendant: &Path) -> bool {
-    if ancestor == Path::new(".") {
-        return descendant != Path::new(".");
-    }
-    descendant.starts_with(ancestor) && descendant != ancestor
 }
 
 /// A uv member project is covered when a proper-ancestor uv project declares a
