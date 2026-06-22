@@ -183,6 +183,30 @@ registry-sourced coordinates from `Cargo.lock` and `package-lock.json`, queries
 OSV for known advisories, and caches results on disk (default TTL 24h).
 `--offline` uses only the cache. `check` never touches the network.
 
+### Audit cache directory
+
+The OSV result cache is stored in `$XDG_CACHE_HOME/safe-deps/osv` when
+`$XDG_CACHE_HOME` is set, or `$HOME/.cache/safe-deps/osv` otherwise.
+
+When **neither** `$HOME` nor `$XDG_CACHE_HOME` is set (e.g. inside a minimal
+container or a `sudo`-stripped environment) the cache falls back to
+`<temp_dir>/safe-deps/osv` (typically `/tmp/safe-deps/osv` on Linux). Be aware
+of the following caveats in that case:
+
+- **Ownership**: the system temp directory is typically world-writable; another
+  user or process could replace or delete cache files between runs.
+- **Visibility**: on Linux, `/tmp` is not namespaced per user, so cache entries
+  may be visible to other local users.
+- **Lifetime**: many systems clear `/tmp` on reboot or via a tmpwatch timer, so
+  the cache may be shorter-lived than the configured TTL.
+
+For production use, ensure `$HOME` (or `$XDG_CACHE_HOME`) is set so the cache
+lands in a user-private, persistent location.
+
+Cache writes are atomic (written to a temp file then renamed) so a concurrent
+or interrupted run cannot leave a partially-written entry. Write failures are
+surfaced as non-fatal diagnostics in the audit output.
+
 HTTP uses an in-process client (`ureq` with rustls) by default, so the binary is
 self-contained and cross-platform. Building with
 `--no-default-features --features curl-transport` instead shells out to the

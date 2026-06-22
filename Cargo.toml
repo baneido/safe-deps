@@ -38,6 +38,10 @@ rayon = "1"
 ureq = { version = "2.12", default-features = false, features = [
     "tls",
 ], optional = true }
+# Used by the `audit` cache to create the temp file for an atomic write with a
+# guaranteed-new, unguessable name (`O_EXCL` + random suffix), avoiding the
+# symlink/TOCTOU and collision risks of a predictable pid+timestamp name.
+tempfile = "3"
 
 [features]
 # `native-http` (default) makes `audit` self-contained via the in-process `ureq`
@@ -52,7 +56,6 @@ curl-transport = []
 insta = "1"
 assert_cmd = "2"
 predicates = "3"
-tempfile = "3"
 proptest = "1"
 
 [profile.release]
