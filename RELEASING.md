@@ -6,12 +6,12 @@ Both are produced automatically by [`.github/workflows/release.yml`](.github/wor
 when a `vX.Y.Z` tag is pushed. This document is the maintainer checklist for
 cutting that tag.
 
-> **First publish is a one-time manual bootstrap.** The automated `publish-crate`
+> **First publish is a one-time manual bootstrap (already completed for `v0.2.1`).** The automated `publish-crate`
 > job authenticates with crates.io Trusted Publishing (GitHub OIDC, no long-lived
 > token) — but unlike PyPI, crates.io has **no "pending publisher"**: the Trusted
 > Publishing settings only appear *after* the crate exists, so they cannot be
-> configured before the first publish. Bootstrap once, then automation takes over —
-> see [Bootstrapping the first crates.io release](#bootstrapping-the-first-cratesio-release).
+> configured before the first publish. See
+> [Bootstrapping the first crates.io release](#bootstrapping-the-first-cratesio-release) for the one-time steps.
 
 ## Versioning
 
