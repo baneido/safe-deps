@@ -226,6 +226,8 @@ jobs:
           # The tap push authenticates with TAP_TOKEN, so don't keep this repo's
           # checkout credentials around.
           persist-credentials: false
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Open Homebrew formula PR on baneido/homebrew-tap
         env:
           # Token with push + PR permission on baneido/homebrew-tap (shared with the
