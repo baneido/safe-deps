@@ -1934,6 +1934,23 @@ fn ci_audit_command_clears_sd008() {
 }
 
 #[test]
+fn ci_bootstrap_install_without_ecosystem_deps_does_not_report_sd008() {
+    // A Rust repo whose CI bootstraps a Python helper (`pip install tox`) has
+    // no Python project dependencies. SD008 must not fire for Python: the
+    // dependency-presence gate requires real deps in the ecosystem, not just a
+    // CI install command (regression for review on src/rules/sd008).
+    let manifest = "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n";
+    let ws = workspace(&[("Cargo.toml", manifest), ("Cargo.lock", "version = 3\n")]);
+    let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "pip install tox");
+    write(ws.path(), ".github/workflows/ci.yml", &workflow);
+    let report = check_json(&ws, &[]);
+    assert!(
+        findings_for(&report, "SD008").is_empty(),
+        "a bootstrap helper install with no Python deps must not trip SD008: {report}"
+    );
+}
+
+#[test]
 fn external_audit_policy_opts_out_of_sd008() {
     let workflow = WORKFLOW_NPM_INSTALL.replace("npm install", "npm ci");
     let ws = workspace(&[
@@ -1944,6 +1961,57 @@ fn external_audit_policy_opts_out_of_sd008() {
     write(ws.path(), ".github/workflows/ci.yml", &workflow);
     let report = check_json(&ws, &[]);
     assert!(findings_for(&report, "SD008").is_empty(), "{report}");
+}
+
+#[test]
+fn monorepo_audit_missing_reports_sd008_once() {
+    // A monorepo where the workflow installs every package but never runs an
+    // audit command. SD008 is workspace-scoped: it must fire exactly once (not
+    // once per package) for the entire workspace.
+    let pkg = |name: &str| format!(r#"{{ "name": "{name}", "dependencies": {{ "x": "^1" }} }}"#);
+    let ws = workspace(&[
+        ("package.json", r#"{ "name": "root", "private": true }"#),
+        ("package-lock.json", NPM_LOCK),
+        ("packages/app/package.json", &pkg("app")),
+        ("packages/lib/package.json", &pkg("lib")),
+    ]);
+    write(
+        ws.path(),
+        ".github/workflows/ci.yml",
+        "name: ci\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          cd packages/app && npm ci\n          cd packages/lib && npm ci\n",
+    );
+    let report = check_json(&ws, &[]);
+    let sd008 = findings_for(&report, "SD008");
+    assert_eq!(
+        sd008.len(),
+        1,
+        "SD008 must fire once for the workspace, not once per package: {report}"
+    );
+    assert_eq!(sd008[0]["ecosystem"], "javascript");
+    assert_eq!(sd008[0]["location"]["file"], ".github/workflows/ci.yml");
+}
+
+#[test]
+fn monorepo_single_package_audit_clears_sd008() {
+    // Same monorepo, but now the CI audits (anywhere) for the ecosystem. SD008
+    // is cleared workspace-wide; it does not duplicate or partially fire.
+    let pkg = |name: &str| format!(r#"{{ "name": "{name}", "dependencies": {{ "x": "^1" }} }}"#);
+    let ws = workspace(&[
+        ("package.json", r#"{ "name": "root", "private": true }"#),
+        ("package-lock.json", NPM_LOCK),
+        ("packages/app/package.json", &pkg("app")),
+        ("packages/lib/package.json", &pkg("lib")),
+    ]);
+    write(
+        ws.path(),
+        ".github/workflows/ci.yml",
+        "name: ci\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          cd packages/app && npm ci && npm audit\n          cd packages/lib && npm ci\n",
+    );
+    let report = check_json(&ws, &[]);
+    assert!(
+        findings_for(&report, "SD008").is_empty(),
+        "an audit in CI clears SD008 for the whole ecosystem: {report}"
+    );
 }
 
 #[test]
