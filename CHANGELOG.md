@@ -12,7 +12,34 @@ unreleased and not yet tagged.
   trip one rule (`missing-lockfile` → SD001, `npm-insecure-registry` → SD003,
   `pip-extra-index` → SD007), plus a hardened `clean-baseline` that stays clean.
   README links them under a "Try it" section.
-
+- Corrected the SD006 coverage docs: the README rule matrix and `CLAUDE.md` said
+  SD006 (unsafe dependency source) did not cover Cargo/Go, but it has since #35 —
+  it flags Cargo `git`/`path` deps and `[patch]`/`[replace]` redirects and Go
+  local-path `replace` targets. Marked them `✓` and noted the remaining
+  deeper detections (Cargo `[source]` `replace-with`, Go `GOPRIVATE`/sumdb) as
+  tracked in #65.
+- Added a single-source guard for rule metadata (`tests/rule_metadata.rs`): the
+  README rule table must match `Rule::summary()` for every registered rule (and
+  list the same ids), so documentation can no longer silently drift from the
+  code that `list-rules`/`explain` print. Reconciled two pre-existing drifts
+  (SD003, SD006) by regenerating the README table from the registry. First
+  increment toward #66.
+- Hardened the optional `curl-transport` audit fallback: the system `curl` is now
+  resolved to a concrete path up front — honoring a `SAFE_DEPS_CURL` override,
+  then preferring trusted absolute directories over `PATH`, and skipping relative
+  `PATH` entries during the scan — instead of relying solely on exec-time `PATH`
+  resolution. When `curl` is found this way a poisoned `PATH` cannot shadow it;
+  if it is found in none of those locations the code falls back to the bare name
+  (legacy behavior, no regression). The resolved path is surfaced by
+  `audit --verbose` and in spawn-error messages, and a CI step now runs the
+  `curl-transport` test suite. The default `native-http` build is unaffected.
+- Added output-schema and diagnostic regression tests (`tests/output_and_diagnostics.rs`):
+  SARIF 2.1.0 structure (driver rules + results contract) and well-formed JUnit
+  XML, the `complex-shell-not-fully-parsed` diagnostic firing for
+  command/process substitution and heredocs in package-manager commands (and
+  staying silent on plain ones), and malformed `pyproject.toml`/`uv.toml`
+  surfacing a parse diagnostic that escalates under `--strict-parser-errors`
+  rather than being silently treated as no config.
 - Added a `docs lint` CI job that runs `markdownlint-cli2` and `cspell` on every
   push and pull request, so the existing Markdown/spelling checks are now a PR
   gate rather than local-only. Uses an SHA-pinned `actions/setup-node` with

@@ -98,17 +98,17 @@ See [`examples/README.md`](examples/README.md) for what each demonstrates.
 
 ## Rules
 
-| ID    | Summary                                                                        |
-| ----- | ------------------------------------------------------------------------------ |
-| SD001 | Lockfile missing for a manifest that declares dependencies.                    |
-| SD002 | CI installs should use a frozen/locked command, not a resolving one.           |
-| SD003 | Registry or index uses HTTP, or TLS verification is disabled.                  |
-| SD004 | Integrity or checksum validation is disabled.                                  |
-| SD005 | Dependency build/lifecycle scripts are broadly enabled.                        |
-| SD006 | Dependency resolves from an unsafe source (floating git, tarball, local path). |
-| SD007 | Index/source config exposes the project to dependency confusion.               |
-| SD008 | CI installs dependencies but no audit command is visible.                      |
-| SD009 | CI install commands use a flag that bypasses dependency safety checks.         |
+| ID    | Summary                                                                  |
+| ----- | ------------------------------------------------------------------------ |
+| SD001 | Lockfile missing for a manifest that declares dependencies.              |
+| SD002 | CI installs should use a frozen/locked command, not a resolving one.     |
+| SD003 | Registry or index uses HTTP or TLS verification is disabled.             |
+| SD004 | Integrity or checksum validation is disabled.                            |
+| SD005 | Dependency build/lifecycle scripts are broadly enabled.                  |
+| SD006 | Dependency resolves from an unsafe source (floating git, tarball, path). |
+| SD007 | Index/source config exposes the project to dependency confusion.         |
+| SD008 | CI installs dependencies but no audit command is visible.                |
+| SD009 | CI install commands use a flag that bypasses dependency safety checks.   |
 
 `safe-deps explain <ID>` prints the full rationale and remediation for a rule.
 
@@ -126,15 +126,18 @@ when a supported CI configuration is present (see CI provider support below).
 | Bun       |   ✓   |     ✓      |   –   |   –   |   ✓   |   ✓   |   –   |     ✓      |     ✓      |
 | pip       |   –   |     ✓      |   ✓   |   ✓   |   –   |   ✓   |   ✓   |     ✓      |     ✓      |
 | uv        |   ✓   |     ✓      |   ✓   |   –   |   –   |   ✓   |   ✓   |     ✓      |     ✓      |
-| Cargo     |   ✓   |     ✓      |   –   |   –   |   –   |   –   |   –   |     –      |     –      |
-| Go        |   ✓   |     ✓      |   –   |   –   |   –   |   –   |   –   |     –      |     –      |
+| Cargo     |   ✓   |     ✓      |   –   |   –   |   –   |   ✓   |   –   |     –      |     –      |
+| Go        |   ✓   |     ✓      |   –   |   –   |   –   |   ✓   |   –   |     –      |     –      |
 
 Notes:
 
 - pip has no conventional lockfile, so SD001 does not apply; its integrity is
   assessed through `--require-hashes` (SD004) instead.
-- SD006 (unsafe dependency source) covers JavaScript and Python manifests today.
-  Extending it to Cargo/Go is tracked separately.
+- SD006 (unsafe dependency source) covers all four ecosystems: JavaScript and
+  Python manifests, plus Cargo (`git`/`path` dependencies and `[patch]`/`[replace]`
+  redirects) and Go (local-path `replace` targets). Deeper Cargo/Go source
+  detections (Cargo `[source]` `replace-with`, Go `GOPRIVATE`/sumdb opt-outs) are
+  tracked in [#65](https://github.com/baneido/safe-deps/issues/65).
 - For Cargo/Go, SD002 flags a non-reproducible CI build (`cargo build`/`test`
   without `--locked`/`--frozen`; `go build`/`test` with `-mod=mod`). SD008/SD009
   do not yet recognize Cargo/Go commands.
