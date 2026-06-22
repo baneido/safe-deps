@@ -173,6 +173,7 @@ impl Profile {
 /// Project-level policy declarations. Teams can declare equivalent external
 /// controls so the linter does not force one workflow.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Policy {
     #[serde(default)]
     pub application_roots: Vec<String>,

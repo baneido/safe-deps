@@ -373,6 +373,82 @@ fn invalid_application_root_glob_is_usage_error() {
     );
 }
 
+// --- unknown config fields → exit 2 -----------------------------------------
+
+#[test]
+fn unknown_top_level_config_field_is_usage_error() {
+    // A typo'd top-level key must cause exit 2, not be silently ignored.
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        (
+            "safe-deps.toml",
+            "profile = \"balanced\"\ntypo_field = true\n",
+        ),
+    ]);
+    let out = run(&ws, &["check", "."]);
+    assert_eq!(
+        code(&out),
+        2,
+        "unknown top-level config field should exit 2: {}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn typo_of_suppression_expires_is_usage_error() {
+    // "expire" is a common typo for "expires"; it must NOT be silently dropped.
+    let ws = workspace(&[
+        ("package.json", NPM_DEPS),
+        (
+            "safe-deps.toml",
+            "[[suppressions]]\nrule = \"SD003\"\npath = \"**/*\"\nreason = \"temporary\"\nexpire = \"2026-01-01\"\n",
+        ),
+    ]);
+    let out = run(&ws, &["check", "."]);
+    assert_eq!(
+        code(&out),
+        2,
+        "typo'd suppression field 'expire' should exit 2: {}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn valid_full_config_with_all_fields_exits_zero() {
+    // Regression guard: a config that exercises every known field must still
+    // be accepted and not cause a parse/validation error.
+    let config = r#"
+profile = "strict"
+fail_on = "none"
+format = "text"
+
+[policy]
+allow_git_dependencies = true
+allow_local_path_dependencies = true
+require_audit_in_ci = false
+external_audit = false
+application_roots = []
+library_roots = []
+
+[workspace]
+exclude = []
+include = []
+
+[[suppressions]]
+rule = "SD001"
+path = "package.json"
+reason = "tracked in backlog"
+"#;
+    let ws = workspace(&[("package.json", NPM_DEPS), ("safe-deps.toml", config)]);
+    let out = run(&ws, &["check", "."]);
+    assert_ne!(
+        code(&out),
+        2,
+        "valid full config should not cause exit 2: {}",
+        stdout(&out)
+    );
+}
+
 // --- suppressions ------------------------------------------------------------
 
 #[test]
