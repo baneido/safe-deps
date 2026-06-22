@@ -1,0 +1,43 @@
+# Template for the Homebrew formula published to baneido/homebrew-tap.
+# The release workflow's `homebrew` job (.github/workflows/release.yml) fills the
+# version, tag, and per-target SHA-256 placeholders per release and opens a PR on
+# baneido/homebrew-tap. Do not edit the generated Formula/safe-deps.rb by hand.
+#
+# This formula downloads the prebuilt, checksummed binaries from GitHub Releases
+# instead of building from source, so `brew install` needs no Rust toolchain.
+class SafeDeps < Formula
+  desc "Static linter for package-management security practices"
+  homepage "https://github.com/baneido/safe-deps"
+  version "{{VERSION}}"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/baneido/safe-deps/releases/download/{{TAG}}/safe-deps-aarch64-apple-darwin.tar.gz"
+      sha256 "{{SHA256_DARWIN_ARM64}}"
+    end
+    on_intel do
+      url "https://github.com/baneido/safe-deps/releases/download/{{TAG}}/safe-deps-x86_64-apple-darwin.tar.gz"
+      sha256 "{{SHA256_DARWIN_AMD64}}"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/baneido/safe-deps/releases/download/{{TAG}}/safe-deps-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "{{SHA256_LINUX_ARM64}}"
+    end
+    on_intel do
+      url "https://github.com/baneido/safe-deps/releases/download/{{TAG}}/safe-deps-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "{{SHA256_LINUX_AMD64}}"
+    end
+  end
+
+  def install
+    bin.install "safe-deps"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/safe-deps --version")
+  end
+end

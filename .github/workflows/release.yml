@@ -210,3 +210,95 @@ jobs:
           cargo metadata --locked --format-version 1 >/dev/null
           cargo cyclonedx --format json --override-filename safe-deps.sbom
           gh release upload "$TAG" safe-deps.sbom.json --repo "$REPO" --clobber
+
+  homebrew:
+    name: update Homebrew formula
+    # Gate on `sign`: the SHA256SUMS manifest this job reads is produced there, and
+    # the formula should only ship once the release artifacts are signed.
+    needs: sign
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # only reads scripts/safe-deps.rb.tmpl; the tap push uses TAP_TOKEN
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # The tap push authenticates with TAP_TOKEN, so don't keep this repo's
+          # checkout credentials around.
+          persist-credentials: false
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Open Homebrew formula PR on baneido/homebrew-tap
+        env:
+          # Token with push + PR permission on baneido/homebrew-tap (shared with the
+          # shipsafe/jp-pii-detect release bots). If unset, skip rather than fail —
+          # the rest of the release has already succeeded.
+          TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAP_TOKEN:-}" ]; then
+            echo "::warning::TAP_GITHUB_TOKEN not set — skipping Homebrew formula update"
+            exit 0
+          fi
+          version="${TAG#v}"
+
+          # Pull the signed checksum manifest the `sign` job published, verify its signature,
+          # then look up each per-target hash by archive name. Format is "<sha256>  <filename>".
+          gh release download "$TAG" --repo "$REPO" --pattern 'SHA256SUMS' -O SHA256SUMS
+          gh release download "$TAG" --repo "$REPO" --pattern 'SHA256SUMS.cosign.bundle' -O SHA256SUMS.cosign.bundle
+          # Bind verification to this exact tag's signing identity, not any v* tag:
+          # a regexp over refs/tags/v.* would accept a valid bundle signed for a
+          # different release, letting an attacker replay another tag's SHA256SUMS.
+          expected_identity="https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/${TAG}"
+          cosign verify-blob \
+            --bundle SHA256SUMS.cosign.bundle \
+            --certificate-identity "$expected_identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            SHA256SUMS >/dev/null
+          sha() {
+            value=$(awk -v asset="$1" '$2 == asset {print $1}' SHA256SUMS)
+            [ -n "$value" ] || { echo "::error::SHA256SUMS missing $1" >&2; exit 1; }
+            printf '%s' "$value"
+          }
+          darwin_arm64=$(sha safe-deps-aarch64-apple-darwin.tar.gz)
+          darwin_amd64=$(sha safe-deps-x86_64-apple-darwin.tar.gz)
+          linux_arm64=$(sha safe-deps-aarch64-unknown-linux-gnu.tar.gz)
+          linux_amd64=$(sha safe-deps-x86_64-unknown-linux-gnu.tar.gz)
+
+          GH_TOKEN="$TAP_TOKEN" gh auth setup-git
+          GH_TOKEN="$TAP_TOKEN" gh repo clone baneido/homebrew-tap tap
+          mkdir -p tap/Formula
+          sed -e "s|{{VERSION}}|${version}|g" \
+              -e "s|{{TAG}}|${TAG}|g" \
+              -e "s|{{SHA256_DARWIN_ARM64}}|${darwin_arm64}|g" \
+              -e "s|{{SHA256_DARWIN_AMD64}}|${darwin_amd64}|g" \
+              -e "s|{{SHA256_LINUX_ARM64}}|${linux_arm64}|g" \
+              -e "s|{{SHA256_LINUX_AMD64}}|${linux_amd64}|g" \
+              scripts/safe-deps.rb.tmpl > tap/Formula/safe-deps.rb
+
+          cd tap
+          # The tap's main is protected (review required), so open a PR from a
+          # release branch instead of pushing to main.
+          if [ -z "$(git status --porcelain Formula/safe-deps.rb)" ]; then
+            echo "formula already up to date for ${version}; nothing to do"
+            exit 0
+          fi
+          git config user.name "safe-deps-release-bot"
+          git config user.email "contact@baneido.com"
+          branch="safe-deps-${version}"
+          git checkout -b "$branch"
+          git add Formula/safe-deps.rb
+          git commit -m "safe-deps ${version}"
+          git push --force-with-lease origin "$branch"
+
+          export GH_TOKEN="$TAP_TOKEN"
+          if gh pr view "$branch" --repo baneido/homebrew-tap >/dev/null 2>&1; then
+            echo "PR for ${branch} already exists — branch updated"
+          else
+            gh pr create --repo baneido/homebrew-tap --base main --head "$branch" \
+              --title "safe-deps ${version}" \
+              --body "Automated Homebrew formula update for safe-deps ${version}. Release: https://github.com/${REPO}/releases/tag/${TAG}"
+          fi
