@@ -209,8 +209,36 @@ pub fn scan(
     config: Config,
     options: &ScanOptions,
 ) -> Result<WorkspaceContext, FsError> {
-    if !root.is_dir() {
-        return Err(FsError::NotADirectory(root.to_path_buf()));
+    // Use an explicit stat so we can distinguish three cases:
+    //   1. path exists and is a directory          → proceed
+    //   2. path exists but is not a directory, or
+    //      path does not exist (NotFound)          → user input error (exit 2)
+    //   3. metadata call fails for any other reason
+    //      (e.g. PermissionDenied on a non-searchable parent) → internal/operational
+    //      error (exit 3); not the user's fault.
+    match std::fs::metadata(root) {
+        Ok(meta) if meta.is_dir() => {
+            // Valid directory — fall through to the walk below.
+        }
+        Ok(_) => {
+            // Path exists but is a file, symlink to a file, etc.
+            return Err(FsError::NotADirectory(root.to_path_buf()));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Path does not exist at all — also a user input error but
+            // semantically distinct from "exists but is not a directory".
+            return Err(FsError::PathNotFound(root.to_path_buf()));
+        }
+        Err(e) => {
+            // Permission denied, I/O error, or any other OS-level failure
+            // while stat-ing the root itself. This is an operational problem,
+            // not a bad argument — surface it as an internal error (exit 3).
+            return Err(FsError::Internal(format!(
+                "could not stat workspace root {}: {}",
+                root.display(),
+                e
+            )));
+        }
     }
 
     let exclude_set = build_globset(
@@ -353,10 +381,22 @@ fn build_globset(patterns: impl Iterator<Item = String>) -> Result<GlobSet, FsEr
 pub enum FsError {
     #[error("workspace root is not a directory: {0}")]
     NotADirectory(PathBuf),
+    #[error("workspace root does not exist: {0}")]
+    PathNotFound(PathBuf),
     #[error("invalid glob pattern {pattern:?}: {message}")]
     Glob { pattern: String, message: String },
     #[error("internal filesystem error: {0}")]
     Internal(String),
+}
+
+impl FsError {
+    /// Returns `true` for errors that originate from user-supplied input
+    /// (a path that does not exist or is not a directory), so callers can
+    /// map them to a usage error (exit 2) rather than an internal error
+    /// (exit 3).
+    pub fn is_user_input_error(&self) -> bool {
+        matches!(self, FsError::NotADirectory(_) | FsError::PathNotFound(_))
+    }
 }
 
 #[cfg(test)]
@@ -461,5 +501,97 @@ mod tests {
         assert!(has_file_suffix(&ctx, &["bin", "tool.rs"]));
         assert!(!has_file_suffix(&ctx, &["a", "main.rs"]));
         assert!(!has_file_suffix(&ctx, &[]));
+    }
+
+    #[test]
+    fn scan_nonexistent_path_is_user_input_error() {
+        // Use a TempDir to produce a guaranteed-missing child path: we create
+        // the parent, reference a child that is never created, then drop the
+        // parent.  This avoids hardcoding a /tmp/... path that could
+        // coincidentally exist on some machines.
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("this-child-is-never-created");
+        drop(dir); // parent is now gone, so `missing` definitely does not exist
+
+        let err = scan(&missing, Config::default(), &ScanOptions::default()).unwrap_err();
+        assert!(
+            err.is_user_input_error(),
+            "expected user input error for non-existent path, got: {err}"
+        );
+        assert!(
+            matches!(err, FsError::PathNotFound(_)),
+            "expected PathNotFound variant, got: {err}"
+        );
+    }
+
+    #[test]
+    fn scan_file_path_is_user_input_error() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("not-a-dir.txt");
+        std::fs::write(&file, "contents").unwrap();
+        let err = scan(&file, Config::default(), &ScanOptions::default()).unwrap_err();
+        assert!(
+            err.is_user_input_error(),
+            "expected user input error when path is a file, got: {err}"
+        );
+    }
+
+    #[test]
+    fn fserror_internal_is_not_user_input_error() {
+        let err = FsError::Internal("something went wrong".into());
+        assert!(!err.is_user_input_error());
+    }
+
+    #[test]
+    fn fserror_glob_is_not_user_input_error() {
+        let err = FsError::Glob {
+            pattern: "[bad".into(),
+            message: "invalid syntax".into(),
+        };
+        assert!(!err.is_user_input_error());
+    }
+
+    /// When the *parent* directory is non-searchable (mode 0o000), `metadata(root)`
+    /// fails with `PermissionDenied`. That is an operational failure — not a bad
+    /// argument — so `scan()` must return `FsError::Internal`, and
+    /// `is_user_input_error()` must be `false` (→ exit 3, not exit 2).
+    #[test]
+    #[cfg(unix)]
+    fn scan_non_searchable_parent_is_internal_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = TempDir::new().unwrap();
+        // Create the child directory *before* locking the parent.
+        let child = parent.path().join("workspace");
+        std::fs::create_dir(&child).unwrap();
+
+        // Remove all permissions on the parent so stat-ing `child` through it
+        // requires search permission we no longer have.
+        std::fs::set_permissions(parent.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = scan(&child, Config::default(), &ScanOptions::default());
+
+        // Restore permissions before any assertion so TempDir can clean up even
+        // if the test fails.
+        std::fs::set_permissions(parent.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Running as root bypasses permission checks; skip the assertion in that case.
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => {
+                eprintln!("skipping: permission check was not enforced (running as root?)");
+                return;
+            }
+        };
+
+        assert!(
+            !err.is_user_input_error(),
+            "PermissionDenied on parent should be an internal error (exit 3), not a \
+             usage error (exit 2); got: {err}"
+        );
+        assert!(
+            matches!(err, FsError::Internal(_)),
+            "expected FsError::Internal for stat failure, got: {err}"
+        );
     }
 }

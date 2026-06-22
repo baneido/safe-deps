@@ -214,7 +214,7 @@ fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
         no_gitignore: args.no_gitignore,
         ..Default::default()
     };
-    let ctx = scan(&args.path, config.clone(), &scan_options).map_err(CliError::internal)?;
+    let ctx = scan(&args.path, config.clone(), &scan_options).map_err(CliError::from_scan_error)?;
 
     let collected = crate::audit::collect::collect(&ctx);
     let coords = collected.coordinates;
@@ -452,7 +452,7 @@ enum CliErrorKind {
 }
 
 impl CliError {
-    fn usage(message: impl Into<String>) -> Self {
+    pub(crate) fn usage(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             kind: CliErrorKind::Usage,
@@ -470,6 +470,18 @@ impl CliError {
         match self.kind {
             CliErrorKind::Usage => 2,
             CliErrorKind::Internal => 3,
+        }
+    }
+
+    /// Converts a [`crate::filesystem::FsError`] into the appropriate
+    /// [`CliError`] variant: user-input errors (path missing or not a
+    /// directory) become `Usage` (exit 2); all other filesystem errors become
+    /// `Internal` (exit 3).
+    pub(crate) fn from_scan_error(err: crate::filesystem::FsError) -> Self {
+        if err.is_user_input_error() {
+            Self::usage(err.to_string())
+        } else {
+            Self::internal(err)
         }
     }
 }
