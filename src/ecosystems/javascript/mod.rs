@@ -375,7 +375,8 @@ fn pnpm_allow_all_builds(
 }
 
 /// A project is covered when a proper-ancestor workspace root declares
-/// workspaces and holds a lockfile for the same package manager.
+/// workspaces, holds a lockfile for the same package manager, AND the target
+/// directory is matched by the workspace's member globs.
 fn covered_by_workspace(ctx: &WorkspaceContext, dir: &Path, manager: PackageManager) -> bool {
     if dir == Path::new(".") {
         return false;
@@ -389,9 +390,223 @@ fn covered_by_workspace(ctx: &WorkspaceContext, dir: &Path, manager: PackageMana
         if !is_workspace_root(ctx, &root_dir, pj) {
             continue;
         }
-        if !lockfile_in_dir(ctx, &root_dir, manager).is_empty() {
+        if lockfile_in_dir(ctx, &root_dir, manager).is_empty() {
+            continue;
+        }
+        // The root has a lockfile: only consider `dir` covered if it is
+        // actually matched by the workspace member globs.
+        if is_workspace_member(ctx, &root_dir, pj, dir) {
             return true;
         }
     }
     false
+}
+
+/// Returns the workspace package globs declared by a workspace root.
+///
+/// For pnpm the authoritative source is `pnpm-workspace.yaml` `packages:`; for
+/// all managers the `package.json` `workspaces` field (array or object form) is
+/// also consulted. The union of all non-empty glob lists is returned.
+fn workspace_globs(
+    ctx: &WorkspaceContext,
+    root_dir: &Path,
+    package_json_path: &Path,
+) -> Vec<String> {
+    let mut globs: Vec<String> = Vec::new();
+
+    // pnpm-workspace.yaml is the authoritative config for pnpm workspaces.
+    let ws_yaml_path = project_join(root_dir, "pnpm-workspace.yaml");
+    if ctx.contains(&ws_yaml_path) {
+        if let Ok(ws) = pnpm::load_workspace(ctx, &ws_yaml_path) {
+            globs.extend(ws.packages);
+        }
+    }
+
+    // package.json `workspaces` (array or object { packages: [...] }).
+    if let Ok(pj) = package_json::load(ctx, package_json_path) {
+        globs.extend(pj.workspaces.packages().iter().cloned());
+    }
+
+    globs
+}
+
+/// Returns `true` when `dir` is matched by at least one of the workspace
+/// member globs declared at `root_dir`.  Globs are relative to the workspace
+/// root and use `/`-separated paths.
+fn is_workspace_member(
+    ctx: &WorkspaceContext,
+    root_dir: &Path,
+    package_json_path: &Path,
+    dir: &Path,
+) -> bool {
+    let globs = workspace_globs(ctx, root_dir, package_json_path);
+    if globs.is_empty() {
+        // Workspace root with no globs: treat all descendants as members.
+        return true;
+    }
+
+    // Compute the path of `dir` relative to `root_dir`, normalised to `/`.
+    let rel = if root_dir == Path::new(".") {
+        dir.to_owned()
+    } else {
+        dir.strip_prefix(root_dir).unwrap_or(dir).to_owned()
+    };
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+
+    globs.iter().any(|g| {
+        globset::Glob::new(g)
+            .map(|glob| glob.compile_matcher().is_match(&rel_str))
+            .unwrap_or(false)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::ecosystems::Analyzer;
+    use crate::filesystem::{scan, ScanOptions};
+    use tempfile::TempDir;
+
+    const PKG_DEPS: &str = r#"{ "name": "pkg", "dependencies": { "left-pad": "^1" } }"#;
+
+    fn ws(files: &[(&str, &str)]) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        for (rel, contents) in files {
+            let p = dir.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, contents).unwrap();
+        }
+        dir
+    }
+
+    fn facts_for(dir: &TempDir) -> Vec<ProjectFacts> {
+        let ctx = scan(dir.path(), Config::default(), &ScanOptions::default()).unwrap();
+        let analyzer = JavaScriptAnalyzer;
+        analyzer
+            .detect(&ctx)
+            .iter()
+            .map(|p| analyzer.facts(p, &ctx).unwrap())
+            .collect()
+    }
+
+    fn facts_for_dir<'a>(facts: &'a [ProjectFacts], rel: &str) -> Option<&'a ProjectFacts> {
+        facts
+            .iter()
+            .find(|f| f.project.root == std::path::Path::new(rel))
+    }
+
+    // --- workspace glob membership -------------------------------------------
+
+    /// npm workspace: member matched by glob is covered; non-member is not.
+    #[test]
+    fn npm_workspace_member_is_covered_non_member_is_not() {
+        let dir = ws(&[
+            (
+                "package.json",
+                r#"{ "name": "root", "private": true, "workspaces": ["packages/*"] }"#,
+            ),
+            ("package-lock.json", r#"{ "lockfileVersion": 3 }"#),
+            ("packages/app/package.json", PKG_DEPS),
+            ("examples/standalone/package.json", PKG_DEPS),
+        ]);
+        let facts = facts_for(&dir);
+
+        let member = facts_for_dir(&facts, "packages/app").expect("packages/app not detected");
+        assert!(
+            member.covered_by_workspace_lockfile,
+            "packages/app should be covered by root lockfile"
+        );
+
+        let non_member =
+            facts_for_dir(&facts, "examples/standalone").expect("examples/standalone not detected");
+        assert!(
+            !non_member.covered_by_workspace_lockfile,
+            "examples/standalone is not in workspaces glob and must not be covered"
+        );
+    }
+
+    /// Yarn workspace (object form `{ packages: [...] }`): member covered, non-member flagged.
+    #[test]
+    fn yarn_workspace_object_form_member_covered_non_member_not() {
+        let dir = ws(&[
+            (
+                "package.json",
+                r#"{ "name": "root", "private": true, "workspaces": { "packages": ["apps/*"] } }"#,
+            ),
+            ("yarn.lock", ""),
+            ("apps/web/package.json", PKG_DEPS),
+            ("tools/cli/package.json", PKG_DEPS),
+        ]);
+        let facts = facts_for(&dir);
+
+        let member = facts_for_dir(&facts, "apps/web").expect("apps/web not detected");
+        assert!(
+            member.covered_by_workspace_lockfile,
+            "apps/web should be covered by yarn root lockfile"
+        );
+
+        let non_member = facts_for_dir(&facts, "tools/cli").expect("tools/cli not detected");
+        assert!(
+            !non_member.covered_by_workspace_lockfile,
+            "tools/cli is not in apps/* glob and must not be covered"
+        );
+    }
+
+    /// pnpm workspace: globs from `pnpm-workspace.yaml` are used for membership.
+    #[test]
+    fn pnpm_workspace_yaml_member_covered_non_member_not() {
+        let dir = ws(&[
+            (
+                "package.json",
+                r#"{ "name": "root", "private": true, "packageManager": "pnpm@9" }"#,
+            ),
+            ("pnpm-workspace.yaml", "packages:\n  - \"packages/*\"\n"),
+            ("pnpm-lock.yaml", "lockfileVersion: 9\n"),
+            ("packages/lib/package.json", PKG_DEPS),
+            ("examples/demo/package.json", PKG_DEPS),
+        ]);
+        let facts = facts_for(&dir);
+
+        let member = facts_for_dir(&facts, "packages/lib").expect("packages/lib not detected");
+        assert!(
+            member.covered_by_workspace_lockfile,
+            "packages/lib should be covered by pnpm root lockfile"
+        );
+
+        let non_member =
+            facts_for_dir(&facts, "examples/demo").expect("examples/demo not detected");
+        assert!(
+            !non_member.covered_by_workspace_lockfile,
+            "examples/demo is not in packages/* glob and must not be covered"
+        );
+    }
+
+    /// Bun workspace: member matched by glob is covered; non-member is not.
+    #[test]
+    fn bun_workspace_member_covered_non_member_not() {
+        let dir = ws(&[
+            (
+                "package.json",
+                r#"{ "name": "root", "private": true, "workspaces": ["pkgs/*"], "packageManager": "bun@1.2.0" }"#,
+            ),
+            ("bun.lock", ""),
+            ("pkgs/server/package.json", PKG_DEPS),
+            ("extras/standalone/package.json", PKG_DEPS),
+        ]);
+        let facts = facts_for(&dir);
+
+        let member = facts_for_dir(&facts, "pkgs/server").expect("pkgs/server not detected");
+        assert!(
+            member.covered_by_workspace_lockfile,
+            "pkgs/server should be covered by bun root lockfile"
+        );
+
+        let non_member =
+            facts_for_dir(&facts, "extras/standalone").expect("extras/standalone not detected");
+        assert!(
+            !non_member.covered_by_workspace_lockfile,
+            "extras/standalone is not in pkgs/* glob and must not be covered"
+        );
+    }
 }

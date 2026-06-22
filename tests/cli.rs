@@ -504,6 +504,49 @@ fn monorepo_member_covered_by_root_lockfile() {
     );
 }
 
+/// Regression for issue #84: a package that merely sits under the workspace
+/// root but is NOT matched by the `workspaces` globs must not be treated as
+/// covered — SD001 must still fire for it.
+#[test]
+fn non_workspace_member_under_root_gets_sd001() {
+    let ws = workspace(&[
+        (
+            "package.json",
+            r#"{ "name": "root", "private": true, "workspaces": ["packages/*"] }"#,
+        ),
+        ("package-lock.json", r#"{ "lockfileVersion": 3 }"#),
+        // Matched by glob — should be covered, no SD001.
+        (
+            "packages/app/package.json",
+            r#"{ "name": "app", "dependencies": { "left-pad": "^1" } }"#,
+        ),
+        // NOT matched by glob — must fire SD001.
+        (
+            "examples/standalone/package.json",
+            r#"{ "name": "standalone", "dependencies": { "left-pad": "^1" } }"#,
+        ),
+    ]);
+    let report = check_json(&ws, &[]);
+    // packages/app is a proper workspace member — no SD001 for it.
+    let findings = report["findings"].as_array().unwrap();
+    let sd001_paths: Vec<&str> = findings
+        .iter()
+        .filter(|f| f["rule_id"].as_str() == Some("SD001"))
+        .filter_map(|f| f["project_root"].as_str())
+        .collect();
+    assert!(
+        sd001_paths
+            .iter()
+            .all(|p| !p.contains("packages") || !p.contains("app")),
+        "packages/app is a workspace member and should not trigger SD001; got: {sd001_paths:?}"
+    );
+    // examples/standalone is NOT in the glob, so SD001 must fire for it.
+    assert!(
+        sd001_paths.iter().any(|p| p.contains("standalone")),
+        "examples/standalone is not in workspaces glob and must trigger SD001; got: {sd001_paths:?}"
+    );
+}
+
 // --- diagnostics / partial progress ------------------------------------------
 
 #[test]
