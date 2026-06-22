@@ -63,6 +63,7 @@ impl OutputFormat {
 
 /// Per-rule configuration override.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuleConfig {
     #[serde(default)]
     pub level: Option<Severity>,
@@ -70,6 +71,7 @@ pub struct RuleConfig {
 
 /// Workspace scanning configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {
     #[serde(default)]
     pub exclude: Vec<String>,
@@ -79,6 +81,7 @@ pub struct WorkspaceConfig {
 
 /// A centralized suppression entry. `reason` is required.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Suppression {
     pub rule: String,
     pub path: String,
@@ -95,6 +98,7 @@ pub struct Suppression {
 
 /// The full configuration model.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub profile: Option<Profile>,
@@ -121,6 +125,7 @@ pub struct Config {
 /// `GHSA-…`, `CVE-…`). `reason` is required; an expired ignore stops applying
 /// and surfaces a diagnostic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdvisoryIgnore {
     pub id: String,
     pub reason: String,
@@ -514,5 +519,142 @@ expires = "2030-01-01"
             ecosystem: None,
         });
         assert!(validate(&config).is_err());
+    }
+
+    // --- deny_unknown_fields tests -------------------------------------------
+
+    #[test]
+    fn unknown_top_level_field_is_parse_error() {
+        // "typo_field" is not a known Config field → deserialization must fail.
+        let toml = r#"
+profile = "balanced"
+typo_field = "oops"
+"#;
+        let result: Result<Config, _> = ::toml::from_str(toml);
+        assert!(
+            result.is_err(),
+            "unknown top-level field should be rejected"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("typo_field") || msg.contains("unknown"),
+            "error should mention the unknown field: {msg}"
+        );
+    }
+
+    #[test]
+    fn unknown_suppression_field_is_parse_error() {
+        // "expire" is a common typo for "expires" — must NOT be silently dropped.
+        let toml = r#"
+[[suppressions]]
+rule = "SD003"
+path = "**/*"
+reason = "temporary"
+expire = "2026-01-01"
+"#;
+        let result: Result<Config, _> = ::toml::from_str(toml);
+        assert!(
+            result.is_err(),
+            "unknown suppression field 'expire' should be rejected"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("expire") || msg.contains("unknown"),
+            "error should mention the unknown field: {msg}"
+        );
+    }
+
+    #[test]
+    fn unknown_policy_field_is_parse_error() {
+        let toml = r#"
+[policy]
+allow_git_dependencies = false
+unknown_policy_key = true
+"#;
+        let result: Result<Config, _> = ::toml::from_str(toml);
+        assert!(result.is_err(), "unknown policy field should be rejected");
+    }
+
+    #[test]
+    fn unknown_workspace_field_is_parse_error() {
+        let toml = r#"
+[workspace]
+exclud = ["vendor/**"]
+"#;
+        let result: Result<Config, _> = ::toml::from_str(toml);
+        assert!(
+            result.is_err(),
+            "typo'd workspace field 'exclud' should be rejected"
+        );
+    }
+
+    #[test]
+    fn unknown_rule_config_field_is_parse_error() {
+        let toml = r#"
+[rules.SD001]
+level = "warning"
+severity = "error"
+"#;
+        let result: Result<Config, _> = ::toml::from_str(toml);
+        assert!(
+            result.is_err(),
+            "unknown rule config field 'severity' should be rejected"
+        );
+    }
+
+    #[test]
+    fn unknown_advisory_ignore_field_is_parse_error() {
+        let toml = r#"
+[[advisory_ignores]]
+id = "CVE-2024-0001"
+reason = "patched"
+expiry = "2030-01-01"
+"#;
+        let result: Result<Config, _> = ::toml::from_str(toml);
+        assert!(
+            result.is_err(),
+            "unknown advisory_ignore field 'expiry' (typo of 'expires') should be rejected"
+        );
+    }
+
+    #[test]
+    fn valid_full_config_still_parses() {
+        // Regression guard: all known fields must still be accepted.
+        let toml = r#"
+profile = "strict"
+fail_on = "warning"
+format = "json"
+
+[policy]
+allow_git_dependencies = false
+allow_local_path_dependencies = false
+require_audit_in_ci = true
+external_audit = false
+application_roots = ["apps/*"]
+library_roots = ["libs/**"]
+
+[workspace]
+exclude = ["vendor/**"]
+include = []
+
+[rules.SD001]
+level = "warning"
+
+[[suppressions]]
+rule = "SD003"
+path = "fixtures/package.json"
+reason = "intentional fixture"
+expires = "2030-01-01"
+line = 5
+package_manager = "npm"
+ecosystem = "javascript"
+
+[[advisory_ignores]]
+id = "RUSTSEC-2024-0001"
+reason = "not affected"
+expires = "2027-01-01"
+"#;
+        let config: Config = ::toml::from_str(toml).expect("valid config should parse");
+        assert!(validate(&config).is_ok(), "valid config should validate");
     }
 }
