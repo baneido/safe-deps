@@ -1763,7 +1763,7 @@ expires = \"2000-01-01\"
 ";
 
 #[test]
-fn error_diagnostic_exits_nonzero_even_without_findings() {
+fn error_diagnostic_forces_nonzero_exit_below_fail_threshold() {
     // Under the strict profile an expired suppression that matches a finding
     // produces a DiagnosticLevel::Error diagnostic. Even with --fail-on none
     // (so the finding itself would not trigger an exit) the error diagnostic
