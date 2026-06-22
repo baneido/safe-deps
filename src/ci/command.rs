@@ -133,14 +133,139 @@ pub fn program(tokens: &[String]) -> Option<&str> {
     effective_start(tokens).map(|s| leaf(&tokens[s]))
 }
 
+/// Options that consume the following token as their value (space-separated
+/// form), keyed by the leaf program name. When a command uses `--flag value`
+/// the `value` token must not be mistaken for a subcommand or positional.
+///
+/// The `=` form (`--flag=value`) is already handled by the tokenizer because
+/// it arrives as a single token and is never split; only the two-token form
+/// needs explicit treatment here.
+fn value_taking_options(prog: &str) -> &'static [&'static str] {
+    match prog {
+        "npm" => &[
+            "--prefix",
+            "--workspace",
+            "-w",
+            "--workspaces-update",
+            "--userconfig",
+            "--globalconfig",
+            "--registry",
+            "--cache",
+            "--tag",
+            "--otp",
+        ],
+        "pnpm" => &[
+            "--filter",
+            "-F",
+            "--workspace-root",
+            "--dir",
+            "-C",
+            "--reporter",
+            "--registry",
+            "--store-dir",
+            "--virtual-store-dir",
+            "--tag",
+        ],
+        "yarn" => &[
+            "--cwd",
+            "--registry",
+            "--network-concurrency",
+            "--network-timeout",
+            "--proxy",
+            "--https-proxy",
+            "--offline",
+            "--prefer-offline",
+            "--modules-folder",
+            "--emoji",
+        ],
+        "bun" => &["--cwd", "--registry", "--tag", "--filter", "-F"],
+        "uv" => &[
+            "--project",
+            "--directory",
+            "-p",
+            "--python",
+            "--index",
+            "--index-url",
+            "--extra-index-url",
+            "--constraint",
+            "--override",
+            "--config-file",
+            "--env-file",
+            "--python-preference",
+            "--python-fetch",
+            "--installer-parallelism",
+            "--cache-dir",
+            "--link-mode",
+        ],
+        "pip" | "pip3" => &[
+            "-r",
+            "--requirement",
+            "-c",
+            "--constraint",
+            "-i",
+            "--index-url",
+            "--extra-index-url",
+            "--trusted-host",
+            "--target",
+            "-t",
+            "--prefix",
+            "--root",
+            "--find-links",
+            "-f",
+            "--log",
+            "--proxy",
+            "--retries",
+            "--timeout",
+            "--exists-action",
+            "--cert",
+            "--client-cert",
+            "--isolated",
+            "--cache-dir",
+            "--no-cache-dir",
+            "--disable-pip-version-check",
+        ],
+        _ => &[],
+    }
+}
+
+/// Returns the set of token indices (relative to `tokens`) that are values
+/// consumed by a value-taking option in its space-separated form.  Only tokens
+/// after the real program start are examined; the program token itself is at
+/// `start`.
+fn option_value_indices(tokens: &[String], start: usize) -> std::collections::HashSet<usize> {
+    let prog = leaf(&tokens[start]);
+    let vto = value_taking_options(prog);
+    let mut skip = std::collections::HashSet::new();
+    let mut i = start + 1;
+    while i < tokens.len() {
+        let t = &tokens[i];
+        // `--flag=value` is a single token — no index to skip.
+        if t.starts_with('-') && !t.contains('=') && vto.contains(&t.as_str()) {
+            // The next token is the value; mark it.
+            if i + 1 < tokens.len() {
+                skip.insert(i + 1);
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    skip
+}
+
 /// The first non-flag token after the program, e.g. the `install` in
 /// `npm install --foo` (also seeing through wrappers like `sudo npm install`).
+/// Values of value-taking options (e.g. the `web` in `npm --prefix web ci`)
+/// are excluded.
 pub fn subcommand(tokens: &[String]) -> Option<&str> {
     let start = effective_start(tokens)?;
+    let skip = option_value_indices(tokens, start);
     tokens[start + 1..]
         .iter()
-        .find(|t| !t.starts_with('-'))
-        .map(|t| t.as_str())
+        .enumerate()
+        .filter(|(rel_i, t)| !t.starts_with('-') && !skip.contains(&(start + 1 + rel_i)))
+        .map(|(_, t)| t.as_str())
+        .next()
 }
 
 /// Whether a segment carries `flag` as enabled — either bare (`--frozen`) or
@@ -188,14 +313,20 @@ pub struct Invocation {
 /// env prefixes and wrappers). For `npm install left-pad` this is
 /// `["install", "left-pad"]`; SD002 uses the count to tell a full install from
 /// adding a specific package.
+///
+/// Values consumed by value-taking options (e.g. the `web` in
+/// `npm --prefix web install`) are excluded so they are not mistaken for
+/// subcommands or package names.
 pub fn positionals(tokens: &[String]) -> Vec<&str> {
     let Some(start) = effective_start(tokens) else {
         return Vec::new();
     };
+    let skip = option_value_indices(tokens, start);
     tokens[start + 1..]
         .iter()
-        .filter(|t| !t.starts_with('-'))
-        .map(|t| t.as_str())
+        .enumerate()
+        .filter(|(rel_i, t)| !t.starts_with('-') && !skip.contains(&(start + 1 + rel_i)))
+        .map(|(_, t)| t.as_str())
         .collect()
 }
 
@@ -693,5 +824,90 @@ mod tests {
         assert!(!is_install(&inv("npm cache clean --force")));
         assert!(!is_install(&inv("pnpm dlx create-app --force")));
         assert!(!is_install(&inv("npm run build")));
+    }
+
+    // Tests for value-taking option filtering (issue #87).
+
+    #[test]
+    fn value_taking_option_prefix_does_not_leak_into_subcommand() {
+        // `npm --prefix web ci` — `web` is the value of --prefix, not a positional.
+        let s = seg("npm --prefix web ci");
+        assert_eq!(subcommand(&s[0]), Some("ci"));
+        assert_eq!(positionals(&s[0]), vec!["ci"]);
+    }
+
+    #[test]
+    fn value_taking_option_filter_does_not_leak_into_subcommand() {
+        // `pnpm --filter app install` — `app` is the value of --filter.
+        let s = seg("pnpm --filter app install");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        assert_eq!(positionals(&s[0]), vec!["install"]);
+    }
+
+    #[test]
+    fn value_taking_option_cwd_does_not_leak_into_subcommand() {
+        // `yarn --cwd web install` — `web` is the value of --cwd.
+        let s = seg("yarn --cwd web install");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        assert_eq!(positionals(&s[0]), vec!["install"]);
+    }
+
+    #[test]
+    fn value_taking_option_project_does_not_leak_into_subcommand() {
+        // `uv --project . sync` — `.` is the value of --project.
+        let s = seg("uv --project . sync");
+        assert_eq!(subcommand(&s[0]), Some("sync"));
+        assert_eq!(positionals(&s[0]), vec!["sync"]);
+    }
+
+    #[test]
+    fn workspace_option_value_not_counted_as_package_positional() {
+        // `npm install --workspace packages/app` — the workspace path is a value,
+        // not a named package being added. positionals = ["install"] (length 1).
+        let s = seg("npm install --workspace packages/app");
+        assert_eq!(positionals(&s[0]), vec!["install"]);
+    }
+
+    #[test]
+    fn eq_form_does_not_consume_next_token() {
+        // `npm --prefix=web ci` — `=value` is attached; the next token `ci` is
+        // still a positional/subcommand, not a consumed value.
+        let s = seg("npm --prefix=web ci");
+        assert_eq!(subcommand(&s[0]), Some("ci"));
+        assert_eq!(positionals(&s[0]), vec!["ci"]);
+    }
+
+    #[test]
+    fn invocation_sees_through_monorepo_flags() {
+        use PackageManager::*;
+        let inv = |c: &str| invocation(&seg(c)[0]);
+        assert_eq!(
+            inv("npm --prefix web ci"),
+            Some(Invocation {
+                pm: Npm,
+                sub: Some("ci".into())
+            })
+        );
+        assert_eq!(
+            inv("pnpm --filter app install"),
+            Some(Invocation {
+                pm: Pnpm,
+                sub: Some("install".into())
+            })
+        );
+        assert_eq!(
+            inv("yarn --cwd web install"),
+            Some(Invocation {
+                pm: Yarn,
+                sub: Some("install".into())
+            })
+        );
+        assert_eq!(
+            inv("uv --project . sync"),
+            Some(Invocation {
+                pm: Uv,
+                sub: Some("sync".into())
+            })
+        );
     }
 }
