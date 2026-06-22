@@ -195,9 +195,12 @@ fn effective_start(tokens: &[String]) -> Option<usize> {
                 // Strip off any `=value` suffix to get the bare flag name for
                 // the lookup; if `=` is present the value is already embedded
                 // in the token and there is no separate next token to skip.
-                let bare = flag.split('=').next().unwrap_or(flag);
+                let (bare, has_inline_value) = match flag.split_once('=') {
+                    Some((name, _)) => (name, true),
+                    None => (flag, false),
+                };
                 idx += 1;
-                if vflags.contains(&bare) && !flag.contains('=') {
+                if vflags.contains(&bare) && !has_inline_value {
                     // Skip the separate value token, but only if it does not
                     // itself look like a flag.
                     if idx < tokens.len() && !tokens[idx].starts_with('-') {
