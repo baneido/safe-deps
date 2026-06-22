@@ -5,7 +5,8 @@ every third-party crate in the resolved dependency graph (`Cargo.lock`) — norm
 build, and dev/test dependencies — together with its SPDX license expression.
 
 Every dependency is permissively licensed; the set of licenses is enforced in CI
-by `cargo deny check` against the allow-list in [`deny.toml`](deny.toml).
+by `cargo deny check` against the allow-list in
+[`deny.toml`](https://github.com/baneido/safe-deps/blob/main/deny.toml).
 
 This file is generated. To regenerate it after a dependency change:
 
@@ -15,7 +16,7 @@ cargo metadata --format-version 1 \
            | "| `\(.name)` | \(.version) | \(.license // "—") |"'
 ```
 
-See [RELEASING.md](RELEASING.md) for when to refresh it.
+See [RELEASING.md](https://github.com/baneido/safe-deps/blob/main/RELEASING.md) for when to refresh it.
 
 ## License summary
 
