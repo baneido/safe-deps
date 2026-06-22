@@ -105,7 +105,6 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
         let mut j = i + 1;
         let mut item_lines: Vec<(usize, &str)> = Vec::new();
         let mut in_item_block = false;
-        let mut item_block_indent: usize = 0;
         while j < lines.len() {
             let line = lines[j];
             if line.trim().is_empty() {
@@ -132,7 +131,6 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
                 if is_block_scalar_indicator(item.trim()) {
                     // `- |` array item: subsequent indented lines are content.
                     in_item_block = true;
-                    item_block_indent = leading_spaces(line) + 2; // content deeper than `- `
                 } else {
                     item_lines.push((j, unquote(item.trim())));
                 }
@@ -152,7 +150,6 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
             } else if in_item_block || !is_block_scalar_indicator(content) {
                 // Block-scalar content line under a `- |` array item, or a
                 // continuation line of a plain array item.
-                let _ = item_block_indent; // used for block detection only
                 item_lines.push((j, unquote(content)));
             }
             j += 1;
