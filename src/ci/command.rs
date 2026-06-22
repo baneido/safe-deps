@@ -98,6 +98,33 @@ const WRAPPERS: &[&str] = &[
     "caffeinate",
 ];
 
+/// Flags that consume the *next* token as their value for each wrapper program.
+/// Only short or long flags that take a separate positional value need listing
+/// here; `--flag=value` forms are handled by the `=` in the token itself and
+/// are never mistaken for the program name.
+///
+/// Flags that do NOT take a value (e.g. `sudo -n`, `xvfb-run -a`) are not
+/// listed; they are already skipped by the `starts_with('-')` check.
+const WRAPPER_VALUE_FLAGS: &[(&str, &[&str])] = &[
+    // sudo: -u <user>, -g <group>, -r <role>, -t <type>, -U <other-user>,
+    //       -p <prompt>, -c <class>, -T <timeout>, -C <fd>, -D <directory>
+    (
+        "sudo",
+        &["-u", "-g", "-r", "-t", "-U", "-p", "-c", "-T", "-C", "-D"],
+    ),
+    // doas: -u <user>, -c <config>
+    ("doas", &["-u", "-c"]),
+    // nice: -n <adjustment> (also --adjustment=N, covered by =)
+    ("nice", &["-n"]),
+    // ionice: -c <class>, -n <priority>, -p <pid>, -t (no value)
+    ("ionice", &["-c", "-n", "-p"]),
+    // env: -u <NAME> removes a variable; KEY=VALUE pairs are env assignments
+    //      handled separately by is_env_assignment
+    ("env", &["-u", "--unset"]),
+    // stdbuf: -i/-o/-e <size> set buffer modes
+    ("stdbuf", &["-i", "-o", "-e"]),
+];
+
 fn leaf(token: &str) -> &str {
     token.rsplit(['/', '\\']).next().unwrap_or(token)
 }
@@ -106,8 +133,19 @@ fn is_env_assignment(token: &str) -> bool {
     token.contains('=') && !token.starts_with('-')
 }
 
+/// Returns the set of value-taking flags for a given wrapper name, or an empty
+/// slice if the wrapper has none (or is not listed).
+fn value_flags_for_wrapper(wrapper_name: &str) -> &'static [&'static str] {
+    for &(name, flags) in WRAPPER_VALUE_FLAGS {
+        if name == wrapper_name {
+            return flags;
+        }
+    }
+    &[]
+}
+
 /// The index of the real program token, skipping leading `VAR=value` env
-/// assignments and wrapper commands (with their dashed flags).
+/// assignments and wrapper commands (with their dashed flags and flag values).
 fn effective_start(tokens: &[String]) -> Option<usize> {
     let mut idx = 0;
     loop {
@@ -115,10 +153,27 @@ fn effective_start(tokens: &[String]) -> Option<usize> {
             idx += 1;
         }
         let tok = tokens.get(idx)?;
-        if WRAPPERS.contains(&leaf(tok)) {
+        let wrapper_leaf = leaf(tok);
+        if WRAPPERS.contains(&wrapper_leaf) {
+            let vflags = value_flags_for_wrapper(wrapper_leaf);
             idx += 1;
             while idx < tokens.len() && tokens[idx].starts_with('-') {
+                // If this flag is known to take a value as the next token,
+                // consume that value token too (unless it looks like a flag
+                // itself, which would mean the flag was given without a value).
+                let flag = tokens[idx].as_str();
+                // Strip off any `=value` suffix to get the bare flag name for
+                // the lookup; if `=` is present the value is already embedded
+                // in the token and there is no separate next token to skip.
+                let bare = flag.split('=').next().unwrap_or(flag);
                 idx += 1;
+                if vflags.contains(&bare) && !flag.contains('=') {
+                    // Skip the separate value token, but only if it does not
+                    // itself look like a flag.
+                    if idx < tokens.len() && !tokens[idx].starts_with('-') {
+                        idx += 1;
+                    }
+                }
             }
             continue;
         }
@@ -693,5 +748,72 @@ mod tests {
         assert!(!is_install(&inv("npm cache clean --force")));
         assert!(!is_install(&inv("pnpm dlx create-app --force")));
         assert!(!is_install(&inv("npm run build")));
+    }
+
+    /// Wrapper commands whose flags take a separate value token must not mistake
+    /// that value for the real program. Covers issue #95.
+    #[test]
+    fn wrapper_value_flags_skip_their_argument() {
+        // sudo -u <user>: 'nobody' is the value for -u, not the program.
+        let s = seg("sudo -u nobody npm install");
+        assert_eq!(program(&s[0]), Some("npm"), "sudo -u nobody npm install");
+        assert_eq!(
+            subcommand(&s[0]),
+            Some("install"),
+            "sudo -u nobody npm install"
+        );
+
+        // nice -n <priority>: '10' is the value for -n, not the program.
+        let s = seg("nice -n 10 pnpm install");
+        assert_eq!(program(&s[0]), Some("pnpm"), "nice -n 10 pnpm install");
+        assert_eq!(
+            subcommand(&s[0]),
+            Some("install"),
+            "nice -n 10 pnpm install"
+        );
+
+        // env -u <NAME>: 'NODE_ENV' is the value for -u, not the program.
+        let s = seg("env -u NODE_ENV npm ci");
+        assert_eq!(program(&s[0]), Some("npm"), "env -u NODE_ENV npm ci");
+        assert_eq!(subcommand(&s[0]), Some("ci"), "env -u NODE_ENV npm ci");
+
+        // env KEY=VALUE assignments before the real program (existing behavior).
+        let s = seg("env KEY=VALUE npm ci");
+        assert_eq!(program(&s[0]), Some("npm"), "env KEY=VALUE npm ci");
+        assert_eq!(subcommand(&s[0]), Some("ci"), "env KEY=VALUE npm ci");
+
+        // Combination: env -u NAME KEY=VALUE npm ci
+        let s = seg("env -u NODE_ENV CI=true npm ci");
+        assert_eq!(
+            program(&s[0]),
+            Some("npm"),
+            "env -u NODE_ENV CI=true npm ci"
+        );
+        assert_eq!(
+            subcommand(&s[0]),
+            Some("ci"),
+            "env -u NODE_ENV CI=true npm ci"
+        );
+
+        // --flag=value form: value is embedded in the token, no next token consumed.
+        let s = seg("sudo --user=nobody npm install");
+        assert_eq!(
+            program(&s[0]),
+            Some("npm"),
+            "sudo --user=nobody npm install"
+        );
+
+        // Multiple value-flags in sequence.
+        let s = seg("sudo -u nobody -g wheel npm install");
+        assert_eq!(
+            program(&s[0]),
+            Some("npm"),
+            "sudo -u nobody -g wheel npm install"
+        );
+
+        // ionice -c <class> -n <priority>
+        let s = seg("ionice -c 2 -n 4 npm ci");
+        assert_eq!(program(&s[0]), Some("npm"), "ionice -c 2 -n 4 npm ci");
+        assert_eq!(subcommand(&s[0]), Some("ci"), "ionice -c 2 -n 4 npm ci");
     }
 }
