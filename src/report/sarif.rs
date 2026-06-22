@@ -44,8 +44,10 @@ struct SarifRun {
 
 #[derive(Serialize)]
 struct SarifInvocation {
-    /// `false` when any error-level diagnostic was raised: an errored run must
-    /// not be reported as successful.
+    /// `false` when any error-level diagnostic was raised, or when the run is
+    /// being treated as a strict-parser failure (`--strict-parser-errors` with
+    /// at least one parse failure). Either way the CLI did not produce a usable,
+    /// successful analysis, so the invocation must not be reported as successful.
     #[serde(rename = "executionSuccessful")]
     execution_successful: bool,
     #[serde(
@@ -177,10 +179,16 @@ impl SarifLog {
         // an errored run as a successful one.
         let notifications: Vec<SarifNotification> =
             report.diagnostics.iter().map(sarif_notification).collect();
-        let execution_successful = !report
+        // Success is `false` when EITHER an error-level diagnostic was raised OR
+        // the CLI is treating this as a strict-parser failure. The latter is
+        // threaded in from the check runner because parse failures surface as
+        // warning-level diagnostics, so severity alone would mislead a consumer
+        // into reading a strict (exit-4) run as a successful analysis.
+        let has_error_diagnostic = report
             .diagnostics
             .iter()
             .any(|d| d.level == crate::diagnostics::DiagnosticLevel::Error);
+        let execution_successful = !has_error_diagnostic && !report.strict_parse_failure;
         // Always emit exactly one invocation so a consumer can read the run's
         // execution state even on a clean run; only the notifications list is
         // conditional on there being diagnostics.
@@ -349,6 +357,32 @@ mod tests {
         assert_eq!(
             v["runs"][0]["invocations"][0]["executionSuccessful"], true,
             "a warning diagnostic is non-fatal and keeps the run successful"
+        );
+    }
+
+    #[test]
+    fn strict_parse_failure_marks_execution_unsuccessful() {
+        // Under `--strict-parser-errors` a parse failure surfaces as a
+        // warning-level diagnostic but the CLI treats the run as failed
+        // (exit 4). The reporter must reflect that, not the warning severity.
+        let mut r = Report::new(PathBuf::from("."), Profile::Balanced, "0.1.0");
+        r.diagnostics.push(crate::diagnostics::Diagnostic::warn_at(
+            "could not parse pkg/package.json",
+            PathBuf::from("pkg/package.json"),
+        ));
+        r.strict_parse_failure = true;
+        let bytes = SarifReporter.format(&r).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let inv = &v["runs"][0]["invocations"][0];
+        assert_eq!(
+            inv["executionSuccessful"], false,
+            "a strict-parser failure must not report a successful execution \
+             even though the parse failure is a warning-level diagnostic"
+        );
+        // The parse-failure diagnostic still rides along as a warning notification.
+        assert_eq!(
+            inv["toolExecutionNotifications"][0]["level"], "warning",
+            "the diagnostic level itself is unchanged; only success is overridden"
         );
     }
 

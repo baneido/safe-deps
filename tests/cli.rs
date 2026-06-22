@@ -1616,6 +1616,42 @@ fn sarif_reports_diagnostics_on_invocation() {
 }
 
 #[test]
+fn sarif_strict_parser_failure_marks_execution_unsuccessful() {
+    // Under --strict-parser-errors a parse failure makes the CLI exit 4 even
+    // though the diagnostic itself is warning-level. SARIF must reflect the
+    // failed run via executionSuccessful=false, not infer success from the
+    // warning severity, so CI consumers do not misread a strict parse failure
+    // as a successful analysis.
+    let ws = workspace(&[("package.json", "{ \"name\": \"broken\", ")]);
+    let out = run(
+        &ws,
+        &["check", ".", "--format", "sarif", "--strict-parser-errors"],
+    );
+    assert_eq!(
+        code(&out),
+        4,
+        "a parse failure under --strict-parser-errors must exit 4"
+    );
+    let sarif: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("invalid SARIF: {e}\n{}", stdout(&out)));
+    let inv = &sarif["runs"][0]["invocations"][0];
+    assert_eq!(
+        inv["executionSuccessful"], false,
+        "a strict-parser failure must not report a successful execution: {sarif}"
+    );
+    // The parse diagnostic still rides along as a warning notification.
+    let notes = inv["toolExecutionNotifications"].as_array().unwrap();
+    assert!(
+        notes.iter().any(|n| n["level"] == "warning"
+            && n["message"]["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("parse")),
+        "expected a warning parse notification: {sarif}"
+    );
+}
+
+#[test]
 fn junit_surfaces_diagnostics_in_their_own_suite() {
     // A malformed manifest raises a parse diagnostic; JUnit must make it
     // discoverable in a dedicated `diagnostics` suite (a warning => <failure>).

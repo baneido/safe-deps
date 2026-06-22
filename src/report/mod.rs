@@ -19,6 +19,12 @@ pub struct Report {
     pub path: PathBuf,
     pub findings: Vec<Finding>,
     pub diagnostics: Vec<Diagnostic>,
+    /// `true` when the run is being treated as a strict-parser failure: the
+    /// same condition that makes the CLI exit 4 (`--strict-parser-errors` set
+    /// AND at least one parse failure occurred). Reporters use this to mark the
+    /// run unsuccessful even though parse failures surface as warning-level
+    /// diagnostics rather than error-level ones.
+    pub strict_parse_failure: bool,
 }
 
 impl Report {
@@ -29,6 +35,7 @@ impl Report {
             path,
             findings: Vec::new(),
             diagnostics: Vec::new(),
+            strict_parse_failure: false,
         }
     }
 }
