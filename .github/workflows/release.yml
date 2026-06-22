@@ -245,9 +245,15 @@ jobs:
           fi
           version="${TAG#v}"
 
-          # Pull the signed checksum manifest the `sign` job published and look up
-          # each per-target hash by archive name. Format is "<sha256>  <filename>".
+          # Pull the signed checksum manifest the `sign` job published, verify its signature,
+          # then look up each per-target hash by archive name. Format is "<sha256>  <filename>".
           gh release download "$TAG" --repo "$REPO" --pattern 'SHA256SUMS' -O SHA256SUMS
+          gh release download "$TAG" --repo "$REPO" --pattern 'SHA256SUMS.cosign.bundle' -O SHA256SUMS.cosign.bundle
+          cosign verify-blob \
+            --bundle SHA256SUMS.cosign.bundle \
+            --certificate-identity-regexp '^https://github\.com/baneido/safe-deps/\.github/workflows/release\.yml@refs/tags/v.*$' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            SHA256SUMS >/dev/null
           sha() {
             value=$(awk -v asset="$1" '$2 == asset {print $1}' SHA256SUMS)
             [ -n "$value" ] || { echo "::error::SHA256SUMS missing $1" >&2; exit 1; }
