@@ -1,6 +1,6 @@
 [package]
 name = "safe-deps"
-version = "0.1.0"
+version = "0.2.1"
 edition = "2021"
 # Real MSRV: transitive dependencies require Rust 1.86 — the audit HTTP stack
 # (ureq → url → idna → icu_* 2.2.0) declares rust-version 1.86, and others use
