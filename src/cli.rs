@@ -10,7 +10,7 @@ use crate::config::{self, Config, FailLevel, OutputFormat, ResolvedConfig};
 use crate::ecosystems::PackageManager;
 use crate::filesystem::{scan, ScanOptions};
 use crate::rule::{Profile, RuleId};
-use crate::rules::all_rules;
+use crate::rules::meta::ALL_RULE_META;
 
 #[derive(Parser)]
 #[command(
@@ -314,12 +314,14 @@ fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
 }
 
 fn run_explain(rule_id: &str) -> Result<u8, CliError> {
+    // `explain`/`list-rules` derive entirely from the declarative metadata
+    // registry (the single source, #66), not from rule `evaluate` impls.
     let id = normalize_rule_id(rule_id);
-    for rule in all_rules() {
-        if rule.id() == id {
-            println!("{}: {}", rule.id(), rule.summary());
+    for meta in ALL_RULE_META {
+        if id == meta.id {
+            println!("{}: {}", meta.id, meta.summary);
             println!();
-            println!("{}", rule.explanation());
+            println!("{}", meta.explanation);
             return Ok(0);
         }
     }
@@ -328,8 +330,8 @@ fn run_explain(rule_id: &str) -> Result<u8, CliError> {
 
 fn run_list_rules() -> Result<u8, CliError> {
     println!("{:<8}  Summary", "ID");
-    for rule in all_rules() {
-        println!("{:<8}  {}", rule.id(), rule.summary());
+    for meta in ALL_RULE_META {
+        println!("{:<8}  {}", meta.id, meta.summary);
     }
     Ok(0)
 }
@@ -450,7 +452,8 @@ fn validate_rule_ids(raw_ids: &[String]) -> Result<std::collections::HashSet<Str
     if raw_ids.is_empty() {
         return Ok(std::collections::HashSet::new());
     }
-    let known: std::collections::HashSet<String> = all_rules().iter().map(|r| r.id().0).collect();
+    let known: std::collections::HashSet<String> =
+        ALL_RULE_META.iter().map(|m| m.id.to_string()).collect();
     let mut normalized = std::collections::HashSet::new();
     for raw in raw_ids {
         let id = normalize_rule_id(raw);

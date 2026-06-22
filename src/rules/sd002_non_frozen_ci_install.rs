@@ -18,19 +18,8 @@ impl Rule for Sd002 {
         RuleId::new("SD002")
     }
 
-    fn summary(&self) -> &'static str {
-        "CI installs should use a frozen/locked command, not a resolving one."
-    }
-
-    fn explanation(&self) -> &'static str {
-        "CI should fail when the manifest and lockfile disagree. Use npm ci, \
-yarn install --immutable, pnpm install --frozen-lockfile, \
-bun install --frozen-lockfile (or bun ci), uv sync --locked, \
-pip install --require-hashes for deployment requirements, cargo build/test \
---locked, and Go's default -mod=readonly (avoid -mod=mod). This rule reads CI \
-command facts extracted from GitHub Actions, GitLab CI, and CircleCI \
-configurations."
-    }
+    // `summary`/`explanation` are derived from the declarative metadata in
+    // `rules::meta` (the single source, #66); only `evaluate` lives here.
 
     fn is_workspace_rule(&self) -> bool {
         true

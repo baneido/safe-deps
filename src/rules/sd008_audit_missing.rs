@@ -30,18 +30,8 @@ impl Rule for Sd008 {
         RuleId::new("SD008")
     }
 
-    fn summary(&self) -> &'static str {
-        "CI installs dependencies but no audit command is visible."
-    }
-
-    fn explanation(&self) -> &'static str {
-        "When CI installs dependencies, a dependency audit step gives a path to \
-catch known-vulnerable packages. Use npm/yarn/pnpm/bun audit or pip-audit/safety. \
-If audits run in a separate workflow, a SaaS scanner, or an organization-wide \
-schedule, declare [policy] external_audit = true to acknowledge that control. \
-This rule reads CI command facts extracted from GitHub Actions, GitLab CI, and \
-CircleCI configurations."
-    }
+    // `summary`/`explanation` are derived from the declarative metadata in
+    // `rules::meta` (the single source, #66); only `evaluate` lives here.
 
     fn is_workspace_rule(&self) -> bool {
         true

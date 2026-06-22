@@ -15,16 +15,8 @@ impl Rule for Sd003 {
         RuleId::new("SD003")
     }
 
-    fn summary(&self) -> &'static str {
-        "Registry or index uses HTTP or TLS verification is disabled."
-    }
-
-    fn explanation(&self) -> &'static str {
-        "Use HTTPS registries and keep TLS verification enabled. Flagged \
-signals include npm/pnpm strict-ssl=false and http:// registries, Yarn \
-unsafeHttpWhitelist, pip --trusted-host and HTTP indexes, and uv \
-allow-insecure-host. Local test exceptions should be scoped narrowly."
-    }
+    // `summary`/`explanation` are derived from the declarative metadata in
+    // `rules::meta` (the single source, #66); only `evaluate` lives here.
 
     fn evaluate(&self, input: &RuleInput) -> Vec<Finding> {
         let facts = input.facts;

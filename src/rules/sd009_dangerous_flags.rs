@@ -19,17 +19,8 @@ impl Rule for Sd009 {
         RuleId::new("SD009")
     }
 
-    fn summary(&self) -> &'static str {
-        "CI install commands use a flag that bypasses dependency safety checks."
-    }
-
-    fn explanation(&self) -> &'static str {
-        "Flags such as --force, --legacy-peer-deps, --no-lockfile, \
---ignore-platform-reqs, --break-system-packages, and --no-build-isolation \
-suppress resolution, lockfile, or environment checks. They turn an enforced \
-install into a best-effort one and can mask supply-chain or compatibility \
-problems. Remove them or scope them to a documented exception."
-    }
+    // `summary`/`explanation` are derived from the declarative metadata in
+    // `rules::meta` (the single source, #66); only `evaluate` lives here.
 
     fn is_workspace_rule(&self) -> bool {
         true

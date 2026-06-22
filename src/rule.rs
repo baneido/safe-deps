@@ -222,9 +222,19 @@ pub struct WorkspaceInput<'a> {
 pub trait Rule: Send + Sync {
     fn id(&self) -> RuleId;
     /// One-line summary used by `explain` and `list-rules`.
-    fn summary(&self) -> &'static str;
-    /// Longer explanation used by `explain`.
-    fn explanation(&self) -> &'static str;
+    ///
+    /// Defaults to the rule's entry in the declarative
+    /// [`crate::rules::meta`] registry, the single source for rule metadata
+    /// (#66). A rule only overrides this if its summary is computed; the
+    /// built-in `SDxxx` rules do not.
+    fn summary(&self) -> &'static str {
+        crate::rules::meta::summary_for(self.id().as_str())
+    }
+    /// Longer explanation used by `explain`. Defaults to the declarative
+    /// metadata registry; see [`Rule::summary`].
+    fn explanation(&self) -> &'static str {
+        crate::rules::meta::explanation_for(self.id().as_str())
+    }
     /// Project-scoped evaluation, called once per detected project.
     fn evaluate(&self, _input: &RuleInput) -> Vec<Finding> {
         Vec::new()

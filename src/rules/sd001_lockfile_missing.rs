@@ -15,18 +15,8 @@ impl Rule for Sd001 {
         RuleId::new("SD001")
     }
 
-    fn summary(&self) -> &'static str {
-        "Lockfile missing for a manifest that declares dependencies."
-    }
-
-    fn explanation(&self) -> &'static str {
-        "Committing a lockfile makes dependency resolution reproducible and \
-reviewable. npm expects package-lock.json (or npm-shrinkwrap.json), Yarn \
-expects yarn.lock, pnpm expects pnpm-lock.yaml, Bun 1.2+ expects bun.lock, \
-and uv expects uv.lock. pip has no conventional lockfile and is assessed via \
---require-hashes (SD004) instead. In workspaces, a root-level lockfile \
-covers member packages."
-    }
+    // `summary`/`explanation` are derived from the declarative metadata in
+    // `rules::meta` (the single source, #66); only `evaluate` lives here.
 
     fn evaluate(&self, input: &RuleInput) -> Vec<Finding> {
         let facts = input.facts;
