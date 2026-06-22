@@ -1952,3 +1952,54 @@ fn ci_cargo_build_locked_is_clean() {
     );
     assert!(findings_for(&check_json(&ws, &[]), "SD002").is_empty());
 }
+
+// --- suppression glob normalization (#94) ------------------------------------
+
+#[test]
+fn suppression_dot_slash_glob_matches_nested_finding() {
+    // `./packages/**` must suppress a finding at `packages/app/package.json`.
+    let ws = workspace(&[(
+        "packages/app/package.json",
+        r#"{ "name": "app", "dependencies": { "x": "^1" } }"#,
+    )]);
+    write(
+        ws.path(),
+        "safe-deps.toml",
+        "[[suppressions]]\nrule = \"SD001\"\npath = \"./packages/**\"\nreason = \"tracked in backlog\"\n",
+    );
+    let report = check_json(&ws, &[]);
+    assert!(
+        !rule_ids(&report).contains(&"SD001".to_string()),
+        "`./packages/**` should suppress SD001: {report}"
+    );
+    // The suppression must not be reported as unused.
+    let diags = report["diagnostics"].as_array().unwrap();
+    assert!(
+        !diags.iter().any(|d| d["message"]
+            .as_str()
+            .unwrap()
+            .contains("unused suppression")),
+        "suppression with `./` prefix must not be reported as unused: {diags:?}"
+    );
+}
+
+#[test]
+fn suppression_dot_slash_exact_path_matches() {
+    // `./package.json` must suppress a finding at `package.json`.
+    let config =
+        "[[suppressions]]\nrule = \"SD001\"\npath = \"./package.json\"\nreason = \"tracked\"\n";
+    let ws = workspace(&[("package.json", NPM_DEPS), ("safe-deps.toml", config)]);
+    let report = check_json(&ws, &[]);
+    assert!(
+        !rule_ids(&report).contains(&"SD001".to_string()),
+        "`./package.json` should suppress SD001: {report}"
+    );
+    let diags = report["diagnostics"].as_array().unwrap();
+    assert!(
+        !diags.iter().any(|d| d["message"]
+            .as_str()
+            .unwrap()
+            .contains("unused suppression")),
+        "suppression with `./` prefix must not be reported as unused"
+    );
+}
