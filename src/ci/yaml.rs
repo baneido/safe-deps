@@ -109,6 +109,55 @@ pub fn is_block_scalar_indicator(value: &str) -> bool {
     }
 }
 
+/// Joins shell backslash line-continuations in a sequence of content lines,
+/// returning a `Vec` of complete commands (one per logical line).
+///
+/// A physical line whose trimmed content ends with `\` is concatenated with the
+/// next line: the trailing `\` is stripped, the next line's leading/trailing
+/// whitespace is trimmed, and the two pieces are joined with a single space.
+/// Lines that do not end with `\` start (or complete) a logical command.
+///
+/// This mirrors the GitHub Actions `push_run_line` helper but operates on a
+/// pre-collected slice of `(line_index, content)` pairs so it can be reused by
+/// GitLab CI and CircleCI without duplicating the block-scalar iteration loop.
+///
+/// Line numbers in the output correspond to the **first** physical line of each
+/// logical command (i.e. the line where the command starts), using 1-based
+/// indexing consistent with the rest of the CI parsers.
+pub fn join_continuations(lines: &[(usize, &str)]) -> Vec<(u32, String)> {
+    let mut out: Vec<(u32, String)> = Vec::new();
+    let mut pending: Option<(u32, String)> = None;
+
+    for &(line_idx, content) in lines {
+        let line_no = (line_idx as u32) + 1;
+        if let Some(rest) = content.trim_end().strip_suffix('\\') {
+            let piece = rest.trim_end();
+            match &mut pending {
+                Some((_, acc)) => {
+                    acc.push(' ');
+                    acc.push_str(piece.trim_start());
+                }
+                None => pending = Some((line_no, piece.to_string())),
+            }
+        } else {
+            let piece = content.trim();
+            match pending.take() {
+                Some((start, mut acc)) => {
+                    acc.push(' ');
+                    acc.push_str(piece);
+                    out.push((start, acc));
+                }
+                None => out.push((line_no, piece.to_string())),
+            }
+        }
+    }
+    // Flush a trailing continuation that was never terminated.
+    if let Some((start, acc)) = pending.take() {
+        out.push((start, acc));
+    }
+    out
+}
+
 /// Removes a single pair of matching surrounding quotes from a scalar.
 pub fn unquote(s: &str) -> &str {
     let s = s.trim();
@@ -148,5 +197,38 @@ mod tests {
         assert_eq!(unquote("\"npm ci\""), "npm ci");
         assert_eq!(unquote("'npm ci'"), "npm ci");
         assert_eq!(unquote("npm ci"), "npm ci");
+    }
+
+    #[test]
+    fn join_continuations_joins_backslash_lines() {
+        let lines: Vec<(usize, &str)> = vec![
+            (0, "pip install \\"),
+            (1, "  --break-system-packages \\"),
+            (2, "  -r requirements.txt"),
+        ];
+        let joined = join_continuations(&lines);
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined[0].0, 1); // 1-based line number of first physical line
+        assert_eq!(
+            joined[0].1,
+            "pip install --break-system-packages -r requirements.txt"
+        );
+    }
+
+    #[test]
+    fn join_continuations_preserves_independent_lines() {
+        let lines: Vec<(usize, &str)> = vec![(0, "npm ci"), (1, "npm test")];
+        let joined = join_continuations(&lines);
+        assert_eq!(joined.len(), 2);
+        assert_eq!(joined[0].1, "npm ci");
+        assert_eq!(joined[1].1, "npm test");
+    }
+
+    #[test]
+    fn join_continuations_trailing_continuation_is_flushed() {
+        let lines: Vec<(usize, &str)> = vec![(0, "npm install \\")];
+        let joined = join_continuations(&lines);
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined[0].1, "npm install");
     }
 }

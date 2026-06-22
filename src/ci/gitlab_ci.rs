@@ -8,7 +8,8 @@
 use std::path::Path;
 
 use crate::ci::yaml::{
-    is_block_scalar_indicator, leading_spaces, mapping_key, strip_comment, unquote,
+    is_block_scalar_indicator, join_continuations, leading_spaces, mapping_key, strip_comment,
+    unquote,
 };
 use crate::ci::{redact_env_value, CiCommand, CiProvider, EnvAssignment, ParsedCi};
 
@@ -53,6 +54,7 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
         // (e.g. a multi-line `variables:` value) is not parsed as a command.
         if is_block_scalar_indicator(value) {
             let mut j = i + 1;
+            let mut content_lines: Vec<(usize, &str)> = Vec::new();
             while j < lines.len() {
                 let line = lines[j];
                 if line.trim().is_empty() {
@@ -63,14 +65,20 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
                     break;
                 }
                 if is_script {
-                    push(
-                        &mut commands,
-                        relative,
-                        j,
-                        unquote(strip_comment(line).trim()),
-                    );
+                    content_lines.push((j, unquote(strip_comment(line).trim())));
                 }
                 j += 1;
+            }
+            if is_script {
+                for (line_no, command) in join_continuations(&content_lines) {
+                    if !command.is_empty() {
+                        commands.push(CiCommand {
+                            file: relative.to_path_buf(),
+                            line: line_no,
+                            command,
+                        });
+                    }
+                }
             }
             i = j;
             continue;
@@ -92,7 +100,12 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
             continue;
         }
         // Array form: consume `- item` lines (incl. per-item `- |` block text).
+        // We collect content lines per logical array item and apply continuation
+        // joining so a command split with `\` across multiple lines is reunited.
         let mut j = i + 1;
+        let mut item_lines: Vec<(usize, &str)> = Vec::new();
+        let mut in_item_block = false;
+        let mut item_block_indent: usize = 0;
         while j < lines.len() {
             let line = lines[j];
             if line.trim().is_empty() {
@@ -104,14 +117,55 @@ fn extract_script_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
             }
             let content = strip_comment(line).trim();
             if let Some(item) = content.strip_prefix("- ") {
-                if !is_block_scalar_indicator(item.trim()) {
-                    push(&mut commands, relative, j, unquote(item.trim()));
+                // Flush any accumulated item lines before starting a new item.
+                for (line_no, command) in join_continuations(&item_lines) {
+                    if !command.is_empty() {
+                        commands.push(CiCommand {
+                            file: relative.to_path_buf(),
+                            line: line_no,
+                            command,
+                        });
+                    }
                 }
-            } else if content != "-" && !is_block_scalar_indicator(content) {
-                // Block-scalar content line under a `- |` array item.
-                push(&mut commands, relative, j, unquote(content));
+                item_lines.clear();
+                in_item_block = false;
+                if is_block_scalar_indicator(item.trim()) {
+                    // `- |` array item: subsequent indented lines are content.
+                    in_item_block = true;
+                    item_block_indent = leading_spaces(line) + 2; // content deeper than `- `
+                } else {
+                    item_lines.push((j, unquote(item.trim())));
+                }
+            } else if content == "-" {
+                // Empty list item.
+                for (line_no, command) in join_continuations(&item_lines) {
+                    if !command.is_empty() {
+                        commands.push(CiCommand {
+                            file: relative.to_path_buf(),
+                            line: line_no,
+                            command,
+                        });
+                    }
+                }
+                item_lines.clear();
+                in_item_block = false;
+            } else if in_item_block || !is_block_scalar_indicator(content) {
+                // Block-scalar content line under a `- |` array item, or a
+                // continuation line of a plain array item.
+                let _ = item_block_indent; // used for block detection only
+                item_lines.push((j, unquote(content)));
             }
             j += 1;
+        }
+        // Flush remaining item lines.
+        for (line_no, command) in join_continuations(&item_lines) {
+            if !command.is_empty() {
+                commands.push(CiCommand {
+                    file: relative.to_path_buf(),
+                    line: line_no,
+                    command,
+                });
+            }
         }
         i = j;
     }
@@ -254,5 +308,63 @@ job:
         let get = |n: &str| env.iter().find(|e| e.name == n).map(|e| e.value.as_str());
         assert_eq!(get("NODE_ENV"), Some("production"));
         assert_eq!(get("NPM_TOKEN"), Some("<redacted>"));
+    }
+
+    #[test]
+    fn backslash_continuation_in_array_script_is_joined() {
+        // A command split across continuation lines must be reassembled so that
+        // dangerous flags are not separated from the installer invocation.
+        let text = "\
+job:
+  script:
+    - pip install \\
+      --break-system-packages \\
+      -r requirements.txt
+";
+        assert_eq!(
+            cmds(text),
+            vec!["pip install --break-system-packages -r requirements.txt"]
+        );
+    }
+
+    #[test]
+    fn backslash_continuation_in_block_scalar_script_is_joined() {
+        let text = "\
+job:
+  script:
+    - |
+      pip install \\
+        --break-system-packages \\
+        -r requirements.txt
+      pytest
+";
+        assert_eq!(
+            cmds(text),
+            vec![
+                "pip install --break-system-packages -r requirements.txt",
+                "pytest"
+            ]
+        );
+    }
+
+    #[test]
+    fn multiple_array_items_with_continuation_are_independent() {
+        let text = "\
+job:
+  script:
+    - npm ci
+    - pip install \\
+      --break-system-packages \\
+      -r requirements.txt
+    - pytest
+";
+        assert_eq!(
+            cmds(text),
+            vec![
+                "npm ci",
+                "pip install --break-system-packages -r requirements.txt",
+                "pytest"
+            ]
+        );
     }
 }
