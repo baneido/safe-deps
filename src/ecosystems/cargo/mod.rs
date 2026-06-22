@@ -82,18 +82,22 @@ impl Analyzer for CargoAnalyzer {
         }
 
         // Merge manifest dependency sources with `.cargo/config.toml`
-        // `[source]` `replace-with` redirects. The config file is surfaced as a
-        // scanned config so suppressions/reporting can reference it.
+        // `[source]` `replace-with` redirects (honoring Cargo's hierarchical
+        // config lookup up to the scanned workspace root). The config file is
+        // surfaced as a scanned config so suppressions/reporting can reference
+        // it, and any parse failure becomes a warning diagnostic.
         let mut dependencies = parsed.dependencies;
-        let source_replacements = sourceconfig::source_replacements(ctx, dir);
-        let configs = source_replacements
+        let source_config = sourceconfig::source_replacements(ctx, dir);
+        let configs = source_config
+            .dependencies
             .iter()
             .map(|d| FileFact {
                 relative: d.file.clone(),
             })
             .take(1)
             .collect();
-        dependencies.extend(source_replacements);
+        parse_diagnostics.extend(source_config.diagnostics);
+        dependencies.extend(source_config.dependencies);
 
         Ok(ProjectFacts {
             project,
@@ -264,6 +268,60 @@ mod tests {
             })
             .expect("source replacement is extracted");
         assert_eq!(replaced.name, "crates-io");
+    }
+
+    #[test]
+    fn workspace_root_cargo_config_redirect_applies_to_member() {
+        // Cargo config is hierarchical: a root `.cargo/config.toml` redirect
+        // applies to member crates under `crates/*`.
+        let dir = ws(&[
+            ("Cargo.toml", "[workspace]\nmembers = [\"crates/a\"]\n"),
+            (
+                "crates/a/Cargo.toml",
+                "[package]\nname = \"a\"\n[dependencies]\nserde = \"1\"\n",
+            ),
+            ("crates/a/src/lib.rs", "\n"),
+            ("Cargo.lock", "version = 3\n"),
+            (
+                ".cargo/config.toml",
+                "[source.crates-io]\nreplace-with = \"mirror\"\n[source.mirror]\nregistry = \"https://internal.example/index\"\n",
+            ),
+        ]);
+        let facts = facts_for(&dir);
+        // Only the member crate is detected; it picks up the ancestor redirect.
+        assert_eq!(facts.len(), 1);
+        let replaced = facts[0]
+            .dependencies
+            .iter()
+            .find(|d| {
+                matches!(
+                    d.source,
+                    crate::ecosystems::DependencySource::RegistryReplaced { .. }
+                )
+            })
+            .expect("ancestor source replacement is extracted for the member crate");
+        assert_eq!(replaced.name, "crates-io");
+    }
+
+    #[test]
+    fn malformed_cargo_config_emits_parse_diagnostic() {
+        let dir = ws(&[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n",
+            ),
+            ("src/main.rs", "fn main() {}\n"),
+            (".cargo/config.toml", "this is = not valid = toml\n"),
+        ]);
+        let facts = facts_for(&dir);
+        assert!(
+            facts[0]
+                .parse_diagnostics
+                .iter()
+                .any(|d| d.message.contains(".cargo/config.toml")),
+            "expected a parse diagnostic for the malformed config: {:?}",
+            facts[0].parse_diagnostics
+        );
     }
 
     #[test]

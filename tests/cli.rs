@@ -1744,13 +1744,83 @@ fn sd006_cargo_source_without_replace_with_is_clean() {
 }
 
 #[test]
+fn sd006_cargo_vendored_replace_with_is_clean() {
+    // `cargo vendor` emits a `replace-with` to a local `directory` source; that
+    // is deterministic/offline and must NOT be flagged.
+    let manifest = "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n";
+    let config = "\
+[source.crates-io]
+replace-with = \"vendored-sources\"
+
+[source.vendored-sources]
+directory = \"vendor\"
+";
+    let ws = workspace(&[
+        ("Cargo.toml", manifest),
+        ("Cargo.lock", "version = 3\n"),
+        (".cargo/config.toml", config),
+    ]);
+    assert!(findings_of(&check_json(&ws, &[]), "SD006").is_empty());
+}
+
+#[test]
+fn sd006_malformed_cargo_config_emits_diagnostic_and_strict_exits_four() {
+    let manifest = "[package]\nname = \"app\"\n[dependencies]\nserde = \"1\"\n";
+    let ws = workspace(&[
+        ("Cargo.toml", manifest),
+        ("Cargo.lock", "version = 3\n"),
+        (".cargo/config.toml", "this is = not valid = toml\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    let diags = report["diagnostics"].as_array().unwrap();
+    assert!(
+        diags.iter().any(|d| d["message"]
+            .as_str()
+            .unwrap()
+            .contains(".cargo/config.toml")),
+        "diags: {diags:?}"
+    );
+    let strict = run(&ws, &["check", ".", "--strict-parser-errors"]);
+    assert_eq!(code(&strict), 4);
+}
+
+#[test]
+fn sd006_workspace_root_cargo_config_redirect_covers_member() {
+    // A pure workspace root with members under crates/*. The root's
+    // `.cargo/config.toml` redirect applies hierarchically to the member crate.
+    let root_manifest = "[workspace]\nmembers = [\"crates/a\"]\n";
+    let member_manifest = "[package]\nname = \"a\"\n[dependencies]\nserde = \"1\"\n";
+    let config = "\
+[source.crates-io]
+replace-with = \"mirror\"
+
+[source.mirror]
+registry = \"https://internal.example/index\"
+";
+    let ws = workspace(&[
+        ("Cargo.toml", root_manifest),
+        ("Cargo.lock", "version = 3\n"),
+        ("crates/a/Cargo.toml", member_manifest),
+        ("crates/a/src/lib.rs", "\n"),
+        (".cargo/config.toml", config),
+    ]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    // Exactly one finding: the root redirect, surfaced once for the member crate
+    // (not duplicated even though the root config is scanned hierarchically).
+    assert_eq!(sd006.len(), 1, "{sd006:?}");
+    let msg = sd006[0]["message"].as_str().unwrap();
+    assert!(msg.contains("crates-io"), "{msg}");
+    assert_eq!(sd006[0]["location"]["file"], ".cargo/config.toml");
+}
+
+#[test]
 fn sd006_flags_go_sumdb_disabling_ci_env() {
     let go_mod = "module m\ngo 1.21\nrequire github.com/x/y v1.2.3\n";
     let workflow = "\
 name: ci
 on: [push]
 env:
-  GOFLAGS: -insecure
+  GOSUMDB: \"off\"
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -1765,9 +1835,37 @@ jobs:
     let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
     assert_eq!(sd006.len(), 1, "{sd006:?}");
     let msg = sd006[0]["message"].as_str().unwrap();
-    assert!(msg.contains("GOFLAGS"), "{msg}");
+    assert!(msg.contains("GOSUMDB"), "{msg}");
     assert!(msg.contains("checksum"), "{msg}");
     assert_eq!(sd006[0]["location"]["file"], "go.mod");
+}
+
+#[test]
+fn sd006_flags_go_wildcard_gonosumcheck_ci_env() {
+    // GONOSUMCHECK is a pattern list; the wildcard `*` disables sumdb globally.
+    let go_mod = "module m\ngo 1.21\nrequire github.com/x/y v1.2.3\n";
+    let workflow = "\
+name: ci
+on: [push]
+env:
+  GONOSUMCHECK: \"*\"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: go build ./...
+";
+    let ws = workspace(&[
+        ("go.mod", go_mod),
+        ("go.sum", "github.com/x/y v1.2.3 h1:abc=\n"),
+        (".github/workflows/ci.yml", workflow),
+    ]);
+    let sd006 = findings_of(&check_json(&ws, &[]), "SD006");
+    assert_eq!(sd006.len(), 1, "{sd006:?}");
+    assert!(sd006[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("GONOSUMCHECK"));
 }
 
 #[test]
@@ -1779,6 +1877,32 @@ name: ci
 on: [push]
 env:
   GOPRIVATE: github.com/me/*
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: go build ./...
+";
+    let ws = workspace(&[
+        ("go.mod", go_mod),
+        ("go.sum", "github.com/x/y v1.2.3 h1:abc=\n"),
+        (".github/workflows/ci.yml", workflow),
+    ]);
+    assert!(findings_of(&check_json(&ws, &[]), "SD006").is_empty());
+}
+
+#[test]
+fn sd006_go_nonglobal_sumdb_and_goinsecure_are_clean() {
+    // GONOSUMCHECK=1 is a literal pattern (not the wildcard), and GOINSECURE
+    // controls transport, not the checksum database. Neither is a sumdb bypass.
+    let go_mod = "module m\ngo 1.21\nrequire github.com/x/y v1.2.3\n";
+    let workflow = "\
+name: ci
+on: [push]
+env:
+  GONOSUMCHECK: \"1\"
+  GOINSECURE: \"*\"
+  GOFLAGS: -insecure
 jobs:
   build:
     runs-on: ubuntu-latest

@@ -135,11 +135,16 @@ Notes:
   assessed through `--require-hashes` (SD004) instead.
 - SD006 (unsafe dependency source) covers all four ecosystems: JavaScript and
   Python manifests, plus Cargo (`git`/`path` dependencies, `[patch]`/`[replace]`
-  redirects, and `.cargo/config.toml` `[source]` `replace-with` registry
-  redirects) and Go (local-path `replace` targets, and CI `env` that disables the
-  module checksum database — `GOFLAGS=-insecure`, `GOSUMDB=off`, `GONOSUMCHECK`,
-  `GOINSECURE=*`). Remaining deeper detections (Cargo sparse-index/VCS-URL nuance,
-  Go `go env -w` command parsing and `GOPRIVATE`/`GONOPROXY` review) are tracked in
+  redirects, and `.cargo/config.toml` `[source]` `replace-with` redirects whose
+  target is a remote `registry`/`git` source — redirects to a local
+  `directory`/`local-registry` vendoring target are deterministic/offline and not
+  flagged; ancestor configs are scanned per Cargo's hierarchical lookup) and Go
+  (local-path `replace` targets, and CI `env` that *globally* disables the module
+  checksum database — `GOSUMDB=off`, or `GONOSUMCHECK`/`GONOSUMDB` set to the
+  wildcard `*`). `GOINSECURE`/`GOFLAGS=-insecure` allow insecure transport rather
+  than disabling the checksum database, so they are not treated as a sumdb bypass.
+  Remaining deeper detections (Cargo sparse-index/VCS-URL nuance, Go `go env -w`
+  command parsing and `GOPRIVATE`/`GONOPROXY` review) are tracked in
   [#65](https://github.com/baneido/safe-deps/issues/65).
 - For Cargo/Go, SD002 flags a non-reproducible CI build (`cargo build`/`test`
   without `--locked`/`--frozen`; `go build`/`test` with `-mod=mod`). SD008/SD009

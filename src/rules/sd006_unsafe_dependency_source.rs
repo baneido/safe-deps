@@ -3,12 +3,13 @@
 //! Flags dependencies that resolve from something other than a registry version
 //! in a way that weakens reproducibility or integrity: floating Git refs,
 //! SSH-based VCS dependencies, direct tarball URLs, local path dependencies in
-//! production groups, and Cargo `[source]` `replace-with` registry redirects.
-//! Registry and internal workspace references are safe. For Go, CI environment
-//! that disables checksum-database verification (`GOFLAGS=-insecure`,
-//! `GONOSUMCHECK`, `GOSUMDB=off`, `GOINSECURE`) is also flagged, since it lets
-//! modules resolve without integrity checks. `[policy] allow_git_dependencies`
-//! and `allow_local_path_dependencies` opt out of the respective findings.
+//! production groups, and Cargo `[source]` `replace-with` redirects to a remote
+//! registry/git source. Registry and internal workspace references are safe. For
+//! Go, CI environment that globally disables checksum-database verification
+//! (`GOSUMDB=off`, or `GONOSUMCHECK`/`GONOSUMDB` set to the wildcard `*`) is also
+//! flagged, since it lets modules resolve without integrity checks.
+//! `[policy] allow_git_dependencies` and `allow_local_path_dependencies` opt out
+//! of the respective findings.
 
 use crate::ci::CiFacts;
 use crate::ecosystems::{Dependency, DependencySource, Ecosystem, ProjectFacts};
@@ -28,12 +29,13 @@ impl Rule for Sd006 {
     fn explanation(&self) -> &'static str {
         "Dependencies pulled from a moving Git ref, an SSH VCS URL, a direct \
 tarball, or a local filesystem path are not reproducible or integrity-checked \
-the way registry releases are. A Cargo [source] replace-with redirect reroutes \
-the whole crate graph; Go CI that disables the checksum database (GOFLAGS=-insecure, \
-GONOSUMCHECK, GOSUMDB=off, GOINSECURE) installs modules without integrity checks. \
-Pin Git dependencies to a commit, publish internal packages to a registry, keep \
-local path dependencies out of production groups, review source redirects, and \
-leave Go's checksum database enabled. Declare [policy] allow_git_dependencies or \
+the way registry releases are. A Cargo [source] replace-with redirect to a remote \
+registry/git source reroutes the whole crate graph; Go CI that globally disables \
+the checksum database (GOSUMDB=off, or GONOSUMCHECK/GONOSUMDB set to the wildcard \
+'*') installs modules without integrity checks. Pin Git dependencies to a commit, \
+publish internal packages to a registry, keep local path dependencies out of \
+production groups, review remote source redirects, and leave Go's checksum \
+database enabled. Declare [policy] allow_git_dependencies or \
 allow_local_path_dependencies to accept a deliberate choice."
     }
 
@@ -53,14 +55,14 @@ allow_local_path_dependencies to accept a deliberate choice."
     }
 }
 
-/// Go CI env / `go env -w` assignments that disable checksum-database
+/// Go CI env / `go env -w` assignments that GLOBALLY disable checksum-database
 /// verification, weakening module integrity. Returns at most one finding per Go
 /// project, anchored on its `go.mod`, so a multi-module workspace surfaces the
 /// concern per module without duplicating one CI env across unrelated managers.
 ///
-/// Bare `GOPRIVATE`/`GONOSUMDB` for private paths is intentional, recommended
-/// configuration and is deliberately NOT flagged; only blanket
-/// integrity-disabling values are.
+/// `GOPRIVATE`/`GONOSUMDB`/`GONOSUMCHECK` scoped to specific module path patterns
+/// is intentional, recommended configuration and is deliberately NOT flagged;
+/// only blanket (wildcard `*` or `GOSUMDB=off`) integrity-disabling values are.
 fn go_sumdb_findings(facts: &ProjectFacts, ci: &CiFacts) -> Vec<Finding> {
     if facts.project.ecosystem != Ecosystem::Go {
         return Vec::new();
@@ -80,43 +82,42 @@ fn go_sumdb_findings(facts: &ProjectFacts, ci: &CiFacts) -> Vec<Finding> {
         severity: Severity::Warning,
         confidence: Confidence::Medium,
         message: format!(
-            "CI sets `{var}={value}`, disabling Go's module checksum database; modules resolve without integrity checks"
+            "CI sets `{var}={value}`, globally disabling Go's module checksum database; modules resolve without integrity checks"
         ),
         location: Some(Location::file(&manifest.relative)),
         project_root: facts.project.root.clone(),
         ecosystem: facts.project.ecosystem,
         package_manager: Some(facts.project.package_manager),
         remediation: Some(
-            "leave the Go checksum database (GOSUMDB) enabled; scope GOPRIVATE/GONOSUMDB to specific private module paths instead of disabling verification globally."
+            "leave the Go checksum database (GOSUMDB) enabled; scope GOPRIVATE/GONOSUMDB to specific private module path patterns instead of disabling verification globally."
                 .to_string(),
         ),
     }]
 }
 
-/// Whether a CI env assignment disables Go checksum-database verification.
-/// Returns the normalized `(name, value)` to surface in the finding.
+/// Whether a CI env assignment GLOBALLY disables Go checksum-database
+/// verification. Returns the normalized `(name, value)` to surface in the
+/// finding.
+///
+/// Only true global bypasses match:
+/// - `GOSUMDB=off` turns the checksum database off entirely.
+/// - `GONOSUMCHECK`/`GONOSUMDB` are module-path *pattern lists*; only the
+///   wildcard `*` (every module) is a blanket bypass. Literal patterns (a module
+///   prefix) or non-pattern values like `1`/`on` are NOT a global disable.
+///
+/// `GOINSECURE` and `GOFLAGS=-insecure` are deliberately NOT matched here: they
+/// allow insecure (HTTP) transport for matching modules, which is a distinct
+/// concern from disabling checksum-database validation.
 fn go_disabling_env(name: &str, value: &str) -> Option<(String, String)> {
     let upper = name.to_ascii_uppercase();
     let v = value.trim();
     match upper.as_str() {
-        // The legacy switches: any truthy/`1`/`on` value disables verification.
-        "GONOSUMCHECK" | "GONOSUMDB" if is_truthy(v) => Some((upper, v.to_string())),
+        // Pattern lists: only the wildcard disables verification for everything.
+        "GONOSUMCHECK" | "GONOSUMDB" if v == "*" => Some((upper, "*".to_string())),
         // Turning the checksum database off entirely.
         "GOSUMDB" if v.eq_ignore_ascii_case("off") => Some((upper, "off".to_string())),
-        // `GOFLAGS=-insecure` (or containing it) permits insecure module fetches.
-        "GOFLAGS" if v.split_whitespace().any(|f| f == "-insecure") => {
-            Some((upper, "-insecure".to_string()))
-        }
-        // `GOINSECURE=*` disables HTTPS/sumdb checks for matching modules; a
-        // wildcard applies to everything.
-        "GOINSECURE" if v == "*" => Some((upper, "*".to_string())),
         _ => None,
     }
-}
-
-/// Whether an env value is a truthy on/enabled marker.
-fn is_truthy(v: &str) -> bool {
-    matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes")
 }
 
 /// Returns a `(message, remediation)` for an unsafe dependency, or `None` when
@@ -230,21 +231,31 @@ mod tests {
     }
 
     #[test]
-    fn go_disabling_env_matches_only_integrity_off_values() {
-        assert!(go_disabling_env("GONOSUMCHECK", "1").is_some());
-        assert!(go_disabling_env("gonosumcheck", "on").is_some());
+    fn go_disabling_env_matches_only_global_integrity_bypasses() {
+        // GOSUMDB=off is a true global disable.
         assert!(go_disabling_env("GOSUMDB", "off").is_some());
         assert!(go_disabling_env("GOSUMDB", "OFF").is_some());
-        assert!(go_disabling_env("GOFLAGS", "-mod=mod -insecure").is_some());
-        assert!(go_disabling_env("GOINSECURE", "*").is_some());
+        // GONOSUMCHECK/GONOSUMDB are pattern lists; only the wildcard `*` is a
+        // blanket bypass.
+        assert!(go_disabling_env("GONOSUMCHECK", "*").is_some());
+        assert!(go_disabling_env("gonosumdb", "*").is_some());
+
+        // Pattern-list values like `1`/`on` are literal patterns, not "off".
+        assert!(go_disabling_env("GONOSUMCHECK", "1").is_none());
+        assert!(go_disabling_env("gonosumcheck", "on").is_none());
+        assert!(go_disabling_env("GONOSUMCHECK", "0").is_none());
+        // GOINSECURE controls insecure transport, not the checksum database, so
+        // it never matches this checksum-disable path (even with a wildcard).
+        assert!(go_disabling_env("GOINSECURE", "*").is_none());
+        assert!(go_disabling_env("GOINSECURE", "internal.example/*").is_none());
+        // GOFLAGS=-insecure is insecure transport too, not a sumdb bypass.
+        assert!(go_disabling_env("GOFLAGS", "-mod=mod -insecure").is_none());
+        assert!(go_disabling_env("GOFLAGS", "-mod=readonly").is_none());
 
         // Recommended/benign configurations are not flagged.
         assert!(go_disabling_env("GOSUMDB", "sum.golang.org").is_none());
-        assert!(go_disabling_env("GONOSUMCHECK", "0").is_none());
         assert!(go_disabling_env("GOPRIVATE", "github.com/me/*").is_none());
         assert!(go_disabling_env("GONOSUMDB", "github.com/me/*").is_none());
-        assert!(go_disabling_env("GOFLAGS", "-mod=readonly").is_none());
-        assert!(go_disabling_env("GOINSECURE", "internal.example/*").is_none());
         assert!(go_disabling_env("GOOS", "linux").is_none());
     }
 }
