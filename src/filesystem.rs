@@ -225,8 +225,9 @@ pub fn scan(
             return Err(FsError::NotADirectory(root.to_path_buf()));
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Path does not exist at all — also a user input error.
-            return Err(FsError::NotADirectory(root.to_path_buf()));
+            // Path does not exist at all — also a user input error but
+            // semantically distinct from "exists but is not a directory".
+            return Err(FsError::PathNotFound(root.to_path_buf()));
         }
         Err(e) => {
             // Permission denied, I/O error, or any other OS-level failure
@@ -380,6 +381,8 @@ fn build_globset(patterns: impl Iterator<Item = String>) -> Result<GlobSet, FsEr
 pub enum FsError {
     #[error("workspace root is not a directory: {0}")]
     NotADirectory(PathBuf),
+    #[error("workspace root does not exist: {0}")]
+    PathNotFound(PathBuf),
     #[error("invalid glob pattern {pattern:?}: {message}")]
     Glob { pattern: String, message: String },
     #[error("internal filesystem error: {0}")]
@@ -392,7 +395,7 @@ impl FsError {
     /// map them to a usage error (exit 2) rather than an internal error
     /// (exit 3).
     pub fn is_user_input_error(&self) -> bool {
-        matches!(self, FsError::NotADirectory(_))
+        matches!(self, FsError::NotADirectory(_) | FsError::PathNotFound(_))
     }
 }
 
@@ -502,19 +505,22 @@ mod tests {
 
     #[test]
     fn scan_nonexistent_path_is_user_input_error() {
-        let err = scan(
-            Path::new("/tmp/safe-deps-test-does-not-exist-xyz"),
-            Config::default(),
-            &ScanOptions::default(),
-        )
-        .unwrap_err();
+        // Use a TempDir to produce a guaranteed-missing child path: we create
+        // the parent, reference a child that is never created, then drop the
+        // parent.  This avoids hardcoding a /tmp/... path that could
+        // coincidentally exist on some machines.
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("this-child-is-never-created");
+        drop(dir); // parent is now gone, so `missing` definitely does not exist
+
+        let err = scan(&missing, Config::default(), &ScanOptions::default()).unwrap_err();
         assert!(
             err.is_user_input_error(),
             "expected user input error for non-existent path, got: {err}"
         );
         assert!(
-            matches!(err, FsError::NotADirectory(_)),
-            "expected NotADirectory variant, got: {err}"
+            matches!(err, FsError::PathNotFound(_)),
+            "expected PathNotFound variant, got: {err}"
         );
     }
 
