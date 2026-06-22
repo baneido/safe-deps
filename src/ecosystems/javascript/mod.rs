@@ -270,6 +270,7 @@ fn build_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFacts
         covered_by_workspace_lockfile,
         has_legacy_bun_lockfile,
         parse_diagnostics,
+        pip_requirements: Vec::new(),
     })
 }
 

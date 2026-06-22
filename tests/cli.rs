@@ -2803,6 +2803,33 @@ fn uv_toml_only_insecure_host_triggers_sd003() {
     );
 }
 
+// --- SD004 per-file pip hash-pin logic (issue #97) ---------------------------
+
+#[test]
+fn sd004_per_file_unhashed_prod_masked_by_hashed_dev_is_flagged() {
+    // Core regression: requirements.txt (no hashes) + requirements-dev.txt
+    // (all hashes) must produce a finding for requirements.txt only.
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        (
+            "requirements-dev.txt",
+            "pytest==7.0.0 --hash=sha256:abc123\n",
+        ),
+    ]);
+    let report = check_json(&ws, &["--profile", "strict"]);
+    let sd004 = findings_for(&report, "SD004");
+    assert_eq!(
+        sd004.len(),
+        1,
+        "expected exactly one SD004 finding: {report}"
+    );
+    let loc = sd004[0]["location"]["file"].as_str().unwrap();
+    assert!(
+        loc.contains("requirements.txt") && !loc.contains("dev"),
+        "finding should point to requirements.txt, not dev: {loc}"
+    );
+}
+
 #[test]
 fn uv_toml_only_unsafe_index_strategy_triggers_sd007() {
     // uv.toml-only project: SD007 must fire on unsafe-best-match index strategy.
@@ -2970,6 +2997,19 @@ fn pip_ini_require_hashes_suppresses_sd004() {
 }
 
 #[test]
+fn sd004_all_files_hashed_emits_no_finding() {
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0 --hash=sha256:aaa\n"),
+        ("requirements-dev.txt", "pytest==7.0.0 --hash=sha256:bbb\n"),
+    ]);
+    let report = check_json(&ws, &["--profile", "strict"]);
+    assert!(
+        findings_for(&report, "SD004").is_empty(),
+        "no SD004 expected when all files have hashes: {report}"
+    );
+}
+
+#[test]
 fn pip_ini_extra_index_url_is_sd007_warning() {
     let ws = workspace(&[
         ("requirements.txt", "requests==2.31.0\n"),
@@ -3057,5 +3097,35 @@ fn requirements_plus_uv_toml_no_duplicate_projects() {
     assert_eq!(
         sd003_count, 1,
         "expected exactly one SD003, got {sd003_count} (possible dup project)"
+    );
+}
+
+#[test]
+fn sd004_both_files_unhashed_emit_two_findings() {
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        ("requirements-dev.txt", "pytest==7.0.0\n"),
+    ]);
+    let report = check_json(&ws, &["--profile", "strict"]);
+    let sd004 = findings_for(&report, "SD004");
+    assert_eq!(
+        sd004.len(),
+        2,
+        "expected two SD004 findings (one per file): {report}"
+    );
+}
+
+#[test]
+fn sd004_finding_location_is_the_requirements_file() {
+    // Ensure the finding location points to the individual requirements file,
+    // not a generic project root or pip.conf.
+    let ws = workspace(&[("requirements.txt", "requests==2.31.0\n")]);
+    let report = check_json(&ws, &["--profile", "strict"]);
+    let sd004 = findings_for(&report, "SD004");
+    assert_eq!(sd004.len(), 1);
+    let file = sd004[0]["location"]["file"].as_str().unwrap();
+    assert!(
+        file.ends_with("requirements.txt"),
+        "location should point to requirements.txt, got: {file}"
     );
 }

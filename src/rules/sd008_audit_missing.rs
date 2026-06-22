@@ -194,6 +194,7 @@ mod tests {
             covered_by_workspace_lockfile: false,
             has_legacy_bun_lockfile: false,
             parse_diagnostics: Vec::new(),
+            pip_requirements: Vec::new(),
         }
     }
 

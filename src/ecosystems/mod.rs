@@ -271,6 +271,24 @@ pub struct InstallSettings {
     pub pnpm_allow_all_builds: Option<bool>,
 }
 
+/// Per-file integrity facts for a single pip requirements file.
+///
+/// The parser records whether the file enforces hash pinning (either via
+/// `--require-hashes` or by pinning every requirement); SD004 uses this to
+/// emit a per-file finding rather than aggregating across all files.
+#[derive(Debug, Clone)]
+pub struct PipRequirementFile {
+    /// Path relative to the workspace root.
+    pub relative: PathBuf,
+    /// Whether this file has require-hashes enforcement enabled (i.e.
+    /// `--require-hashes` is present or implied). This reflects enforcement
+    /// policy, not whether every individual requirement line carries a hash.
+    pub has_hashes: bool,
+    /// Whether this file contains any requirement lines at all. Files with no
+    /// requirements are skipped by SD004 to avoid noise on option-only files.
+    pub has_requirements: bool,
+}
+
 /// Normalized facts about a detected project, consumed by rules.
 #[derive(Debug, Clone)]
 pub struct ProjectFacts {
@@ -294,6 +312,10 @@ pub struct ProjectFacts {
     /// not (malformed JSON/TOML). Analysis continues with partial facts; under
     /// `--strict-parser-errors` these escalate the run to exit code 4.
     pub parse_diagnostics: Vec<crate::diagnostics::Diagnostic>,
+    /// Per-file integrity facts for pip requirements files. Populated only for
+    /// pip projects; empty for all other package managers. SD004 iterates this
+    /// to emit one finding per unhashed file rather than aggregating.
+    pub pip_requirements: Vec<PipRequirementFile>,
 }
 
 /// Analyzes a workspace for projects of a given ecosystem family.

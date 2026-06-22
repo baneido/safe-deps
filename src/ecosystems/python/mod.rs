@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::ecosystems::source::classify_python_source;
 use crate::ecosystems::{
     Dependency, DependencyGroup, EcoError, Ecosystem, FileFact, InstallSettings, PackageManager,
-    Project, ProjectFacts, ProjectKind, Sourced,
+    PipRequirementFile, Project, ProjectFacts, ProjectKind, Sourced,
 };
 use crate::filesystem::{files_named, project_join, WorkspaceContext};
 
@@ -378,6 +378,7 @@ fn build_uv_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFa
         covered_by_workspace_lockfile: covered_by_uv_workspace(ctx, dir),
         has_legacy_bun_lockfile: false,
         parse_diagnostics,
+        pip_requirements: Vec::new(),
     })
 }
 
@@ -407,21 +408,27 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
 
     let mut settings = InstallSettings::default();
     let mut requirement_count = 0;
-    let mut any_hashes = false;
+    let mut pip_requirements: Vec<PipRequirementFile> = Vec::new();
     for req in &reqs {
         if let Ok(r) = requirements::load(ctx, req) {
-            if r.require_hashes {
-                settings.require_hashes = Some(true);
-            }
+            // `r.require_hashes` is true when the file uses `--require-hashes`
+            // explicitly or when every requirement carries `--hash=` inline.
+            // Both signal integrity enforcement for that individual file.
+            // Do NOT propagate to `settings.require_hashes` here — that field
+            // is reserved for pip.conf-level global enforcement. Per-file state
+            // lives in `pip_requirements` so SD004 can evaluate each file
+            // independently without a hash-pinned dev file masking an unhashed
+            // production file.
             extend_sourced(&mut settings.trusted_hosts, r.trusted_hosts, req);
             extend_sourced(&mut settings.index_urls, r.index_urls, req);
             extend_sourced(&mut settings.extra_index_urls, r.extra_index_urls, req);
             requirement_count += r.requirement_count;
-            any_hashes |= r.has_hash_pins;
+            pip_requirements.push(PipRequirementFile {
+                relative: req.clone(),
+                has_hashes: r.require_hashes,
+                has_requirements: r.requirement_count > 0,
+            });
         }
-    }
-    if any_hashes {
-        settings.require_hashes = Some(true);
     }
 
     for pip_config in configs.iter().filter(|c| {
@@ -454,6 +461,7 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
         covered_by_workspace_lockfile: false,
         has_legacy_bun_lockfile: false,
         parse_diagnostics: pyproject_parse_diagnostic(ctx, dir).into_iter().collect(),
+        pip_requirements,
     })
 }
 
