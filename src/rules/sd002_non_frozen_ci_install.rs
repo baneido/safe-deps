@@ -82,10 +82,9 @@ fn classify(tokens: &[String], profile: Profile) -> Option<Hit> {
         // Bare `yarn` is equivalent to `yarn install`.
         PackageManager::Yarn => match sub {
             None | Some("install") => {
-                if command::has_any_flag(
-                    tokens,
-                    &["--immutable", "--frozen-lockfile", "--immutable-cache"],
-                ) {
+                // `--immutable-cache` only forbids cache mutations; it does NOT
+                // freeze the lockfile and is NOT a substitute for `--immutable`.
+                if command::has_any_flag(tokens, &["--immutable", "--frozen-lockfile"]) {
                     None
                 } else {
                     Some(Hit {
@@ -314,6 +313,15 @@ mod tests {
         assert!(one("yarn", Profile::Balanced).is_some());
         assert!(one("yarn install --immutable", Profile::Balanced).is_none());
         assert!(one("yarn install --frozen-lockfile", Profile::Balanced).is_none());
+        // `--immutable-cache` only prevents cache mutations; it does NOT freeze
+        // the lockfile, so it must still be flagged as a finding.
+        assert!(one("yarn install --immutable-cache", Profile::Balanced).is_some());
+        // `--immutable --immutable-cache` together is safe because `--immutable` is present.
+        assert!(one(
+            "yarn install --immutable --immutable-cache",
+            Profile::Balanced
+        )
+        .is_none());
     }
 
     #[test]
