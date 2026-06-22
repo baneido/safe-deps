@@ -360,11 +360,13 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
         settings.require_hashes = Some(true);
     }
 
-    if let Some(pip_conf) = configs
-        .iter()
-        .find(|c| c.relative.file_name().and_then(|n| n.to_str()) == Some("pip.conf"))
-    {
-        if let Ok(pc) = pip::load(ctx, &pip_conf.relative) {
+    for pip_config in configs.iter().filter(|c| {
+        matches!(
+            c.relative.file_name().and_then(|n| n.to_str()),
+            Some("pip.conf") | Some("pip.ini")
+        )
+    }) {
+        if let Ok(pc) = pip::load(ctx, &pip_config.relative) {
             settings.trusted_hosts.extend(pc.trusted_hosts);
             settings.index_urls.extend(pc.index_urls);
             settings.extra_index_urls.extend(pc.extra_index_urls);
@@ -388,4 +390,144 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
         has_legacy_bun_lockfile: false,
         parse_diagnostics: pyproject_parse_diagnostic(ctx, dir).into_iter().collect(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::ecosystems::{Ecosystem, PackageManager, ProjectKind};
+    use crate::filesystem::{scan, ScanOptions};
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// Builds a temporary workspace with the given `(relative_path, contents)`
+    /// pairs and returns a scanned `WorkspaceContext` rooted at it. The
+    /// `TempDir` is returned alongside so it stays alive for the duration of
+    /// the test.
+    fn make_ctx(files: &[(&str, &str)]) -> (TempDir, WorkspaceContext) {
+        let dir = TempDir::new().unwrap();
+        for (rel, contents) in files {
+            let p = dir.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, contents).unwrap();
+        }
+        let ctx = scan(dir.path(), Config::default(), &ScanOptions::default()).unwrap();
+        (dir, ctx)
+    }
+
+    fn pip_project() -> Project {
+        Project {
+            root: PathBuf::from("."),
+            ecosystem: Ecosystem::Python,
+            package_manager: PackageManager::Pip,
+            kind: ProjectKind::Unknown,
+        }
+    }
+
+    #[test]
+    fn pip_ini_trusted_host_is_collected() {
+        let (_dir, ctx) = make_ctx(&[
+            ("requirements.txt", "requests==2.31.0\n"),
+            ("pip.ini", "[global]\ntrusted-host = pypi.internal\n"),
+        ]);
+        let facts = build_pip_facts(&ctx, &pip_project()).unwrap();
+        assert!(
+            facts
+                .install_settings
+                .trusted_hosts
+                .contains(&"pypi.internal".to_string()),
+            "trusted_hosts: {:?}",
+            facts.install_settings.trusted_hosts
+        );
+    }
+
+    #[test]
+    fn pip_ini_index_url_is_collected() {
+        let (_dir, ctx) = make_ctx(&[
+            ("requirements.txt", "requests==2.31.0\n"),
+            ("pip.ini", "[global]\nindex-url = http://internal/simple\n"),
+        ]);
+        let facts = build_pip_facts(&ctx, &pip_project()).unwrap();
+        assert!(
+            facts
+                .install_settings
+                .index_urls
+                .contains(&"http://internal/simple".to_string()),
+            "index_urls: {:?}",
+            facts.install_settings.index_urls
+        );
+    }
+
+    #[test]
+    fn pip_ini_require_hashes_is_collected() {
+        let (_dir, ctx) = make_ctx(&[
+            ("requirements.txt", "requests==2.31.0\n"),
+            ("pip.ini", "[global]\nrequire-hashes = true\n"),
+        ]);
+        let facts = build_pip_facts(&ctx, &pip_project()).unwrap();
+        assert_eq!(
+            facts.install_settings.require_hashes,
+            Some(true),
+            "require_hashes must be Some(true) from pip.ini"
+        );
+    }
+
+    #[test]
+    fn pip_ini_extra_index_url_is_collected() {
+        let (_dir, ctx) = make_ctx(&[
+            ("requirements.txt", "requests==2.31.0\n"),
+            (
+                "pip.ini",
+                "[global]\nextra-index-url = https://internal/simple\n",
+            ),
+        ]);
+        let facts = build_pip_facts(&ctx, &pip_project()).unwrap();
+        assert!(
+            facts
+                .install_settings
+                .extra_index_urls
+                .contains(&"https://internal/simple".to_string()),
+            "extra_index_urls: {:?}",
+            facts.install_settings.extra_index_urls
+        );
+    }
+
+    #[test]
+    fn pip_ini_appears_in_configs() {
+        let (_dir, ctx) = make_ctx(&[
+            ("requirements.txt", "requests==2.31.0\n"),
+            ("pip.ini", "[global]\nindex-url = https://pypi.org/simple\n"),
+        ]);
+        let facts = build_pip_facts(&ctx, &pip_project()).unwrap();
+        let has_pip_ini = facts
+            .configs
+            .iter()
+            .any(|c| c.relative.file_name().and_then(|n| n.to_str()) == Some("pip.ini"));
+        assert!(
+            has_pip_ini,
+            "pip.ini must appear in configs: {:?}",
+            facts.configs
+        );
+    }
+
+    #[test]
+    fn pip_ini_and_pip_conf_both_collected() {
+        // Both files may coexist; settings from each must be merged.
+        let (_dir, ctx) = make_ctx(&[
+            ("requirements.txt", "requests==2.31.0\n"),
+            ("pip.conf", "[global]\ntrusted-host = host1.internal\n"),
+            ("pip.ini", "[global]\ntrusted-host = host2.internal\n"),
+        ]);
+        let facts = build_pip_facts(&ctx, &pip_project()).unwrap();
+        let hosts = &facts.install_settings.trusted_hosts;
+        assert!(
+            hosts.contains(&"host1.internal".to_string()),
+            "host from pip.conf missing: {hosts:?}"
+        );
+        assert!(
+            hosts.contains(&"host2.internal".to_string()),
+            "host from pip.ini missing: {hosts:?}"
+        );
+    }
 }

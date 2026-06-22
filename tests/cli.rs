@@ -1803,3 +1803,91 @@ fn ci_cargo_build_locked_is_clean() {
     );
     assert!(findings_for(&check_json(&ws, &[]), "SD002").is_empty());
 }
+
+// --- pip.ini parity (#86) -----------------------------------------------------
+
+#[test]
+fn pip_ini_trusted_host_is_sd003_error() {
+    // pip.ini is the Windows-standard config file; settings must reach SD003.
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        ("pip.ini", "[global]\ntrusted-host = pypi.internal\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    let sd003 = findings_of(&report, "SD003");
+    assert!(!sd003.is_empty(), "SD003 expected from pip.ini: {report}");
+    assert_eq!(sd003[0]["package_manager"], "pip");
+    // Location must point at pip.ini, not a fallback.
+    assert_eq!(sd003[0]["location"]["file"], "pip.ini");
+}
+
+#[test]
+fn pip_ini_insecure_index_url_is_sd003_error() {
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        (
+            "pip.ini",
+            "[global]\nindex-url = http://pypi.example/simple\n",
+        ),
+    ]);
+    let report = check_json(&ws, &[]);
+    let sd003 = findings_of(&report, "SD003");
+    assert!(
+        !sd003.is_empty(),
+        "SD003 expected for HTTP index in pip.ini: {report}"
+    );
+    assert!(
+        sd003[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("http://pypi.example/simple"),
+        "{:?}",
+        sd003[0]
+    );
+}
+
+#[test]
+fn pip_ini_require_hashes_suppresses_sd004() {
+    // pip.ini with require-hashes = true must clear the SD004 finding.
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        ("pip.ini", "[global]\nrequire-hashes = true\n"),
+    ]);
+    let report = check_json(&ws, &["--profile", "strict"]);
+    assert!(
+        findings_of(&report, "SD004").is_empty(),
+        "SD004 should be suppressed when pip.ini sets require-hashes: {report}"
+    );
+}
+
+#[test]
+fn pip_ini_extra_index_url_is_sd007_warning() {
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        (
+            "pip.ini",
+            "[global]\nextra-index-url = https://pypi.internal/simple\n",
+        ),
+    ]);
+    let report = check_json(&ws, &[]);
+    let sd007 = findings_of(&report, "SD007");
+    assert!(
+        !sd007.is_empty(),
+        "SD007 expected from pip.ini extra-index-url: {report}"
+    );
+    assert_eq!(sd007[0]["location"]["file"], "pip.ini");
+}
+
+#[test]
+fn pip_conf_safe_settings_yield_no_findings() {
+    // Sanity: a pip.ini with only HTTPS index and no bypasses is clean.
+    let ws = workspace(&[
+        ("requirements.txt", "requests==2.31.0\n"),
+        ("pip.ini", "[global]\nindex-url = https://pypi.org/simple\n"),
+    ]);
+    let report = check_json(&ws, &[]);
+    assert!(
+        findings_of(&report, "SD003").is_empty(),
+        "clean pip.ini should not yield SD003: {report}"
+    );
+}

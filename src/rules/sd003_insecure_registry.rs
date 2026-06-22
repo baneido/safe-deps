@@ -70,8 +70,7 @@ allow-insecure-host. Local test exceptions should be scoped narrowly."
                         input,
                         format!("trusted-host '{host}' bypasses TLS verification for pip."),
                         Some("remove --trusted-host or scope it to a pinned internal host."),
-                        config_loc(facts, "pip.conf")
-                            .or_else(|| config_loc(facts, "requirements.txt")),
+                        pip_config_loc(facts).or_else(|| config_loc(facts, "requirements.txt")),
                     ));
                 }
                 for url in settings
@@ -84,8 +83,7 @@ allow-insecure-host. Local test exceptions should be scoped narrowly."
                         input,
                         format!("pip index URL uses plaintext HTTP: {url}"),
                         Some("use an https:// index URL."),
-                        config_loc(facts, "pip.conf")
-                            .or_else(|| config_loc(facts, "requirements.txt")),
+                        pip_config_loc(facts).or_else(|| config_loc(facts, "requirements.txt")),
                     ));
                 }
             }
@@ -148,6 +146,27 @@ fn config_loc(facts: &crate::ecosystems::ProjectFacts, basename: &str) -> Option
         .find(|c| c.relative.file_name().and_then(|n| n.to_str()) == Some(basename))
         .map(|c| Location::file(&c.relative))
         .or_else(|| facts.manifest.as_ref().map(|m| Location::file(&m.relative)))
+}
+
+/// Searches only the `configs` list (no manifest fallback) for a file with
+/// the given basename, returning its location when found.
+fn config_only_loc(facts: &crate::ecosystems::ProjectFacts, basename: &str) -> Option<Location> {
+    facts
+        .configs
+        .iter()
+        .find(|c| c.relative.file_name().and_then(|n| n.to_str()) == Some(basename))
+        .map(|c| Location::file(&c.relative))
+}
+
+/// Returns the location of whichever pip config file (`pip.conf` or `pip.ini`)
+/// is present, or falls back to the manifest.
+fn pip_config_loc(facts: &crate::ecosystems::ProjectFacts) -> Option<Location> {
+    for basename in ["pip.conf", "pip.ini"] {
+        if let Some(loc) = config_only_loc(facts, basename) {
+            return Some(loc);
+        }
+    }
+    facts.manifest.as_ref().map(|m| Location::file(&m.relative))
 }
 
 /// Like [`config_loc`] but attaches a 1-based line when one is known, so that
