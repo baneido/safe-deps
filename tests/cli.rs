@@ -441,11 +441,15 @@ reason = "tracked in backlog"
 "#;
     let ws = workspace(&[("package.json", NPM_DEPS), ("safe-deps.toml", config)]);
     let out = run(&ws, &["check", "."]);
-    assert_ne!(
+    // `fail_on = "none"` means findings never raise the exit code, so a valid
+    // config must exit 0 (not merely "not 2"). Asserting the exact code also
+    // catches accidental exit 1/3 regressions.
+    assert_eq!(
         code(&out),
-        2,
-        "valid full config should not cause exit 2: {}",
-        stdout(&out)
+        0,
+        "valid full config should exit 0: stdout={} stderr={}",
+        stdout(&out),
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 
