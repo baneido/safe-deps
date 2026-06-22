@@ -8,7 +8,8 @@
 use std::path::Path;
 
 use crate::ci::yaml::{
-    is_block_scalar_indicator, leading_spaces, mapping_key, strip_comment, unquote,
+    is_block_scalar_indicator, join_continuations, leading_spaces, mapping_key, strip_comment,
+    unquote,
 };
 use crate::ci::{redact_env_value, CiCommand, CiProvider, EnvAssignment, ParsedCi};
 
@@ -61,6 +62,7 @@ fn extract_run_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
         // unrelated block (e.g. `description: |`) is not parsed as a command.
         if is_block_scalar_indicator(value) {
             let mut j = i + 1;
+            let mut content_lines: Vec<(usize, &str)> = Vec::new();
             while j < lines.len() {
                 let line = lines[j];
                 if line.trim().is_empty() {
@@ -71,9 +73,20 @@ fn extract_run_commands(relative: &Path, text: &str) -> Vec<CiCommand> {
                     break;
                 }
                 if carries_command {
-                    push(&mut commands, relative, j, strip_comment(line).trim());
+                    content_lines.push((j, strip_comment(line).trim()));
                 }
                 j += 1;
+            }
+            if carries_command {
+                for (line_no, command) in join_continuations(&content_lines) {
+                    if !command.is_empty() {
+                        commands.push(CiCommand {
+                            file: relative.to_path_buf(),
+                            line: line_no,
+                            command,
+                        });
+                    }
+                }
             }
             i = j;
             continue;
@@ -222,5 +235,46 @@ jobs:
         let get = |n: &str| env.iter().find(|e| e.name == n).map(|e| e.value.as_str());
         assert_eq!(get("NODE_ENV"), Some("production"));
         assert_eq!(get("API_TOKEN"), Some("<redacted>"));
+    }
+
+    #[test]
+    fn backslash_continuation_in_block_command_is_joined() {
+        // A command split across continuation lines must be reassembled so that
+        // dangerous flags are not separated from the installer invocation.
+        let text = "\
+jobs:
+  build:
+    steps:
+      - run:
+          command: |
+            pip install \\
+              --break-system-packages \\
+              -r requirements.txt
+            pytest
+";
+        assert_eq!(
+            cmds(text),
+            vec![
+                "pip install --break-system-packages -r requirements.txt",
+                "pytest"
+            ]
+        );
+    }
+
+    #[test]
+    fn backslash_continuation_in_short_run_block_is_joined() {
+        let text = "\
+jobs:
+  build:
+    steps:
+      - run: |
+          pip install \\
+            --break-system-packages \\
+            -r requirements.txt
+";
+        assert_eq!(
+            cmds(text),
+            vec!["pip install --break-system-packages -r requirements.txt"]
+        );
     }
 }
