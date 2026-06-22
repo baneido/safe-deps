@@ -19,7 +19,7 @@
 //! ```
 //!
 //! The parser joins continuation lines into the key's value, then splits on
-//! whitespace to produce one entry per token. Single-line values are unchanged.
+//! whitespace to produce one entry per token. Single-token values are unchanged.
 
 use std::path::Path;
 
@@ -52,6 +52,31 @@ struct KeyValue {
     tokens: Vec<String>,
 }
 
+/// Strip an INI inline comment from `s` (already trimmed of leading whitespace).
+///
+/// A `#` or `;` that appears after at least one whitespace character begins a
+/// comment. The value portion up to that whitespace is returned; the comment
+/// and the preceding whitespace are discarded.
+fn strip_inline_comment(s: &str) -> &str {
+    // Walk through the string looking for whitespace followed by `#`/`;`.
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b' ' || bytes[i] == b'\t' {
+            // Peek ahead to see if the next non-whitespace char is a comment marker.
+            let mut j = i + 1;
+            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                j += 1;
+            }
+            if j < bytes.len() && (bytes[j] == b'#' || bytes[j] == b';') {
+                return &s[..i];
+            }
+        }
+        i += 1;
+    }
+    s
+}
+
 /// Collect logical `key = value` entries from an INI-formatted string.
 ///
 /// Continuation lines (lines whose first character is a space or tab) are
@@ -66,9 +91,12 @@ fn collect_entries(text: &str) -> Vec<KeyValue> {
     let flush = |entries: &mut Vec<KeyValue>, key: String, raw: String| {
         // Split on any whitespace (spaces, tabs, newlines introduced by
         // continuation) to get individual tokens; ignore empty segments.
+        // Stop at the first token that begins with `#` or `;` — these are
+        // INI inline-comment markers (e.g. `pypi.org  # comment`).
         let tokens: Vec<String> = raw
             .split_whitespace()
             .filter(|t| !t.is_empty())
+            .take_while(|t| !t.starts_with('#') && !t.starts_with(';'))
             .map(|t| t.trim_matches('"').to_string())
             .collect();
         if !key.is_empty() {
@@ -88,8 +116,11 @@ fn collect_entries(text: &str) -> Vec<KeyValue> {
                 .map(|c| c == ' ' || c == '\t')
                 .unwrap_or(false)
         {
+            // Strip any inline comment (the portion starting with `#` or `;`
+            // that follows at least one whitespace character) before appending.
+            let trimmed = strip_inline_comment(raw_line.trim());
             pending_raw.push(' ');
-            pending_raw.push_str(raw_line.trim());
+            pending_raw.push_str(trimmed);
             continue;
         }
 
@@ -237,6 +268,44 @@ mod tests {
             s.trusted_hosts,
             vec!["pypi.org", "files.pythonhosted.org"],
             "inline value plus continuation should all be captured"
+        );
+    }
+
+    // --- inline-comment stripping tests --------------------------------------
+
+    #[test]
+    fn inline_hash_comment_on_single_line_value() {
+        // `#`-style inline comment must not produce spurious tokens.
+        let s = parse("[global]\ntrusted-host = pypi.org  # comment\n");
+        assert_eq!(
+            s.trusted_hosts,
+            vec!["pypi.org"],
+            "inline `#` comment must not produce extra tokens"
+        );
+    }
+
+    #[test]
+    fn inline_semicolon_comment_on_single_line_value() {
+        // `;`-style inline comment must not produce spurious tokens.
+        let s = parse("[global]\ntrusted-host = pypi.org  ; comment\n");
+        assert_eq!(
+            s.trusted_hosts,
+            vec!["pypi.org"],
+            "inline `;` comment must not produce extra tokens"
+        );
+    }
+
+    #[test]
+    fn inline_comment_on_continuation_line() {
+        // An inline comment on a continuation line must be stripped before the
+        // token is appended to the accumulated value.
+        let text =
+            "[global]\ntrusted-host =\n    pypi.org  # primary\n    files.pythonhosted.org ; cdn\n";
+        let s = parse(text);
+        assert_eq!(
+            s.trusted_hosts,
+            vec!["pypi.org", "files.pythonhosted.org"],
+            "inline comments on continuation lines must be stripped"
         );
     }
 }
