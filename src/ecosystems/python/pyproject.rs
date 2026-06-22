@@ -62,7 +62,7 @@ impl Pyproject {
             out.push(Dependency {
                 name: dep.name.clone(),
                 source: classify_poetry_dependency(&dep.value),
-                spec: poetry_dep_spec(&dep.name, &dep.value),
+                spec: poetry_dep_spec(&dep.value),
                 group: DependencyGroup::Production,
                 file: file.to_path_buf(),
             });
@@ -72,7 +72,7 @@ impl Pyproject {
             out.push(Dependency {
                 name: dep.name.clone(),
                 source: classify_poetry_dependency(&dep.value),
-                spec: poetry_dep_spec(&dep.name, &dep.value),
+                spec: poetry_dep_spec(&dep.value),
                 group: DependencyGroup::Development,
                 file: file.to_path_buf(),
             });
@@ -81,15 +81,38 @@ impl Pyproject {
     }
 }
 
-/// Builds a human-readable spec string for a Poetry dependency, used in SD006
-/// messages and de-duplication. For a plain version string it returns
-/// `"name version"`; for an inline table it returns the TOML inline
-/// representation so the source details are visible.
-fn poetry_dep_spec(name: &str, value: &toml::Value) -> String {
-    match value.as_str() {
-        Some(v) => format!("{name} {v}"),
-        None => format!("{name} {value}"),
+/// Builds a concise, single-line spec summary for a Poetry dependency, used in
+/// SD006 messages and de-duplication. The dependency name is omitted (SD006
+/// messages already include it). A plain string is the version constraint; an
+/// inline table is summarized to the source-relevant keys (`git` + ref, `path`,
+/// or `url`), mirroring Cargo's `spec_string()`.
+fn poetry_dep_spec(value: &toml::Value) -> String {
+    if let Some(v) = value.as_str() {
+        return v.to_string();
     }
+    if let Some(t) = value.as_table() {
+        if let Some(p) = t.get("path").and_then(|v| v.as_str()) {
+            return format!("path = \"{p}\"");
+        }
+        if let Some(g) = t.get("git").and_then(|v| v.as_str()) {
+            let git_ref = ["rev", "tag", "branch"]
+                .iter()
+                .find_map(|k| {
+                    t.get(*k)
+                        .and_then(|v| v.as_str())
+                        .map(|v| format!(", {k} = \"{v}\""))
+                })
+                .unwrap_or_default();
+            return format!("git = \"{g}\"{git_ref}");
+        }
+        if let Some(u) = t.get("url").and_then(|v| v.as_str()) {
+            return format!("url = \"{u}\"");
+        }
+        if let Some(v) = t.get("version").and_then(|v| v.as_str()) {
+            return v.to_string();
+        }
+    }
+    "<complex>".to_string()
 }
 
 /// Normalizes a legacy `name = "spec"` dev-dependency table entry into a PEP 508
@@ -474,6 +497,87 @@ python = "^3.12"
         assert!(p.poetry_dependencies.is_empty());
         assert!(p.poetry_dev_dependencies.is_empty());
         assert!(!p.has_dependencies);
+    }
+
+    /// Parses `x = <value>` and returns the value of `x` for spec-string tests.
+    fn dep_value(line: &str) -> toml::Value {
+        let parsed: toml::Value = toml::from_str(line).unwrap();
+        parsed["x"].clone()
+    }
+
+    #[test]
+    fn poetry_dep_spec_omits_name_and_is_concise() {
+        // Plain version string: the spec is just the constraint, no name.
+        let version = toml::Value::String("^2.31".to_string());
+        assert_eq!(poetry_dep_spec(&version), "^2.31");
+
+        // Inline table: a single-line `git = "…", branch = "…"` summary that
+        // does not lead with the dependency name.
+        let git =
+            dep_value("x = { git = \"https://github.com/example/foo.git\", branch = \"main\" }");
+        let spec = poetry_dep_spec(&git);
+        assert_eq!(
+            spec,
+            "git = \"https://github.com/example/foo.git\", branch = \"main\""
+        );
+        assert!(
+            !spec.contains("foo ="),
+            "spec must not duplicate name: {spec}"
+        );
+        assert!(!spec.contains('\n'), "spec must be single-line: {spec}");
+
+        // Path table summary.
+        let path = dep_value("x = { path = \"../bar\" }");
+        assert_eq!(poetry_dep_spec(&path), "path = \"../bar\"");
+    }
+
+    #[test]
+    fn poetry_classified_spec_does_not_duplicate_name() {
+        let toml = r#"
+[tool.poetry.dependencies]
+foo = { git = "https://github.com/example/foo.git", branch = "main" }
+bar = { path = "../bar" }
+requests = "^2.31"
+"#;
+        let p = parse(toml);
+        let deps = p.classified_dependencies(std::path::Path::new("pyproject.toml"));
+        for dep in &deps {
+            // The spec must not begin with `name ` (the old `"name spec"` form).
+            assert!(
+                !dep.spec.starts_with(&format!("{} ", dep.name)),
+                "{}: spec duplicates name: {:?}",
+                dep.name,
+                dep.spec
+            );
+            assert!(!dep.spec.contains('\n'), "{}: spec is multiline", dep.name);
+        }
+        let foo = deps.iter().find(|d| d.name == "foo").expect("foo dep");
+        assert_eq!(
+            foo.spec,
+            "git = \"https://github.com/example/foo.git\", branch = \"main\""
+        );
+    }
+
+    #[test]
+    fn poetry_scp_like_ssh_git_is_ssh_classified() {
+        let toml = r#"
+[tool.poetry.dependencies]
+internal = { git = "git@github.com:org/internal.git" }
+"#;
+        let p = parse(toml);
+        let deps = p.classified_dependencies(std::path::Path::new("pyproject.toml"));
+        let internal = deps
+            .iter()
+            .find(|d| d.name == "internal")
+            .expect("internal dep");
+        assert!(
+            matches!(
+                internal.source,
+                crate::ecosystems::DependencySource::Git { ssh: true, .. }
+            ),
+            "internal: {:?}",
+            internal.source
+        );
     }
 
     #[test]

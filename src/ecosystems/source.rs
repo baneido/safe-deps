@@ -210,7 +210,9 @@ pub fn classify_poetry_dependency(value: &toml::Value) -> DependencySource {
                 .is_some_and(is_pinned_ref);
         return DependencySource::Git {
             floating: !pinned,
-            ssh: git.starts_with("ssh://") || git.starts_with("git+ssh"),
+            // Explicit SSH schemes plus the scp-like shorthand Git accepts
+            // (`git@github.com:org/repo.git`), which has no scheme.
+            ssh: git.starts_with("ssh://") || git.starts_with("git+ssh") || is_scp_like_ssh(git),
         };
     }
     if table.contains_key("path") {
@@ -279,6 +281,38 @@ fn is_python_url_or_path(s: &str) -> bool {
         || s.starts_with("http://")
         || s.starts_with("https://")
         || is_path_spec(s)
+}
+
+/// Whether `s` is a scp-like SSH git address: `[user@]host:path` with no URL
+/// scheme, e.g. `git@github.com:org/repo.git`. The colon separates host from a
+/// path (not a numeric port), so a plain `host:1234/...` URL-style authority is
+/// not misclassified as SSH.
+fn is_scp_like_ssh(s: &str) -> bool {
+    // A real scheme (`ssh://`, `https://`, `git+ssh://`, …) is not scp-like.
+    if s.contains("://") {
+        return false;
+    }
+    // Split host from path on the first colon. scp syntax requires exactly one
+    // such separator with a non-empty host and path on either side.
+    let Some((authority, path)) = s.split_once(':') else {
+        return false;
+    };
+    if authority.is_empty() || path.is_empty() {
+        return false;
+    }
+    // The host part must not itself contain a slash (that would be a bare path
+    // like `./a:b`, not an scp authority).
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    if host.is_empty() || host.contains('/') {
+        return false;
+    }
+    // A `host:1234/...` authority with an all-numeric segment before the first
+    // `/` is a URL-style port, not an scp path.
+    let first_segment = path.split('/').next().unwrap_or(path);
+    if !first_segment.is_empty() && first_segment.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    true
 }
 
 /// Recognizes explicit git URL schemes (`git+https://`, `git://`, …).
@@ -372,6 +406,73 @@ mod tests {
 
     fn cargo(toml_value: &str) -> DependencySource {
         classify_cargo_dependency(&toml::from_str::<toml::Value>(toml_value).unwrap()["x"])
+    }
+
+    fn poetry(toml_value: &str) -> DependencySource {
+        classify_poetry_dependency(&toml::from_str::<toml::Value>(toml_value).unwrap()["x"])
+    }
+
+    #[test]
+    fn poetry_scp_like_ssh_git_is_ssh() {
+        // scp-like shorthand (`git@host:org/repo.git`) has no URL scheme but is
+        // an SSH transport, and unpinned without a rev/version tag.
+        assert_eq!(
+            poetry("x = { git = \"git@github.com:org/repo.git\" }"),
+            Git {
+                floating: true,
+                ssh: true
+            }
+        );
+        // Pinned by an immutable rev: still SSH, no longer floating.
+        assert_eq!(
+            poetry("x = { git = \"git@github.com:org/repo.git\", rev = \"abc1234\" }"),
+            Git {
+                floating: false,
+                ssh: true
+            }
+        );
+    }
+
+    #[test]
+    fn poetry_explicit_ssh_and_https_schemes() {
+        assert_eq!(
+            poetry("x = { git = \"ssh://git@github.com/org/repo.git\" }"),
+            Git {
+                floating: true,
+                ssh: true
+            }
+        );
+        assert_eq!(
+            poetry("x = { git = \"git+ssh://git@github.com/org/repo.git\" }"),
+            Git {
+                floating: true,
+                ssh: true
+            }
+        );
+        // An https URL with a port must not be read as scp-like SSH.
+        assert_eq!(
+            poetry("x = { git = \"https://github.com:443/org/repo.git\" }"),
+            Git {
+                floating: true,
+                ssh: false
+            }
+        );
+    }
+
+    #[test]
+    fn scp_like_ssh_detection_excludes_ports_and_schemes() {
+        // scp-like: `[user@]host:path` with no scheme.
+        assert!(is_scp_like_ssh("git@github.com:org/repo.git"));
+        assert!(is_scp_like_ssh("github.com:org/repo.git"));
+        // A numeric port after the colon is a URL authority, not an scp path.
+        assert!(!is_scp_like_ssh("github.com:443/org/repo.git"));
+        // Explicit schemes are handled elsewhere, not as scp-like.
+        assert!(!is_scp_like_ssh("ssh://git@github.com/org/repo.git"));
+        assert!(!is_scp_like_ssh("https://github.com/org/repo.git"));
+        // No colon at all, or an empty host/path, is not scp-like.
+        assert!(!is_scp_like_ssh("github.com/org/repo.git"));
+        assert!(!is_scp_like_ssh(":org/repo.git"));
+        assert!(!is_scp_like_ssh("git@host:"));
     }
 
     #[test]
