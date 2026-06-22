@@ -247,6 +247,42 @@ fn unused_suppression_list(suppressions: &[Suppression], used: &HashSet<String>)
     unused
 }
 
+// ---------------------------------------------------------------------------
+// Shared pip config location helpers — used by SD003 and SD004.
+// Centralising them here prevents the two rules from drifting apart.
+// ---------------------------------------------------------------------------
+
+/// Searches only the `configs` list (no manifest fallback) for a file with
+/// the given basename, returning its location when found.
+pub(crate) fn config_only_loc(
+    facts: &crate::ecosystems::ProjectFacts,
+    basename: &str,
+) -> Option<crate::rule::Location> {
+    facts
+        .configs
+        .iter()
+        .find(|c| c.relative.file_name().and_then(|n| n.to_str()) == Some(basename))
+        .map(|c| crate::rule::Location::file(&c.relative))
+}
+
+/// Returns the location of whichever pip config file (`pip.conf` or `pip.ini`)
+/// is present, or falls back to the manifest.
+pub(crate) fn pip_config_loc(
+    facts: &crate::ecosystems::ProjectFacts,
+) -> Option<crate::rule::Location> {
+    for basename in ["pip.conf", "pip.ini"] {
+        if let Some(loc) = config_only_loc(facts, basename) {
+            return Some(loc);
+        }
+    }
+    facts
+        .manifest
+        .as_ref()
+        .map(|m| crate::rule::Location::file(&m.relative))
+}
+
+// ---------------------------------------------------------------------------
+
 struct ParsedSuppression {
     rule: String,
     path: String,

@@ -261,9 +261,6 @@ pub struct InstallSettings {
     pub allow_insecure_hosts: Vec<String>,
     pub index_strategy: Option<String>,
     pub require_hashes: Option<bool>,
-    /// File that supplied an enabling `require-hashes`/hash-pin signal, when one
-    /// did. Used by SD004 only as informational provenance.
-    pub require_hashes_source: Option<PathBuf>,
 
     // bun (bunfig.toml)
     pub trusted_dependencies: Vec<String>,

@@ -377,9 +377,6 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
         if let Ok(r) = requirements::load(ctx, req) {
             if r.require_hashes {
                 settings.require_hashes = Some(true);
-                settings
-                    .require_hashes_source
-                    .get_or_insert_with(|| req.clone());
             }
             extend_sourced(&mut settings.trusted_hosts, r.trusted_hosts, req);
             extend_sourced(&mut settings.index_urls, r.index_urls, req);
@@ -405,9 +402,6 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
             extend_sourced(&mut settings.extra_index_urls, pc.extra_index_urls, source);
             if pc.require_hashes {
                 settings.require_hashes = Some(true);
-                settings
-                    .require_hashes_source
-                    .get_or_insert_with(|| source.clone());
             }
         }
     }
