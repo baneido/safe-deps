@@ -3,8 +3,11 @@
 //! pip accepts options inline in requirements files. This parser captures the
 //! security-relevant flags: `--require-hashes`, `--trusted-host`,
 //! `--index-url`, `--extra-index-url`, and the presence of `--hash=` pins.
+//! It also follows `-r`/`--requirement` and `-c`/`--constraint` includes,
+//! resolving paths relative to the including file with cycle detection.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use crate::ecosystems::EcoError;
 
@@ -24,6 +27,10 @@ pub struct RequirementsSettings {
     /// Raw requirement specs (and `-e`/`--editable` targets) for SD006 source
     /// classification.
     pub specs: Vec<String>,
+    /// Include paths referenced by `-r`/`--requirement` directives.
+    pub requirement_includes: Vec<PathBuf>,
+    /// Include paths referenced by `-c`/`--constraint` directives.
+    pub constraint_includes: Vec<PathBuf>,
 }
 
 pub fn load(
@@ -35,6 +42,94 @@ pub fn load(
         source,
     })?;
     Ok(parse(&text))
+}
+
+/// Loads a requirements file and follows all `-r`/`-c` includes recursively,
+/// merging the resulting settings. Cyclic includes are detected and skipped;
+/// missing includes are reported as diagnostics. All paths in `visited` are
+/// relative to the workspace root.
+pub fn load_recursive(
+    ctx: &crate::filesystem::WorkspaceContext,
+    relative: &Path,
+    visited: &mut HashSet<PathBuf>,
+    diagnostics: &mut Vec<crate::diagnostics::Diagnostic>,
+) -> RequirementsSettings {
+    if !visited.insert(relative.to_path_buf()) {
+        // Already visited — cyclic include.
+        diagnostics.push(crate::diagnostics::Diagnostic::warn_at(
+            format!(
+                "cyclic requirements include detected: {}",
+                relative.display()
+            ),
+            relative.to_path_buf(),
+        ));
+        return RequirementsSettings::default();
+    }
+
+    let text = match crate::filesystem::read_text(ctx, relative) {
+        Ok(t) => t,
+        Err(e) => {
+            diagnostics.push(crate::diagnostics::Diagnostic::warn_at(
+                format!("could not read {}: {}", relative.display(), e),
+                relative.to_path_buf(),
+            ));
+            return RequirementsSettings::default();
+        }
+    };
+
+    let mut merged = parse(&text);
+
+    // The parent directory of the including file, for resolving relative paths.
+    let parent = relative
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    // Follow -r (requirement) includes.
+    let req_includes: Vec<PathBuf> = merged.requirement_includes.clone();
+    for inc_path in req_includes {
+        let resolved = resolve_include(&parent, &inc_path);
+        let included = load_recursive(ctx, &resolved, visited, diagnostics);
+        merge_settings(&mut merged, included);
+    }
+
+    // Follow -c (constraint) includes — constraints declare version bounds only,
+    // but they may reference VCS/path specs that SD006 should flag.
+    let con_includes: Vec<PathBuf> = merged.constraint_includes.clone();
+    for inc_path in con_includes {
+        let resolved = resolve_include(&parent, &inc_path);
+        let included = load_recursive(ctx, &resolved, visited, diagnostics);
+        merge_settings(&mut merged, included);
+    }
+
+    merged
+}
+
+/// Resolves an include path relative to the including file's directory.
+fn resolve_include(parent: &Path, inc: &Path) -> PathBuf {
+    if parent == Path::new(".") {
+        inc.to_path_buf()
+    } else {
+        parent.join(inc)
+    }
+}
+
+/// Merges `other` into `base`, combining all lists and picking the stricter
+/// boolean flags.
+fn merge_settings(base: &mut RequirementsSettings, other: RequirementsSettings) {
+    base.require_hashes |= other.require_hashes;
+    base.trusted_hosts.extend(other.trusted_hosts);
+    base.index_urls.extend(other.index_urls);
+    base.extra_index_urls.extend(other.extra_index_urls);
+    base.specs.extend(other.specs);
+    base.requirement_count += other.requirement_count;
+    base.hashed_requirement_count += other.hashed_requirement_count;
+    // Recompute hash pin enforcement after merging counts.
+    if base.requirement_count > 0 && base.hashed_requirement_count == base.requirement_count {
+        base.has_hash_pins = true;
+        base.require_hashes = true;
+    }
 }
 
 pub fn parse(text: &str) -> RequirementsSettings {
@@ -164,6 +259,16 @@ fn parse_option_line(line: &str, settings: &mut RequirementsSettings) {
                     settings.specs.push(format!("-e {target}"));
                 }
             }
+            "-r" | "--requirement" => {
+                if let Some(path) = take_value(inline, &tokens, &mut i) {
+                    settings.requirement_includes.push(PathBuf::from(path));
+                }
+            }
+            "-c" | "--constraint" => {
+                if let Some(path) = take_value(inline, &tokens, &mut i) {
+                    settings.constraint_includes.push(PathBuf::from(path));
+                }
+            }
             _ => {}
         }
         i += 1;
@@ -262,5 +367,172 @@ mod tests {
         assert_eq!(s.requirement_count, 1);
         assert_eq!(s.hashed_requirement_count, 1);
         assert!(s.require_hashes);
+    }
+
+    // --- include directives ---------------------------------------------------
+
+    #[test]
+    fn parse_captures_r_include() {
+        let s = parse("-r requirements/base.txt\nrequests==2.31.0\n");
+        assert_eq!(
+            s.requirement_includes,
+            vec![PathBuf::from("requirements/base.txt")]
+        );
+        assert_eq!(s.requirement_count, 1);
+    }
+
+    #[test]
+    fn parse_captures_long_requirement_include() {
+        let s = parse("--requirement requirements/base.txt\n");
+        assert_eq!(
+            s.requirement_includes,
+            vec![PathBuf::from("requirements/base.txt")]
+        );
+    }
+
+    #[test]
+    fn parse_captures_c_constraint_include() {
+        let s = parse("-c constraints.txt\nrequests==2.31.0\n");
+        assert_eq!(
+            s.constraint_includes,
+            vec![PathBuf::from("constraints.txt")]
+        );
+        assert_eq!(s.requirement_count, 1);
+    }
+
+    #[test]
+    fn parse_captures_long_constraint_include() {
+        let s = parse("--constraint constraints.txt\n");
+        assert_eq!(
+            s.constraint_includes,
+            vec![PathBuf::from("constraints.txt")]
+        );
+    }
+
+    #[test]
+    fn parse_captures_equals_joined_r_include() {
+        let s = parse("-r=requirements/base.txt\n");
+        assert_eq!(
+            s.requirement_includes,
+            vec![PathBuf::from("requirements/base.txt")]
+        );
+    }
+
+    // --- load_recursive -------------------------------------------------------
+
+    fn make_ctx(
+        files: &[(&str, &str)],
+    ) -> (crate::filesystem::WorkspaceContext, tempfile::TempDir) {
+        use crate::config::Config;
+        use crate::filesystem::{scan, ScanOptions};
+        let dir = tempfile::TempDir::new().unwrap();
+        for (rel, contents) in files {
+            let p = dir.path().join(rel);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(p, contents).unwrap();
+        }
+        let ctx = scan(dir.path(), Config::default(), &ScanOptions::default()).unwrap();
+        (ctx, dir)
+    }
+
+    #[test]
+    fn load_recursive_follows_r_include() {
+        let (ctx, _d) = make_ctx(&[
+            ("requirements.txt", "-r requirements/base.txt\n"),
+            ("requirements/base.txt", "requests==2.31.0\nflask==3.0.0\n"),
+        ]);
+        let mut visited = std::collections::HashSet::new();
+        let mut diags = Vec::new();
+        let s = load_recursive(
+            &ctx,
+            std::path::Path::new("requirements.txt"),
+            &mut visited,
+            &mut diags,
+        );
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        assert_eq!(s.requirement_count, 2);
+        assert!(s.specs.contains(&"requests==2.31.0".to_string()));
+        assert!(s.specs.contains(&"flask==3.0.0".to_string()));
+    }
+
+    #[test]
+    fn load_recursive_follows_c_constraint_include() {
+        let (ctx, _d) = make_ctx(&[
+            ("requirements.txt", "-c constraints.txt\nrequests==2.31.0\n"),
+            ("constraints.txt", "flask==3.0.0\n"),
+        ]);
+        let mut visited = std::collections::HashSet::new();
+        let mut diags = Vec::new();
+        let s = load_recursive(
+            &ctx,
+            std::path::Path::new("requirements.txt"),
+            &mut visited,
+            &mut diags,
+        );
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        assert_eq!(s.requirement_count, 2);
+    }
+
+    #[test]
+    fn load_recursive_detects_cycle_and_emits_diagnostic() {
+        // a.txt includes b.txt which includes a.txt — must not loop forever.
+        let (ctx, _d) = make_ctx(&[
+            ("a.txt", "-r b.txt\nrequests==2.31.0\n"),
+            ("b.txt", "-r a.txt\nflask==3.0.0\n"),
+        ]);
+        let mut visited = std::collections::HashSet::new();
+        let mut diags = Vec::new();
+        let s = load_recursive(
+            &ctx,
+            std::path::Path::new("a.txt"),
+            &mut visited,
+            &mut diags,
+        );
+        // The cycle should produce a diagnostic.
+        assert!(
+            diags.iter().any(|d| d.message.contains("cyclic")),
+            "expected cyclic diagnostic, got: {diags:?}"
+        );
+        // Despite the cycle we still get the non-cyclic requirements.
+        assert!(s.requirement_count >= 1);
+    }
+
+    #[test]
+    fn load_recursive_emits_diagnostic_for_missing_include() {
+        let (ctx, _d) = make_ctx(&[("requirements.txt", "-r missing.txt\n")]);
+        let mut visited = std::collections::HashSet::new();
+        let mut diags = Vec::new();
+        let _s = load_recursive(
+            &ctx,
+            std::path::Path::new("requirements.txt"),
+            &mut visited,
+            &mut diags,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("missing.txt")),
+            "expected missing-file diagnostic, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn load_recursive_resolves_nested_include_relative_to_including_file() {
+        // requirements.txt → requirements/base.txt → requirements/common.txt
+        let (ctx, _d) = make_ctx(&[
+            ("requirements.txt", "-r requirements/base.txt\n"),
+            ("requirements/base.txt", "-r common.txt\nrequests==2.31.0\n"),
+            ("requirements/common.txt", "flask==3.0.0\n"),
+        ]);
+        let mut visited = std::collections::HashSet::new();
+        let mut diags = Vec::new();
+        let s = load_recursive(
+            &ctx,
+            std::path::Path::new("requirements.txt"),
+            &mut visited,
+            &mut diags,
+        );
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        assert_eq!(s.requirement_count, 2, "expected requests + flask");
     }
 }

@@ -41,7 +41,7 @@ impl crate::ecosystems::Analyzer for PythonAnalyzer {
         }
 
         for req in requirements_files(ctx) {
-            let dir = project_dir(&req);
+            let dir = requirements_project_dir(&req);
             if covered_dirs.contains(&dir) {
                 continue;
             }
@@ -159,7 +159,54 @@ fn pyproject_parse_diagnostic(
     }
 }
 
-/// Returns relative paths of `requirements*.txt` files.
+/// Returns the logical project root directory for a requirements file path.
+///
+/// For a standard `requirements*.txt` (name starts with `requirements`) the
+/// project root is the file's parent directory, same as `project_dir`.
+///
+/// For a file inside a directory named `requirements` (e.g.
+/// `requirements/base.txt` or `myapp/requirements/dev.txt`) the project root
+/// is the parent of the `requirements/` directory, so that `myapp/` rather
+/// than `myapp/requirements/` is treated as the project root.
+fn requirements_project_dir(path: &Path) -> PathBuf {
+    // Walk the components to find the `requirements` directory component.
+    // Build two paths simultaneously: one accumulating up to and including
+    // the component before `requirements`, and one for the whole parent.
+    let components: Vec<_> = path.components().collect();
+    // The file name is the last component; skip it.
+    for i in (0..components.len().saturating_sub(1)).rev() {
+        if components[i].as_os_str() == "requirements" {
+            // The `requirements` directory is at index i.
+            // Project root = components[0..i] joined, defaulting to ".".
+            let root: PathBuf = components[..i].iter().collect();
+            return if root.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                root
+            };
+        }
+    }
+    // No `requirements` dir in path — fall back to the file's parent.
+    project_dir(path)
+}
+
+/// Returns relative paths of requirements `.txt` entry-point files.
+///
+/// A file qualifies when:
+/// - its name starts with `requirements` and ends with `.txt` (e.g.
+///   `requirements.txt`, `requirements-dev.txt`), **or**
+/// - it lives inside a directory named `requirements` and ends with `.txt`
+///   (e.g. `requirements/base.txt`, `requirements/ci/test.txt`).
+///
+/// Files under a `requirements/` directory are included as entry-point
+/// candidates so that common layouts like:
+/// ```text
+/// requirements/
+///   base.txt
+///   dev.txt
+/// requirements.txt   # -r requirements/base.txt
+/// ```
+/// are covered even when the top-level file is absent.
 fn requirements_files(ctx: &WorkspaceContext) -> Vec<PathBuf> {
     ctx.files
         .iter()
@@ -169,7 +216,18 @@ fn requirements_files(ctx: &WorkspaceContext) -> Vec<PathBuf> {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
-            name.starts_with("requirements") && name.ends_with(".txt")
+            // Classic top-level: requirements*.txt
+            if name.starts_with("requirements") && name.ends_with(".txt") {
+                return true;
+            }
+            // requirements/**/*.txt — any .txt inside a `requirements` directory
+            if name.ends_with(".txt") {
+                return f
+                    .relative
+                    .components()
+                    .any(|c| c.as_os_str() == "requirements");
+            }
+            false
         })
         .map(|f| f.relative.clone())
         .collect()
@@ -199,46 +257,59 @@ fn requirements_group(path: &Path) -> DependencyGroup {
     }
 }
 
+/// Collects classified dependencies from a Python project directory.
+///
+/// Returns the dependencies and any diagnostics emitted while following
+/// `-r`/`-c` includes (cyclic or missing includes become warning diagnostics).
+/// A shared `visited` set is passed through `load_recursive` calls to prevent
+/// double-processing a file that appears both as an entry-point and as an
+/// include target.
 fn python_dependencies(
     ctx: &WorkspaceContext,
     dir: &Path,
     pyproject: Option<&pyproject::Pyproject>,
-) -> Vec<Dependency> {
+) -> (Vec<Dependency>, Vec<crate::diagnostics::Diagnostic>) {
     let py_path = project_join(dir, "pyproject.toml");
     let owned = if pyproject.is_none() && has_file_in(ctx, dir, "pyproject.toml") {
         pyproject::load(ctx, &py_path).ok()
     } else {
         None
     };
-    let mut out = Vec::new();
+    let mut out: Vec<Dependency> = Vec::new();
+    let mut diagnostics: Vec<crate::diagnostics::Diagnostic> = Vec::new();
+
     if let Some(py) = pyproject.or(owned.as_ref()) {
         out.extend(py.classified_dependencies(&py_path));
     }
+
+    // Shared visited set so a file that is both an entry-point and an include
+    // target is not processed twice (which would double-count specs/settings).
+    let mut visited = std::collections::HashSet::new();
+
     for req in requirements_files(ctx)
         .into_iter()
-        .filter(|p| project_dir(p) == *dir)
+        .filter(|p| requirements_project_dir(p) == *dir)
     {
         // A `requirements-dev.txt` / `requirements/test.txt` holds dev deps, so
         // a local editable path there is not a production-source finding.
         let group = requirements_group(&req);
-        if let Ok(r) = requirements::load(ctx, &req) {
-            for spec in r.specs {
-                let bare = spec.strip_prefix("-e ").unwrap_or(&spec).trim();
-                out.push(Dependency {
-                    name: pyproject::pep508_name(bare),
-                    source: classify_python_source(&spec),
-                    spec,
-                    group,
-                    file: req.clone(),
-                });
-            }
+        let r = requirements::load_recursive(ctx, &req, &mut visited, &mut diagnostics);
+        for spec in r.specs {
+            let bare = spec.strip_prefix("-e ").unwrap_or(&spec).trim();
+            out.push(Dependency {
+                name: pyproject::pep508_name(bare),
+                source: classify_python_source(&spec),
+                spec,
+                group,
+                file: req.clone(),
+            });
         }
     }
     // Collapse exact (name, spec) duplicates only, so distinct sources for the
     // same package both survive (SD006 still flags the unsafe one).
     let mut seen = std::collections::HashSet::new();
     out.retain(|d| seen.insert((d.name.clone(), d.spec.clone())));
-    out
+    (out, diagnostics)
 }
 
 fn build_uv_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFacts, EcoError> {
@@ -303,13 +374,16 @@ fn build_uv_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectFa
         }
     }
 
+    let (deps, dep_diagnostics) = python_dependencies(ctx, dir, py.as_ref());
+    parse_diagnostics.extend(dep_diagnostics);
+
     Ok(ProjectFacts {
         project: project.clone(),
         manifest,
         lockfiles,
         configs,
         has_manifest_dependencies,
-        dependencies: python_dependencies(ctx, dir, py.as_ref()),
+        dependencies: deps,
         install_settings: settings,
         covered_by_workspace_lockfile: covered_by_uv_workspace(ctx, dir),
         has_legacy_bun_lockfile: false,
@@ -322,7 +396,7 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
 
     let reqs: Vec<PathBuf> = requirements_files(ctx)
         .into_iter()
-        .filter(|p| project_dir(p) == *dir)
+        .filter(|p| requirements_project_dir(p) == *dir)
         .collect();
 
     let manifest = reqs.first().map(|p| FileFact {
@@ -344,17 +418,23 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
     let mut settings = InstallSettings::default();
     let mut requirement_count = 0;
     let mut any_hashes = false;
+
+    // Use a shared visited set so a file that is both an entry-point and an
+    // include target is not double-counted for settings.
+    let mut visited = std::collections::HashSet::new();
+    let mut parse_diagnostics: Vec<crate::diagnostics::Diagnostic> =
+        pyproject_parse_diagnostic(ctx, dir).into_iter().collect();
+
     for req in &reqs {
-        if let Ok(r) = requirements::load(ctx, req) {
-            if r.require_hashes {
-                settings.require_hashes = Some(true);
-            }
-            settings.trusted_hosts.extend(r.trusted_hosts);
-            settings.index_urls.extend(r.index_urls);
-            settings.extra_index_urls.extend(r.extra_index_urls);
-            requirement_count += r.requirement_count;
-            any_hashes |= r.has_hash_pins;
+        let r = requirements::load_recursive(ctx, req, &mut visited, &mut parse_diagnostics);
+        if r.require_hashes {
+            settings.require_hashes = Some(true);
         }
+        settings.trusted_hosts.extend(r.trusted_hosts);
+        settings.index_urls.extend(r.index_urls);
+        settings.extra_index_urls.extend(r.extra_index_urls);
+        requirement_count += r.requirement_count;
+        any_hashes |= r.has_hash_pins;
     }
     if any_hashes {
         settings.require_hashes = Some(true);
@@ -376,16 +456,216 @@ fn build_pip_facts(ctx: &WorkspaceContext, project: &Project) -> Result<ProjectF
 
     let has_manifest_dependencies = requirement_count > 0;
 
+    // Collect dependencies (with include-following), merging their diagnostics.
+    let (deps, dep_diagnostics) = python_dependencies(ctx, dir, None);
+    parse_diagnostics.extend(dep_diagnostics);
+
     Ok(ProjectFacts {
         project: project.clone(),
         manifest,
         lockfiles: Vec::new(),
         configs,
         has_manifest_dependencies,
-        dependencies: python_dependencies(ctx, dir, None),
+        dependencies: deps,
         install_settings: settings,
         covered_by_workspace_lockfile: false,
         has_legacy_bun_lockfile: false,
-        parse_diagnostics: pyproject_parse_diagnostic(ctx, dir).into_iter().collect(),
+        parse_diagnostics,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::ecosystems::{Analyzer, Ecosystem};
+    use crate::filesystem::{scan, ScanOptions};
+    use tempfile::TempDir;
+
+    fn make_ctx(files: &[(&str, &str)]) -> (WorkspaceContext, TempDir) {
+        let dir = TempDir::new().unwrap();
+        for (rel, contents) in files {
+            let p = dir.path().join(rel);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(p, contents).unwrap();
+        }
+        let ctx = scan(dir.path(), Config::default(), &ScanOptions::default()).unwrap();
+        (ctx, dir)
+    }
+
+    // --- requirements_project_dir -------------------------------------------
+
+    #[test]
+    fn project_dir_for_top_level_requirements_is_dot() {
+        assert_eq!(
+            requirements_project_dir(Path::new("requirements.txt")),
+            PathBuf::from(".")
+        );
+    }
+
+    #[test]
+    fn project_dir_for_requirements_subdir_is_parent_of_requirements() {
+        // requirements/base.txt → project root is "."
+        assert_eq!(
+            requirements_project_dir(Path::new("requirements/base.txt")),
+            PathBuf::from(".")
+        );
+    }
+
+    #[test]
+    fn project_dir_for_nested_requirements_subdir_is_app_root() {
+        // myapp/requirements/dev.txt → project root is "myapp"
+        assert_eq!(
+            requirements_project_dir(Path::new("myapp/requirements/dev.txt")),
+            PathBuf::from("myapp")
+        );
+    }
+
+    #[test]
+    fn project_dir_for_non_requirements_subdir_is_parent() {
+        // configs/prod.txt → no `requirements` dir, project root is "configs"
+        assert_eq!(
+            requirements_project_dir(Path::new("configs/prod.txt")),
+            PathBuf::from("configs")
+        );
+    }
+
+    // --- requirements_files detection ----------------------------------------
+
+    #[test]
+    fn requirements_subdir_txt_files_are_detected() {
+        let (ctx, _d) = make_ctx(&[
+            ("requirements/base.txt", "requests==2.31.0\n"),
+            ("requirements/dev.txt", "pytest==7.0\n"),
+        ]);
+        let files = requirements_files(&ctx);
+        assert!(
+            files.contains(&PathBuf::from("requirements/base.txt")),
+            "base.txt missing from: {files:?}"
+        );
+        assert!(
+            files.contains(&PathBuf::from("requirements/dev.txt")),
+            "dev.txt missing from: {files:?}"
+        );
+    }
+
+    #[test]
+    fn classic_requirements_txt_still_detected() {
+        let (ctx, _d) = make_ctx(&[("requirements.txt", "requests==2.31.0\n")]);
+        let files = requirements_files(&ctx);
+        assert!(files.contains(&PathBuf::from("requirements.txt")));
+    }
+
+    // --- detect: project rooted at the right directory -----------------------
+
+    #[test]
+    fn requirements_subdir_detects_project_at_workspace_root() {
+        let (ctx, _d) = make_ctx(&[("requirements/base.txt", "requests==2.31.0\n")]);
+        let projects = PythonAnalyzer.detect(&ctx);
+        assert_eq!(projects.len(), 1, "expected one project: {projects:?}");
+        assert_eq!(
+            projects[0].root,
+            PathBuf::from("."),
+            "project root should be workspace root, not requirements/"
+        );
+        assert_eq!(projects[0].ecosystem, Ecosystem::Python);
+    }
+
+    #[test]
+    fn requirements_subdir_does_not_duplicate_project_with_requirements_txt() {
+        // requirements.txt and requirements/base.txt both map to root "." —
+        // detect should yield exactly one project.
+        let (ctx, _d) = make_ctx(&[
+            ("requirements.txt", "-r requirements/base.txt\n"),
+            ("requirements/base.txt", "requests==2.31.0\n"),
+        ]);
+        let projects = PythonAnalyzer.detect(&ctx);
+        assert_eq!(projects.len(), 1, "expected one project, got: {projects:?}");
+    }
+
+    // --- facts: includes are followed for dependencies -----------------------
+
+    #[test]
+    fn dependencies_from_included_requirements_file_are_collected() {
+        let (ctx, _d) = make_ctx(&[
+            ("requirements.txt", "-r requirements/base.txt\n"),
+            ("requirements/base.txt", "requests==2.31.0\nflask==3.0.0\n"),
+        ]);
+        let projects = PythonAnalyzer.detect(&ctx);
+        assert_eq!(projects.len(), 1);
+        let facts = PythonAnalyzer.facts(&projects[0], &ctx).unwrap();
+        let names: Vec<&str> = facts.dependencies.iter().map(|d| d.name.as_str()).collect();
+        assert!(
+            names.contains(&"requests"),
+            "requests missing from deps: {names:?}"
+        );
+        assert!(
+            names.contains(&"flask"),
+            "flask missing from deps: {names:?}"
+        );
+    }
+
+    #[test]
+    fn requirements_subdir_deps_are_collected_as_entry_points() {
+        // requirements/base.txt is an entry-point (no top-level requirements.txt).
+        let (ctx, _d) = make_ctx(&[
+            ("requirements/base.txt", "requests==2.31.0\n"),
+            ("requirements/dev.txt", "pytest==7.0\n"),
+        ]);
+        let projects = PythonAnalyzer.detect(&ctx);
+        assert_eq!(projects.len(), 1);
+        let facts = PythonAnalyzer.facts(&projects[0], &ctx).unwrap();
+        let names: Vec<&str> = facts.dependencies.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"requests"), "{names:?}");
+        assert!(names.contains(&"pytest"), "{names:?}");
+    }
+
+    #[test]
+    fn cyclic_include_does_not_panic_and_emits_diagnostic() {
+        let (ctx, _d) = make_ctx(&[
+            (
+                "requirements.txt",
+                "-r requirements/a.txt\nrequests==2.31.0\n",
+            ),
+            (
+                "requirements/a.txt",
+                "-r ../requirements/a.txt\nflask==3.0.0\n",
+            ),
+        ]);
+        let projects = PythonAnalyzer.detect(&ctx);
+        assert_eq!(projects.len(), 1);
+        let facts = PythonAnalyzer.facts(&projects[0], &ctx).unwrap();
+        // Must not panic; a cyclic-include diagnostic must be present.
+        assert!(
+            facts
+                .parse_diagnostics
+                .iter()
+                .any(|d| d.message.contains("cyclic")),
+            "expected cyclic diagnostic, got: {:?}",
+            facts.parse_diagnostics
+        );
+    }
+
+    // --- build_pip_facts: settings propagate through includes ----------------
+
+    #[test]
+    fn require_hashes_propagates_from_included_file() {
+        let (ctx, _d) = make_ctx(&[
+            ("requirements.txt", "-r requirements/base.txt\n"),
+            (
+                "requirements/base.txt",
+                "--require-hashes\nrequests==2.31.0 --hash=sha256:aaa\n",
+            ),
+        ]);
+        let projects = PythonAnalyzer.detect(&ctx);
+        assert_eq!(projects.len(), 1);
+        let facts = PythonAnalyzer.facts(&projects[0], &ctx).unwrap();
+        assert_eq!(
+            facts.install_settings.require_hashes,
+            Some(true),
+            "require_hashes should propagate through -r include"
+        );
+    }
 }
