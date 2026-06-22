@@ -268,9 +268,7 @@ fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
 
     if offline_unchecked > 0 {
         report.packages_audited = coords.len().saturating_sub(offline_unchecked);
-        report.diagnostics.push(format!(
-            "offline: {offline_unchecked} package(s) not in the cache were not checked"
-        ));
+        report.offline_unchecked = offline_unchecked;
     }
 
     // Resolve format with the same precedence as `check` (CLI flag, then config,
@@ -303,7 +301,13 @@ fn run_audit_cmd(args: AuditArgs) -> Result<u8, CliError> {
         println!();
     }
 
-    Ok(if report.has_findings() { 1 } else { 0 })
+    // Exit 1 when there are active vulnerabilities or the offline run left
+    // packages unaudited — an incomplete audit must not be treated as clean.
+    Ok(if report.has_findings() || report.has_unchecked() {
+        1
+    } else {
+        0
+    })
 }
 
 fn run_explain(rule_id: &str) -> Result<u8, CliError> {
