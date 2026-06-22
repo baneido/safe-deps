@@ -406,31 +406,32 @@ fn covered_by_workspace(ctx: &WorkspaceContext, dir: &Path, manager: PackageMana
 /// declaration order (so include/exclude `!`-negation can be applied in order
 /// by [`is_workspace_member`]).
 ///
-/// For pnpm the authoritative source is `pnpm-workspace.yaml` `packages:`; for
-/// all managers the `package.json` `workspaces` field (array or object form) is
-/// also consulted. Globs from `pnpm-workspace.yaml` are listed before those
-/// from `package.json`. An empty result means no member globs were declared.
+/// When `pnpm-workspace.yaml` is present it is the **exclusive** source of
+/// member globs for pnpm roots: `package.json` `workspaces` is ignored even if
+/// it contains globs (pnpm treats `pnpm-workspace.yaml` as authoritative and
+/// does not fall back to `package.json`). An empty `packages:` list (or a
+/// missing key) therefore means no child members, not "fall back to
+/// `package.json`". For all other managers only `package.json` `workspaces` is
+/// consulted.  An empty result means no member globs were declared.
 fn workspace_globs(
     ctx: &WorkspaceContext,
     root_dir: &Path,
     package_json_path: &Path,
 ) -> Vec<String> {
-    let mut globs: Vec<String> = Vec::new();
-
-    // pnpm-workspace.yaml is the authoritative config for pnpm workspaces.
+    // pnpm-workspace.yaml is the EXCLUSIVE config for pnpm workspaces.
+    // When it is present we return immediately with its `packages:` list
+    // (which may be empty) and never fall through to package.json.
     let ws_yaml_path = project_join(root_dir, "pnpm-workspace.yaml");
     if ctx.contains(&ws_yaml_path) {
-        if let Ok(ws) = pnpm::load_workspace(ctx, &ws_yaml_path) {
-            globs.extend(ws.packages);
-        }
+        return pnpm::load_workspace(ctx, &ws_yaml_path)
+            .map(|ws| ws.packages)
+            .unwrap_or_default();
     }
 
-    // package.json `workspaces` (array or object { packages: [...] }).
-    if let Ok(pj) = package_json::load(ctx, package_json_path) {
-        globs.extend(pj.workspaces.packages().iter().cloned());
-    }
-
-    globs
+    // Non-pnpm managers: use package.json `workspaces` (array or object form).
+    package_json::load(ctx, package_json_path)
+        .map(|pj| pj.workspaces.packages().to_vec())
+        .unwrap_or_default()
 }
 
 /// Returns `true` when `dir` is a workspace member declared at `root_dir`.
@@ -659,6 +660,42 @@ mod tests {
         assert!(
             !child.covered_by_workspace_lockfile,
             "with no `packages` globs only the root is a member; the child must not be covered"
+        );
+    }
+
+    /// pnpm: when both `pnpm-workspace.yaml` AND `package.json` `workspaces` are
+    /// present, `pnpm-workspace.yaml` is the EXCLUSIVE source.  A directory
+    /// matched only by `package.json` `workspaces` must NOT be covered, while a
+    /// directory matched by `pnpm-workspace.yaml` `packages:` IS covered.
+    #[test]
+    fn pnpm_workspace_yaml_exclusive_over_package_json_workspaces() {
+        let dir = ws(&[
+            (
+                "package.json",
+                // package.json claims `packages/*` as workspaces — but pnpm must ignore it.
+                r#"{ "name": "root", "private": true, "workspaces": ["packages/*"], "packageManager": "pnpm@9" }"#,
+            ),
+            // pnpm-workspace.yaml declares `apps/*` only.
+            ("pnpm-workspace.yaml", "packages:\n  - \"apps/*\"\n"),
+            ("pnpm-lock.yaml", "lockfileVersion: 9\n"),
+            // Matched by pnpm-workspace.yaml → covered.
+            ("apps/web/package.json", PKG_DEPS),
+            // Matched ONLY by package.json workspaces → must NOT be covered (SD001 fires).
+            ("packages/lib/package.json", PKG_DEPS),
+        ]);
+        let facts = facts_for(&dir);
+
+        let member = facts_for_dir(&facts, "apps/web").expect("apps/web not detected");
+        assert!(
+            member.covered_by_workspace_lockfile,
+            "apps/web is in pnpm-workspace.yaml and should be covered"
+        );
+
+        let non_member = facts_for_dir(&facts, "packages/lib").expect("packages/lib not detected");
+        assert!(
+            !non_member.covered_by_workspace_lockfile,
+            "packages/lib is only in package.json workspaces (not pnpm-workspace.yaml) \
+             and must NOT be covered when pnpm-workspace.yaml is present"
         );
     }
 

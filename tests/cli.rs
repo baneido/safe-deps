@@ -535,15 +535,57 @@ fn non_workspace_member_under_root_gets_sd001() {
         .filter_map(|f| f["project_root"].as_str())
         .collect();
     assert!(
-        sd001_paths
-            .iter()
-            .all(|p| !p.contains("packages") || !p.contains("app")),
+        sd001_paths.iter().all(|p| !p.contains("packages/app")),
         "packages/app is a workspace member and should not trigger SD001; got: {sd001_paths:?}"
     );
     // examples/standalone is NOT in the glob, so SD001 must fire for it.
     assert!(
         sd001_paths.iter().any(|p| p.contains("standalone")),
         "examples/standalone is not in workspaces glob and must trigger SD001; got: {sd001_paths:?}"
+    );
+}
+
+/// pnpm: `pnpm-workspace.yaml` is authoritative — a dir matched only by
+/// `package.json` `workspaces` is NOT a member (SD001 fires); a dir matched by
+/// `pnpm-workspace.yaml` `packages:` IS a member (no SD001).
+#[test]
+fn pnpm_workspace_yaml_authoritative_over_package_json() {
+    let ws = workspace(&[
+        (
+            "package.json",
+            // package.json `workspaces` includes `packages/*` — pnpm must ignore it.
+            r#"{ "name": "root", "private": true, "workspaces": ["packages/*"], "packageManager": "pnpm@9" }"#,
+        ),
+        // pnpm-workspace.yaml is authoritative: only `apps/*` is a member.
+        ("pnpm-workspace.yaml", "packages:\n  - \"apps/*\"\n"),
+        ("pnpm-lock.yaml", "lockfileVersion: 9\n"),
+        // apps/web is in pnpm-workspace.yaml → covered, no SD001.
+        (
+            "apps/web/package.json",
+            r#"{ "name": "web", "dependencies": { "left-pad": "^1" } }"#,
+        ),
+        // packages/lib is ONLY in package.json workspaces → NOT covered, SD001 fires.
+        (
+            "packages/lib/package.json",
+            r#"{ "name": "lib", "dependencies": { "left-pad": "^1" } }"#,
+        ),
+    ]);
+    let report = check_json(&ws, &[]);
+    let findings = report["findings"].as_array().unwrap();
+    let sd001_paths: Vec<&str> = findings
+        .iter()
+        .filter(|f| f["rule_id"].as_str() == Some("SD001"))
+        .filter_map(|f| f["project_root"].as_str())
+        .collect();
+    // apps/web is a pnpm-workspace.yaml member — no SD001.
+    assert!(
+        sd001_paths.iter().all(|p| !p.contains("apps/web")),
+        "apps/web is in pnpm-workspace.yaml and must not trigger SD001; got: {sd001_paths:?}"
+    );
+    // packages/lib is NOT in pnpm-workspace.yaml (only in package.json) — SD001 must fire.
+    assert!(
+        sd001_paths.iter().any(|p| p.contains("packages/lib")),
+        "packages/lib is only in package.json workspaces and must trigger SD001; got: {sd001_paths:?}"
     );
 }
 
