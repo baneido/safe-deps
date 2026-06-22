@@ -1,10 +1,11 @@
 # Releasing
 
-`safe-deps` is distributed two ways: prebuilt binaries on the GitHub Release and
-the crate on **crates.io** (`cargo install safe-deps` / as a library dependency).
-Both are produced automatically by [`.github/workflows/release.yml`](.github/workflows/release.yml)
-when a `vX.Y.Z` tag is pushed. This document is the maintainer checklist for
-cutting that tag.
+`safe-deps` is distributed three ways: prebuilt binaries on the GitHub Release, the
+crate on **crates.io** (`cargo install safe-deps` / as a library dependency), and a
+**Homebrew** formula on [`baneido/homebrew-tap`](https://github.com/baneido/homebrew-tap)
+(`brew install baneido/tap/safe-deps`). All three are produced automatically by
+[`.github/workflows/release.yml`](.github/workflows/release.yml) when a `vX.Y.Z` tag
+is pushed. This document is the maintainer checklist for cutting that tag.
 
 > **First publish is a one-time manual bootstrap (already completed for `v0.2.1`).** The automated `publish-crate`
 > job authenticates with crates.io Trusted Publishing (GitHub OIDC, no long-lived
@@ -103,6 +104,24 @@ cargo publish --locked
 `Cargo.toml` already carries the required metadata (`description`, `license`,
 `repository`, `readme`, `keywords`, `categories`) and an `exclude` list that keeps
 the published `.crate` lean.
+
+## Homebrew formula
+
+After the binaries are built and the checksums signed, the `homebrew` job renders
+[`scripts/safe-deps.rb.tmpl`](scripts/safe-deps.rb.tmpl) — filling in the version
+and the per-target SHA-256s read from the signed `SHA256SUMS` manifest — and opens a
+PR on [`baneido/homebrew-tap`](https://github.com/baneido/homebrew-tap) updating
+`Formula/safe-deps.rb`. The formula installs the prebuilt binary (no Rust toolchain
+on the user's machine). The tap's `main` is protected, so the job opens a PR rather
+than pushing; **merge that PR** to make the new version installable via
+`brew install baneido/tap/safe-deps`.
+
+The job authenticates to the tap with the `TAP_GITHUB_TOKEN` repository secret (a
+token with push + PR permission on `baneido/homebrew-tap`, shared with the
+shipsafe/jp-pii-detect release bots). If the secret is unset, the job logs a warning
+and skips — the rest of the release still succeeds. If the formula is already current
+for the tag, the job is a no-op. Edit the generated `Formula/safe-deps.rb` only
+through `scripts/safe-deps.rb.tmpl`, never by hand in the tap.
 
 ## Advisory baseline
 

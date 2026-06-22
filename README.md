@@ -10,11 +10,23 @@ separate `safe-deps audit` command is the *only* networked mode — it explicitl
 queries a vulnerability database (OSV).
 
 > Status: the CLI is implemented (Phases 1–5) and published to
-> [crates.io](https://crates.io/crates/safe-deps); install with `cargo install`,
-> grab a prebuilt binary from GitHub Releases, or build from source (all below).
-> Minimum supported Rust version (MSRV): **1.86**.
+> [crates.io](https://crates.io/crates/safe-deps); install with Homebrew or
+> `cargo install`, grab a prebuilt binary from GitHub Releases, or build from
+> source (all below). Minimum supported Rust version (MSRV): **1.86**.
 
 ## Install
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew install baneido/tap/safe-deps
+```
+
+Installs the prebuilt binary from [GitHub Releases](https://github.com/baneido/safe-deps/releases)
+via the [`baneido/homebrew-tap`](https://github.com/baneido/homebrew-tap) tap — no
+Rust toolchain required. Covers macOS and Linux on both arm64 and x86-64. The
+formula is refreshed automatically on every tagged release. `brew upgrade safe-deps`
+moves you to the latest version.
 
 ### From crates.io
 
