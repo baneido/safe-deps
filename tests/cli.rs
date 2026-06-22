@@ -176,6 +176,70 @@ fn rule_filter_restricts_to_one_rule() {
 }
 
 #[test]
+fn rule_filter_short_id_resolves_and_works() {
+    // `--rule sd3` and `--rule 3` must both normalize to SD003 and produce
+    // findings — not silently drop everything and exit 0.
+    let ws = workspace(&[("package.json", NPM_DEPS), (".npmrc", "strict-ssl=false\n")]);
+    for short in ["sd3", "3", "SD3"] {
+        let out = run(&ws, &["check", ".", "--format", "json", "--rule", short]);
+        assert_eq!(
+            code(&out),
+            1,
+            "--rule {short} should produce findings and exit 1, not exit 0"
+        );
+        let report: serde_json::Value = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| panic!("invalid JSON for --rule {short}: {e}\n{}", stdout(&out)));
+        let ids = rule_ids(&report);
+        assert!(
+            ids.iter().all(|id| id == "SD003"),
+            "--rule {short} ids: {ids:?}"
+        );
+    }
+}
+
+#[test]
+fn rule_filter_unknown_id_is_usage_error() {
+    // A typo'd rule ID must exit 2 (usage error), not silently exclude all
+    // findings and exit 0.
+    let ws = workspace(&[("package.json", NPM_DEPS), (".npmrc", "strict-ssl=false\n")]);
+    let out = run(&ws, &["check", ".", "--rule", "SD099"]);
+    assert_eq!(
+        code(&out),
+        2,
+        "--rule SD099 should be a usage error (exit 2)"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("SD099") || stderr.contains("unknown"),
+        "stderr should mention the bad rule or 'unknown': {stderr}"
+    );
+}
+
+#[test]
+fn rule_filter_letter_o_instead_of_zero_is_usage_error() {
+    // SD0O3 (letter O, not zero) must also be rejected, not silently pass.
+    let ws = workspace(&[("package.json", NPM_DEPS), (".npmrc", "strict-ssl=false\n")]);
+    let out = run(&ws, &["check", ".", "--rule", "SD0O3"]);
+    assert_eq!(
+        code(&out),
+        2,
+        "--rule SD0O3 should be a usage error (exit 2)"
+    );
+}
+
+#[test]
+fn rule_filter_multiple_any_unknown_is_usage_error() {
+    // If multiple --rule values are given and ANY is unknown, exit 2.
+    let ws = workspace(&[("package.json", NPM_DEPS), (".npmrc", "strict-ssl=false\n")]);
+    let out = run(&ws, &["check", ".", "--rule", "SD003", "--rule", "SD099"]);
+    assert_eq!(
+        code(&out),
+        2,
+        "any unknown rule in a multi-rule filter should exit 2"
+    );
+}
+
+#[test]
 fn ecosystem_filter_restricts_to_one_manager() {
     let ws = workspace(&[
         ("js/package.json", NPM_DEPS),
