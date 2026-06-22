@@ -375,7 +375,8 @@ fn pnpm_allow_all_builds(
 }
 
 /// A project is covered when a proper-ancestor workspace root declares
-/// workspaces and holds a lockfile for the same package manager.
+/// workspaces, holds a lockfile for the same package manager, AND the target
+/// directory is matched by the workspace's member globs.
 fn covered_by_workspace(ctx: &WorkspaceContext, dir: &Path, manager: PackageManager) -> bool {
     if dir == Path::new(".") {
         return false;
@@ -389,9 +390,340 @@ fn covered_by_workspace(ctx: &WorkspaceContext, dir: &Path, manager: PackageMana
         if !is_workspace_root(ctx, &root_dir, pj) {
             continue;
         }
-        if !lockfile_in_dir(ctx, &root_dir, manager).is_empty() {
+        if lockfile_in_dir(ctx, &root_dir, manager).is_empty() {
+            continue;
+        }
+        // The root has a lockfile: only consider `dir` covered if it is
+        // actually matched by the workspace member globs.
+        if is_workspace_member(ctx, &root_dir, pj, dir) {
             return true;
         }
     }
     false
+}
+
+/// Returns the workspace package globs declared by a workspace root, in
+/// declaration order (so include/exclude `!`-negation can be applied in order
+/// by [`is_workspace_member`]).
+///
+/// When `pnpm-workspace.yaml` is present it is the **exclusive** source of
+/// member globs for pnpm roots: `package.json` `workspaces` is ignored even if
+/// it contains globs (pnpm treats `pnpm-workspace.yaml` as authoritative and
+/// does not fall back to `package.json`). An empty `packages:` list (or a
+/// missing key) therefore means no child members, not "fall back to
+/// `package.json`". For all other managers only `package.json` `workspaces` is
+/// consulted.  An empty result means no member globs were declared.
+fn workspace_globs(
+    ctx: &WorkspaceContext,
+    root_dir: &Path,
+    package_json_path: &Path,
+) -> Vec<String> {
+    // pnpm-workspace.yaml is the EXCLUSIVE config for pnpm workspaces.
+    // When it is present we return immediately with its `packages:` list
+    // (which may be empty) and never fall through to package.json.
+    let ws_yaml_path = project_join(root_dir, "pnpm-workspace.yaml");
+    if ctx.contains(&ws_yaml_path) {
+        return pnpm::load_workspace(ctx, &ws_yaml_path)
+            .map(|ws| ws.packages)
+            .unwrap_or_default();
+    }
+
+    // Non-pnpm managers: use package.json `workspaces` (array or object form).
+    package_json::load(ctx, package_json_path)
+        .map(|pj| pj.workspaces.packages().to_vec())
+        .unwrap_or_default()
+}
+
+/// Returns `true` when `dir` is a workspace member declared at `root_dir`.
+///
+/// Globs are relative to the workspace root and use `/`-separated paths, and
+/// are evaluated with ordered include/exclude semantics: patterns apply in
+/// declaration order, and a `!`-prefixed pattern excludes a path that an
+/// earlier pattern included (matching the behaviour of npm/Yarn `workspaces`
+/// and pnpm's `pnpm-workspace.yaml` `packages`). A path is a member only if,
+/// after applying every pattern in order, it ends up included.
+///
+/// When no (positive) globs are declared, child packages are NOT members:
+/// pnpm with an empty/omitted `packages` includes only the root, and an
+/// empty/missing npm/Yarn `workspaces` array likewise declares no members.
+fn is_workspace_member(
+    ctx: &WorkspaceContext,
+    root_dir: &Path,
+    package_json_path: &Path,
+    dir: &Path,
+) -> bool {
+    let globs = workspace_globs(ctx, root_dir, package_json_path);
+    if globs.is_empty() {
+        // No globs declared: only the root is a member, never its children.
+        return false;
+    }
+
+    // Compute the path of `dir` relative to `root_dir`, normalised to `/`.
+    let rel = if root_dir == Path::new(".") {
+        dir.to_owned()
+    } else {
+        dir.strip_prefix(root_dir).unwrap_or(dir).to_owned()
+    };
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+
+    // Apply include/exclude patterns in order: a positive glob marks the path
+    // included, a `!`-prefixed glob un-includes a previously-included path.
+    let mut included = false;
+    for g in &globs {
+        let (pattern, negated) = match g.strip_prefix('!') {
+            Some(rest) => (rest, true),
+            None => (g.as_str(), false),
+        };
+        let matches = globset::Glob::new(pattern)
+            .map(|glob| glob.compile_matcher().is_match(&rel_str))
+            .unwrap_or(false);
+        if matches {
+            included = !negated;
+        }
+    }
+    included
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::ecosystems::Analyzer;
+    use crate::filesystem::{scan, ScanOptions};
+    use tempfile::TempDir;
+
+    const PKG_DEPS: &str = r#"{ "name": "pkg", "dependencies": { "left-pad": "^1" } }"#;
+
+    fn ws(files: &[(&str, &str)]) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        for (rel, contents) in files {
+            let p = dir.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, contents).unwrap();
+        }
+        dir
+    }
+
+    fn facts_for(dir: &TempDir) -> Vec<ProjectFacts> {
+        let ctx = scan(dir.path(), Config::default(), &ScanOptions::default()).unwrap();
+        let analyzer = JavaScriptAnalyzer;
+        analyzer
+            .detect(&ctx)
+            .iter()
+            .map(|p| analyzer.facts(p, &ctx).unwrap())
+            .collect()
+    }
+
+    fn facts_for_dir<'a>(facts: &'a [ProjectFacts], rel: &str) -> Option<&'a ProjectFacts> {
+        facts
+            .iter()
+            .find(|f| f.project.root == std::path::Path::new(rel))
+    }
+
+    // --- workspace glob membership -------------------------------------------
+
+    /// npm workspace: member matched by glob is covered; non-member is not.
+    #[test]
+    fn npm_workspace_member_is_covered_non_member_is_not() {
+        let dir = ws(&[
+            (
+                "package.json",
+                r#"{ "name": "root", "private": true, "workspaces": ["packages/*"] }"#,
+            ),
+            ("package-lock.json", r#"{ "lockfileVersion": 3 }"#),
+            ("packages/app/package.json", PKG_DEPS),
+            ("examples/standalone/package.json", PKG_DEPS),
+        ]);
+        let facts = facts_for(&dir);
+
+        let member = facts_for_dir(&facts, "packages/app").expect("packages/app not detected");
+        assert!(
+            member.covered_by_workspace_lockfile,
+            "packages/app should be covered by root lockfile"
+        );
+
+        let non_member =
+            facts_for_dir(&facts, "examples/standalone").expect("examples/standalone not detected");
+        assert!(
+            !non_member.covered_by_workspace_lockfile,
+            "examples/standalone is not in workspaces glob and must not be covered"
+        );
+    }
+
+    /// Yarn workspace (object form `{ packages: [...] }`): member covered, non-member flagged.
+    #[test]
+    fn yarn_workspace_object_form_member_covered_non_member_not() {
+        let dir = ws(&[
+            (
+                "package.json",
+                r#"{ "name": "root", "private": true, "workspaces": { "packages": ["apps/*"] } }"#,
+            ),
+            ("yarn.lock", ""),
+            ("apps/web/package.json", PKG_DEPS),
+            ("tools/cli/package.json", PKG_DEPS),
+        ]);
+        let facts = facts_for(&dir);
+
+        let member = facts_for_dir(&facts, "apps/web").expect("apps/web not detected");
+        assert!(
+            member.covered_by_workspace_lockfile,
+            "apps/web should be covered by yarn root lockfile"
+        );
+
+        let non_member = facts_for_dir(&facts, "tools/cli").expect("tools/cli not detected");
+        assert!(
+            !non_member.covered_by_workspace_lockfile,
+            "tools/cli is not in apps/* glob and must not be covered"
+        );
+    }
+
+    /// pnpm workspace: globs from `pnpm-workspace.yaml` are used for membership.
+    #[test]
+    fn pnpm_workspace_yaml_member_covered_non_member_not() {
+        let dir = ws(&[
+            (
+                "package.json",
+                r#"{ "name": "root", "private": true, "packageManager": "pnpm@9" }"#,
+            ),
+            ("pnpm-workspace.yaml", "packages:\n  - \"packages/*\"\n"),
+            ("pnpm-lock.yaml", "lockfileVersion: 9\n"),
+            ("packages/lib/package.json", PKG_DEPS),
+            ("examples/demo/package.json", PKG_DEPS),
+        ]);
+        let facts = facts_for(&dir);
+
+        let member = facts_for_dir(&facts, "packages/lib").expect("packages/lib not detected");
+        assert!(
+            member.covered_by_workspace_lockfile,
+            "packages/lib should be covered by pnpm root lockfile"
+        );
+
+        let non_member =
+            facts_for_dir(&facts, "examples/demo").expect("examples/demo not detected");
+        assert!(
+            !non_member.covered_by_workspace_lockfile,
+            "examples/demo is not in packages/* glob and must not be covered"
+        );
+    }
+
+    /// pnpm workspace with a `!`-negated glob: an excluded package is NOT
+    /// covered (SD001 fires) even though an earlier include matched it.
+    #[test]
+    fn pnpm_workspace_negated_glob_excludes_package() {
+        let dir = ws(&[
+            (
+                "package.json",
+                r#"{ "name": "root", "private": true, "packageManager": "pnpm@9" }"#,
+            ),
+            (
+                "pnpm-workspace.yaml",
+                "packages:\n  - \"packages/*\"\n  - \"!packages/excluded\"\n",
+            ),
+            ("pnpm-lock.yaml", "lockfileVersion: 9\n"),
+            ("packages/included/package.json", PKG_DEPS),
+            ("packages/excluded/package.json", PKG_DEPS),
+        ]);
+        let facts = facts_for(&dir);
+
+        let included =
+            facts_for_dir(&facts, "packages/included").expect("packages/included not detected");
+        assert!(
+            included.covered_by_workspace_lockfile,
+            "packages/included matches packages/* and should be covered"
+        );
+
+        let excluded =
+            facts_for_dir(&facts, "packages/excluded").expect("packages/excluded not detected");
+        assert!(
+            !excluded.covered_by_workspace_lockfile,
+            "packages/excluded is negated by !packages/excluded and must not be covered"
+        );
+    }
+
+    /// pnpm workspace whose `pnpm-workspace.yaml` omits `packages`: only the
+    /// root is a member, so a child package is NOT covered (SD001 fires).
+    #[test]
+    fn pnpm_workspace_empty_packages_excludes_children() {
+        let dir = ws(&[
+            (
+                "package.json",
+                r#"{ "name": "root", "private": true, "packageManager": "pnpm@9" }"#,
+            ),
+            // No `packages:` key at all (only an unrelated setting present).
+            ("pnpm-workspace.yaml", "dangerouslyAllowAllBuilds: false\n"),
+            ("pnpm-lock.yaml", "lockfileVersion: 9\n"),
+            ("packages/lib/package.json", PKG_DEPS),
+        ]);
+        let facts = facts_for(&dir);
+
+        let child = facts_for_dir(&facts, "packages/lib").expect("packages/lib not detected");
+        assert!(
+            !child.covered_by_workspace_lockfile,
+            "with no `packages` globs only the root is a member; the child must not be covered"
+        );
+    }
+
+    /// pnpm: when both `pnpm-workspace.yaml` AND `package.json` `workspaces` are
+    /// present, `pnpm-workspace.yaml` is the EXCLUSIVE source.  A directory
+    /// matched only by `package.json` `workspaces` must NOT be covered, while a
+    /// directory matched by `pnpm-workspace.yaml` `packages:` IS covered.
+    #[test]
+    fn pnpm_workspace_yaml_exclusive_over_package_json_workspaces() {
+        let dir = ws(&[
+            (
+                "package.json",
+                // package.json claims `packages/*` as workspaces — but pnpm must ignore it.
+                r#"{ "name": "root", "private": true, "workspaces": ["packages/*"], "packageManager": "pnpm@9" }"#,
+            ),
+            // pnpm-workspace.yaml declares `apps/*` only.
+            ("pnpm-workspace.yaml", "packages:\n  - \"apps/*\"\n"),
+            ("pnpm-lock.yaml", "lockfileVersion: 9\n"),
+            // Matched by pnpm-workspace.yaml → covered.
+            ("apps/web/package.json", PKG_DEPS),
+            // Matched ONLY by package.json workspaces → must NOT be covered (SD001 fires).
+            ("packages/lib/package.json", PKG_DEPS),
+        ]);
+        let facts = facts_for(&dir);
+
+        let member = facts_for_dir(&facts, "apps/web").expect("apps/web not detected");
+        assert!(
+            member.covered_by_workspace_lockfile,
+            "apps/web is in pnpm-workspace.yaml and should be covered"
+        );
+
+        let non_member = facts_for_dir(&facts, "packages/lib").expect("packages/lib not detected");
+        assert!(
+            !non_member.covered_by_workspace_lockfile,
+            "packages/lib is only in package.json workspaces (not pnpm-workspace.yaml) \
+             and must NOT be covered when pnpm-workspace.yaml is present"
+        );
+    }
+
+    /// Bun workspace: member matched by glob is covered; non-member is not.
+    #[test]
+    fn bun_workspace_member_covered_non_member_not() {
+        let dir = ws(&[
+            (
+                "package.json",
+                r#"{ "name": "root", "private": true, "workspaces": ["pkgs/*"], "packageManager": "bun@1.2.0" }"#,
+            ),
+            ("bun.lock", ""),
+            ("pkgs/server/package.json", PKG_DEPS),
+            ("extras/standalone/package.json", PKG_DEPS),
+        ]);
+        let facts = facts_for(&dir);
+
+        let member = facts_for_dir(&facts, "pkgs/server").expect("pkgs/server not detected");
+        assert!(
+            member.covered_by_workspace_lockfile,
+            "pkgs/server should be covered by bun root lockfile"
+        );
+
+        let non_member =
+            facts_for_dir(&facts, "extras/standalone").expect("extras/standalone not detected");
+        assert!(
+            !non_member.covered_by_workspace_lockfile,
+            "extras/standalone is not in pkgs/* glob and must not be covered"
+        );
+    }
 }
