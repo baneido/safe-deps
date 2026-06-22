@@ -351,4 +351,54 @@ mod tests {
         // A non-install pip subcommand is not flagged.
         assert!(one("pip download -r requirements.txt", Profile::Strict).is_none());
     }
+
+    // Tests for value-taking option handling (issue #87).
+
+    #[test]
+    fn monorepo_prefix_flag_is_transparent() {
+        // `npm --prefix web ci` must be recognized as `npm ci` (a frozen install).
+        assert!(one("npm --prefix web ci", Profile::Balanced).is_none());
+        // `pnpm --filter app install` without --frozen-lockfile should still fire.
+        assert!(one("pnpm --filter app install", Profile::Balanced).is_some());
+        // `yarn --cwd web install` without --immutable should still fire.
+        assert!(one("yarn --cwd web install", Profile::Balanced).is_some());
+        // `uv --project . sync` without --locked should still fire.
+        assert!(one("uv --project . sync", Profile::Balanced).is_some());
+    }
+
+    #[test]
+    fn workspace_flag_value_not_counted_as_added_package() {
+        // `npm install --workspace packages/app` is a full workspace install, not
+        // adding a specific package — SD002 must fire.
+        assert!(one("npm install --workspace packages/app", Profile::Balanced).is_some());
+        // `npm install lodash` adds a specific package — SD002 must NOT fire.
+        assert!(one("npm install lodash", Profile::Balanced).is_none());
+        // `-w` short form of --workspace should also work.
+        assert!(one("npm install -w packages/app", Profile::Balanced).is_some());
+        // `npm ci` is the frozen form, so a workspace-scoped `npm ci` must NOT
+        // fire even though the workspace value is a positional.
+        assert!(one("npm --prefix packages/app ci", Profile::Balanced).is_none());
+    }
+
+    #[test]
+    fn pnpm_filter_frozen_is_safe() {
+        // `pnpm --filter app install --frozen-lockfile` is safe (flag present).
+        assert!(one(
+            "pnpm --filter app install --frozen-lockfile",
+            Profile::Balanced
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn yarn_cwd_immutable_is_safe() {
+        // `yarn --cwd web install --immutable` is safe (flag present).
+        assert!(one("yarn --cwd web install --immutable", Profile::Balanced).is_none());
+    }
+
+    #[test]
+    fn uv_project_locked_is_safe() {
+        // `uv --project . sync --locked` is safe (flag present).
+        assert!(one("uv --project . sync --locked", Profile::Balanced).is_none());
+    }
 }

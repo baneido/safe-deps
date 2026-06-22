@@ -221,14 +221,150 @@ pub fn program(tokens: &[String]) -> Option<&str> {
     effective_start(tokens).map(|s| leaf(&tokens[s]))
 }
 
+/// Options that consume the following token as their value (space-separated
+/// form), keyed by the leaf program name. When a command uses `--flag value`
+/// the `value` token must not be mistaken for a subcommand or positional.
+///
+/// The `=` form (`--flag=value`) is already handled by the tokenizer because
+/// it arrives as a single token and is never split; only the two-token form
+/// needs explicit treatment here.
+fn value_taking_options(prog: &str) -> &'static [&'static str] {
+    match prog {
+        "npm" => &[
+            "--prefix",
+            "--workspace",
+            "-w",
+            "--workspaces-update",
+            "--userconfig",
+            "--globalconfig",
+            "--registry",
+            "--cache",
+            "--tag",
+            "--otp",
+        ],
+        "pnpm" => &[
+            "--filter",
+            "-F",
+            "--dir",
+            "-C",
+            "--reporter",
+            "--registry",
+            "--store-dir",
+            "--virtual-store-dir",
+            "--tag",
+        ],
+        "yarn" => &[
+            "--cwd",
+            "--registry",
+            "--network-concurrency",
+            "--network-timeout",
+            "--proxy",
+            "--https-proxy",
+            "--modules-folder",
+        ],
+        "bun" => &["--cwd", "--registry", "--tag", "--filter", "-F"],
+        "uv" => &[
+            "--project",
+            "--directory",
+            "-p",
+            "--python",
+            "--index",
+            "--index-url",
+            "--extra-index-url",
+            "--constraint",
+            "--override",
+            "--config-file",
+            "--env-file",
+            "--python-preference",
+            "--python-fetch",
+            "--installer-parallelism",
+            "--cache-dir",
+            "--link-mode",
+        ],
+        "pip" | "pip3" => &[
+            "-r",
+            "--requirement",
+            "-c",
+            "--constraint",
+            "-i",
+            "--index-url",
+            "--extra-index-url",
+            "--trusted-host",
+            "--target",
+            "-t",
+            "--prefix",
+            "--root",
+            "--find-links",
+            "-f",
+            "--log",
+            "--proxy",
+            "--retries",
+            "--timeout",
+            "--exists-action",
+            "--cert",
+            "--client-cert",
+            "--cache-dir",
+        ],
+        _ => &[],
+    }
+}
+
+/// Returns the set of token indices (relative to `tokens`) that are values
+/// consumed by a value-taking option in its space-separated form.  Only tokens
+/// after the real program start are examined; the program token itself is at
+/// `start`.
+///
+/// The leaf program at `start` may be a wrapper around `pip`/`pip3` in a
+/// normalized form (`python -m pip …`, `uv --project . pip …`). Once the wrapper's
+/// own option values are consumed and the effective first positional is seen to be
+/// `pip`/`pip3`, pip's value-taking option allowlist is also applied to the tokens
+/// after that `pip` token — otherwise a pip option value (e.g. the `<url>` in
+/// `--proxy <url>`) would leak into [`positionals`] and shift the derived
+/// subcommand away from `install`.
+fn option_value_indices(tokens: &[String], start: usize) -> std::collections::HashSet<usize> {
+    let mut vto = value_taking_options(leaf(&tokens[start]));
+    let mut skip = std::collections::HashSet::new();
+    let mut seen_pip = false;
+    let mut i = start + 1;
+    while i < tokens.len() {
+        let t = &tokens[i];
+        // `--flag=value` is a single token — no index to skip.
+        if t.starts_with('-') && !t.contains('=') && vto.contains(&t.as_str()) {
+            // The next token is the value; mark it.
+            if i + 1 < tokens.len() {
+                skip.insert(i + 1);
+                i += 2;
+                continue;
+            }
+        }
+        // The first non-flag token that is not itself a consumed value is the
+        // effective program/subcommand. If it is `pip`/`pip3`, switch to pip's
+        // option allowlist for everything after it so `--proxy <url>` and friends
+        // are consumed rather than leaking into the positionals.
+        if !seen_pip && !t.starts_with('-') && !skip.contains(&i) {
+            seen_pip = true;
+            if matches!(leaf(t), "pip" | "pip3") {
+                vto = value_taking_options("pip");
+            }
+        }
+        i += 1;
+    }
+    skip
+}
+
 /// The first non-flag token after the program, e.g. the `install` in
 /// `npm install --foo` (also seeing through wrappers like `sudo npm install`).
+/// Values of value-taking options (e.g. the `web` in `npm --prefix web ci`)
+/// are excluded.
 pub fn subcommand(tokens: &[String]) -> Option<&str> {
     let start = effective_start(tokens)?;
+    let skip = option_value_indices(tokens, start);
     tokens[start + 1..]
         .iter()
-        .find(|t| !t.starts_with('-'))
-        .map(|t| t.as_str())
+        .enumerate()
+        .filter(|(rel_i, t)| !t.starts_with('-') && !skip.contains(&(start + 1 + rel_i)))
+        .map(|(_, t)| t.as_str())
+        .next()
 }
 
 /// Whether a segment carries `flag` as enabled — either bare (`--frozen`) or
@@ -276,14 +412,20 @@ pub struct Invocation {
 /// env prefixes and wrappers). For `npm install left-pad` this is
 /// `["install", "left-pad"]`; SD002 uses the count to tell a full install from
 /// adding a specific package.
+///
+/// Values consumed by value-taking options (e.g. the `web` in
+/// `npm --prefix web install`) are excluded so they are not mistaken for
+/// subcommands or package names.
 pub fn positionals(tokens: &[String]) -> Vec<&str> {
     let Some(start) = effective_start(tokens) else {
         return Vec::new();
     };
+    let skip = option_value_indices(tokens, start);
     tokens[start + 1..]
         .iter()
-        .filter(|t| !t.starts_with('-'))
-        .map(|t| t.as_str())
+        .enumerate()
+        .filter(|(rel_i, t)| !t.starts_with('-') && !skip.contains(&(start + 1 + rel_i)))
+        .map(|(_, t)| t.as_str())
         .collect()
 }
 
@@ -923,6 +1065,214 @@ mod tests {
             subcommand(&s[0]),
             Some("install"),
             "sudo --user deploy --chdir /app pnpm install"
+        );
+    }
+
+    // Tests for value-taking option filtering (issue #87).
+
+    #[test]
+    fn value_taking_option_prefix_does_not_leak_into_subcommand() {
+        // `npm --prefix web ci` — `web` is the value of --prefix, not a positional.
+        let s = seg("npm --prefix web ci");
+        assert_eq!(subcommand(&s[0]), Some("ci"));
+        assert_eq!(positionals(&s[0]), vec!["ci"]);
+    }
+
+    #[test]
+    fn value_taking_option_filter_does_not_leak_into_subcommand() {
+        // `pnpm --filter app install` — `app` is the value of --filter.
+        let s = seg("pnpm --filter app install");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        assert_eq!(positionals(&s[0]), vec!["install"]);
+    }
+
+    #[test]
+    fn value_taking_option_cwd_does_not_leak_into_subcommand() {
+        // `yarn --cwd web install` — `web` is the value of --cwd.
+        let s = seg("yarn --cwd web install");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        assert_eq!(positionals(&s[0]), vec!["install"]);
+    }
+
+    #[test]
+    fn value_taking_option_project_does_not_leak_into_subcommand() {
+        // `uv --project . sync` — `.` is the value of --project.
+        let s = seg("uv --project . sync");
+        assert_eq!(subcommand(&s[0]), Some("sync"));
+        assert_eq!(positionals(&s[0]), vec!["sync"]);
+    }
+
+    #[test]
+    fn workspace_option_value_not_counted_as_package_positional() {
+        // `npm install --workspace packages/app` — the workspace path is a value,
+        // not a named package being added. positionals = ["install"] (length 1).
+        let s = seg("npm install --workspace packages/app");
+        assert_eq!(positionals(&s[0]), vec!["install"]);
+    }
+
+    #[test]
+    fn eq_form_does_not_consume_next_token() {
+        // `npm --prefix=web ci` — `=value` is attached; the next token `ci` is
+        // still a positional/subcommand, not a consumed value.
+        let s = seg("npm --prefix=web ci");
+        assert_eq!(subcommand(&s[0]), Some("ci"));
+        assert_eq!(positionals(&s[0]), vec!["ci"]);
+    }
+
+    #[test]
+    fn invocation_sees_through_monorepo_flags() {
+        use PackageManager::*;
+        let inv = |c: &str| invocation(&seg(c)[0]);
+        assert_eq!(
+            inv("npm --prefix web ci"),
+            Some(Invocation {
+                pm: Npm,
+                sub: Some("ci".into())
+            })
+        );
+        assert_eq!(
+            inv("pnpm --filter app install"),
+            Some(Invocation {
+                pm: Pnpm,
+                sub: Some("install".into())
+            })
+        );
+        assert_eq!(
+            inv("yarn --cwd web install"),
+            Some(Invocation {
+                pm: Yarn,
+                sub: Some("install".into())
+            })
+        );
+        assert_eq!(
+            inv("uv --project . sync"),
+            Some(Invocation {
+                pm: Uv,
+                sub: Some("sync".into())
+            })
+        );
+    }
+
+    // Regression tests for boolean flags that must NOT consume the next token
+    // (issue #87 / PR #112 review comment).
+
+    #[test]
+    fn pip_boolean_flag_isolated_does_not_consume_subcommand() {
+        // `--isolated` is a boolean toggle; `install` must not be swallowed as
+        // its value. SD002 must still fire for this hashless full install.
+        let s = seg("pip --isolated install -r requirements.txt");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        assert_eq!(positionals(&s[0]), vec!["install"]);
+        let inv = invocation(&s[0]).unwrap();
+        assert!(is_install(&inv), "pip --isolated install should be install");
+    }
+
+    #[test]
+    fn pip_boolean_flag_no_cache_dir_does_not_consume_subcommand() {
+        // `--no-cache-dir` is a boolean toggle; `install` must survive as the
+        // subcommand so SD002 continues to fire.
+        let s = seg("pip --no-cache-dir install -r requirements.txt");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        let inv = invocation(&s[0]).unwrap();
+        assert!(is_install(&inv));
+    }
+
+    #[test]
+    fn pip_boolean_flag_disable_pip_version_check_does_not_consume_subcommand() {
+        // `--disable-pip-version-check` is a boolean toggle.
+        let s = seg("pip --disable-pip-version-check install -r requirements.txt");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        let inv = invocation(&s[0]).unwrap();
+        assert!(is_install(&inv));
+    }
+
+    #[test]
+    fn yarn_boolean_flag_offline_does_not_consume_subcommand() {
+        // `--offline` is a boolean toggle for yarn; `install` must not be
+        // swallowed as its value. SD002 must still fire.
+        let s = seg("yarn --offline install");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        assert_eq!(positionals(&s[0]), vec!["install"]);
+        let inv = invocation(&s[0]).unwrap();
+        assert!(is_install(&inv), "yarn --offline install should be install");
+    }
+
+    #[test]
+    fn yarn_boolean_flag_prefer_offline_does_not_consume_subcommand() {
+        // `--prefer-offline` is a boolean toggle for yarn.
+        let s = seg("yarn --prefer-offline install");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        let inv = invocation(&s[0]).unwrap();
+        assert!(is_install(&inv));
+    }
+
+    #[test]
+    fn yarn_boolean_flag_emoji_does_not_consume_subcommand() {
+        // `--emoji` is a boolean toggle for yarn.
+        let s = seg("yarn --emoji install");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        let inv = invocation(&s[0]).unwrap();
+        assert!(is_install(&inv));
+    }
+
+    #[test]
+    fn real_value_taking_pip_flags_still_consume_their_value() {
+        // `--cache-dir` truly takes a value; the directory must be consumed and
+        // `install` must still be recognized as the subcommand.
+        let s = seg("pip --cache-dir /tmp/pip-cache install -r requirements.txt");
+        assert_eq!(subcommand(&s[0]), Some("install"));
+        assert_eq!(positionals(&s[0]), vec!["install"]);
+    }
+
+    #[test]
+    fn npm_prefix_and_workspace_flags_still_work() {
+        // Existing behaviors must remain intact after the boolean-flag cleanup.
+        let s = seg("npm --prefix web ci");
+        assert_eq!(subcommand(&s[0]), Some("ci"));
+        assert_eq!(positionals(&s[0]), vec!["ci"]);
+
+        let s2 = seg("npm install --workspace packages/app");
+        assert_eq!(positionals(&s2[0]), vec!["install"]);
+
+        let s3 = seg("npm install lodash");
+        assert_eq!(positionals(&s3[0]), vec!["install", "lodash"]);
+    }
+
+    // Nested pip wrappers: a pip value-taking option (e.g. `--proxy <url>`) must
+    // not leak into the positionals and shift the subcommand off `install`
+    // (PR #112 review comment).
+
+    #[test]
+    fn python_m_pip_value_option_does_not_leak_into_subcommand() {
+        // `python -m pip --proxy <url> install -r ...` — `<url>` is the value of
+        // pip's `--proxy`, not a positional. The effective program is pip even
+        // though the leaf token is `python`, so it must not leak in and shift the
+        // derived subcommand off `install`. (`subcommand`/`positionals` keep the
+        // raw `pip` token; `invocation` unwraps `python -m pip` to pip + install.)
+        let s = seg("python -m pip --proxy http://x install -r requirements.txt");
+        assert_eq!(positionals(&s[0]), vec!["pip", "install"]);
+        assert_eq!(
+            invocation(&s[0]),
+            Some(Invocation {
+                pm: PackageManager::Pip,
+                sub: Some("install".into())
+            })
+        );
+    }
+
+    #[test]
+    fn uv_pip_value_option_does_not_leak_into_subcommand() {
+        // `uv --project . pip --proxy <url> install ...` — `.` is consumed by uv's
+        // `--project` and `<url>` by pip's `--proxy`, leaving `install` as the
+        // recognized subcommand once `uv pip` is unwrapped to pip.
+        let s = seg("uv --project . pip --proxy http://x install -r requirements.txt");
+        assert_eq!(positionals(&s[0]), vec!["pip", "install"]);
+        assert_eq!(
+            invocation(&s[0]),
+            Some(Invocation {
+                pm: PackageManager::Pip,
+                sub: Some("install".into())
+            })
         );
     }
 }
