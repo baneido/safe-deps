@@ -111,8 +111,8 @@ separate step only in jobs that allow network egress.
 
 Use SARIF when you want findings in GitHub code scanning. The upload step runs
 even when `safe-deps check` finds a failing issue, so the job still stores the
-report before failing. Pin `uses:` actions to full commit hashes in hardened
-workflows.
+report before failing. In hardened workflows, consider pinning third-party
+`uses:` actions to full commit hashes.
 
 ```yaml
 name: safe-deps
