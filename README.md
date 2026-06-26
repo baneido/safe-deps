@@ -96,6 +96,122 @@ safe-deps init                       # write a commented safe-deps.toml
 usage/config error, `3` internal error, `4` parse failure under
 `--strict-parser-errors`.
 
+### CI examples
+
+Run `safe-deps check` after checkout and before dependency installation. The
+command is offline, so it works in restricted CI jobs. The examples install from
+crates.io for brevity; use Homebrew or a prebuilt release archive instead when
+your runner does not include Rust. Set `--fail-on` to match your policy:
+`error` is the default, while `warning` fails builds on warnings too.
+
+`safe-deps audit` contacts OSV unless you pass `--offline`, so run it as a
+separate step only in jobs that allow network egress.
+
+#### GitHub Actions
+
+Use SARIF when you want findings in GitHub code scanning. The upload step runs
+even when `safe-deps check` finds a failing issue, so the job still stores the
+report before failing. In hardened workflows, consider pinning third-party
+`uses:` actions to full commit hashes.
+
+```yaml
+name: safe-deps
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install safe-deps
+        run: cargo install safe-deps --locked
+      - name: Run safe-deps
+        run: |
+          safe-deps check . \
+            --format sarif \
+            --output safe-deps.sarif \
+            --fail-on warning
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: safe-deps.sarif
+```
+
+#### GitLab CI
+
+JUnit output lets GitLab show findings in the pipeline test report while the
+job exit code still enforces `--fail-on`.
+
+```yaml
+safe-deps:
+  image: rust:1.86
+  stage: test
+  script:
+    - cargo install safe-deps --locked
+    - >
+      safe-deps check .
+      --format junit
+      --output safe-deps.junit.xml
+      --fail-on warning
+  artifacts:
+    when: always
+    reports:
+      junit: safe-deps.junit.xml
+    paths:
+      - safe-deps.junit.xml
+```
+
+#### CircleCI
+
+Store JUnit output under `test-results` so CircleCI can show it in the Tests
+tab.
+
+```yaml
+version: 2.1
+
+jobs:
+  safe-deps:
+    docker:
+      - image: cimg/rust:1.86
+    steps:
+      - checkout
+      - run:
+          name: Install safe-deps
+          command: cargo install safe-deps --locked
+      - run:
+          name: Run safe-deps
+          command: |
+            mkdir -p test-results/safe-deps
+            set +e
+            safe-deps check . \
+              --format junit \
+              --output test-results/safe-deps/results.xml \
+              --fail-on warning
+            SAFE_DEPS_STATUS=$?
+            set -e
+            echo "export SAFE_DEPS_STATUS=$SAFE_DEPS_STATUS" >> "$BASH_ENV"
+      - store_test_results:
+          path: test-results
+      - run:
+          name: Fail if safe-deps found issues
+          command: exit "$SAFE_DEPS_STATUS"
+workflows:
+  safe-deps:
+    jobs:
+      - safe-deps
+```
+
 ## Try it
 
 [`examples/` in the repository](https://github.com/baneido/safe-deps/tree/main/examples)
