@@ -193,14 +193,19 @@ jobs:
           name: Run safe-deps
           command: |
             mkdir -p test-results/safe-deps
+            set +e
             safe-deps check . \
               --format junit \
               --output test-results/safe-deps/results.xml \
               --fail-on warning
+            SAFE_DEPS_STATUS=$?
+            set -e
+            echo "export SAFE_DEPS_STATUS=$SAFE_DEPS_STATUS" >> "$BASH_ENV"
       - store_test_results:
           path: test-results
-          when: always
-
+      - run:
+          name: Fail if safe-deps found issues
+          command: exit "$SAFE_DEPS_STATUS"
 workflows:
   safe-deps:
     jobs:
