@@ -10,7 +10,7 @@
   },
   "devDependencies": {
     "cspell": "10.0.1",
-    "markdownlint-cli2": "0.22.1"
+    "markdownlint-cli2": "0.23.0"
   },
   "overrides": {
     "js-yaml": "^4.2.0",
