@@ -9,8 +9,8 @@
     "lint:spelling": "cspell --config .cspell.json \"*.md\" \"docs/**/*.md\""
   },
   "devDependencies": {
-    "cspell": "10.0.1",
-    "markdownlint-cli2": "0.22.1"
+    "cspell": "10.1.0",
+    "markdownlint-cli2": "0.23.2"
   },
   "overrides": {
     "js-yaml": "^4.2.0",
