@@ -3,11 +3,21 @@
 
 [advisories]
 # Uses the RUSTSEC advisory database (fetched fresh each run). Vulnerabilities,
-# unmaintained, unsound, and yanked crates are denied by default. No ignores are
-# needed: the unmaintained `serde_yaml` was replaced by the maintained
-# `serde_yaml_ng` fork (#23), and the transitive `unsafe-libyaml` is past
-# RUSTSEC-2023-0075.
-ignore = []
+# unmaintained, unsound, and yanked crates are denied by default. The
+# unmaintained `serde_yaml` was replaced by the maintained `serde_yaml_ng` fork
+# (#23).
+ignore = [
+    # `unsafe-libyaml` is unmaintained (upstream archived 2024-03, last release
+    # 0.2.11) and has no patched version; this is an "unmaintained" notice, not
+    # a known vulnerability. We only reach it through `serde_yaml_ng` (imported
+    # as `serde_yaml`), which `src/ci/{github_actions,gitlab_ci,circleci}.rs`
+    # use to read the scanned project's CI files into a `serde_yaml::Value`; a
+    # parse error is skipped, not fatal. Those files come from the repository
+    # being scanned, so this is an accepted risk, not "trusted input only".
+    # Drop this entry once we move to a YAML parser written in safe Rust
+    # (e.g. serde-saphyr).
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained with no fix; used only via serde_yaml_ng to parse scanned CI YAML" },
+]
 
 [licenses]
 # Every current (and transitive) dependency is permissively licensed. Keep this

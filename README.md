@@ -12,7 +12,7 @@ queries a vulnerability database (OSV).
 > Status: the CLI is implemented (Phases 1–5) and published to
 > [crates.io](https://crates.io/crates/safe-deps); install with Homebrew or
 > `cargo install`, grab a prebuilt binary from GitHub Releases, or build from
-> source (all below). Minimum supported Rust version (MSRV): **1.86**.
+> source (all below). Minimum supported Rust version (MSRV): **1.88**.
 
 ## Install
 
@@ -35,7 +35,7 @@ cargo install safe-deps --locked
 ```
 
 Builds and installs the latest [crates.io](https://crates.io/crates/safe-deps)
-release into `~/.cargo/bin`. Needs a Rust toolchain (MSRV 1.86); `--locked` builds
+release into `~/.cargo/bin`. Needs a Rust toolchain (MSRV 1.88); `--locked` builds
 against the crate's published `Cargo.lock` for a reproducible dependency set.
 
 ### Prebuilt binaries
@@ -155,7 +155,7 @@ job exit code still enforces `--fail-on`.
 
 ```yaml
 safe-deps:
-  image: rust:1.86
+  image: rust:1.88
   stage: test
   script:
     - cargo install safe-deps --locked
@@ -183,7 +183,7 @@ version: 2.1
 jobs:
   safe-deps:
     docker:
-      - image: cimg/rust:1.86
+      - image: cimg/rust:1.88
     steps:
       - checkout
       - run:

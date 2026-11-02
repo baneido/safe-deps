@@ -2,11 +2,11 @@
 name = "safe-deps"
 version = "0.2.3"
 edition = "2021"
-# Real MSRV: transitive dependencies require Rust 1.86 — the audit HTTP stack
-# (ureq → url → idna → icu_* 2.2.0) declares rust-version 1.86, and others use
-# edition 2024, so any toolchain older than 1.86 fails to build. The `msrv` CI
-# job pins this version.
-rust-version = "1.86"
+# Real MSRV: Rust 1.88. Transitive dependencies already needed 1.86 (the audit
+# HTTP stack ureq → url → idna → icu_* 2.2.0, plus crates on edition 2024), and
+# current patch releases in the lockfile (e.g. `ignore`) declare 1.88, so any
+# older toolchain fails to build. The `msrv` CI job pins this version.
+rust-version = "1.88"
 license = "MIT"
 description = "Static linter for package-management security practices."
 repository = "https://github.com/baneido/safe-deps"
