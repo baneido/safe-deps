@@ -9,6 +9,15 @@ workflow; it gathers the work accumulated during pre-`0.2.2` development.
 
 ## Unreleased
 
+- Raised the MSRV from 1.86 to **1.88**: current patch releases of
+  dependencies (e.g. `ignore` 0.4.31+) declare `rust-version = "1.88"`. The
+  `msrv` CI job, `Cargo.toml`, and the docs were updated to match.
+- `cargo deny` now ignores RUSTSEC-2024-0449 (`unsafe-libyaml` unmaintained, no
+  patched version), reached only through `serde_yaml_ng`; see `deny.toml` for
+  the rationale.
+- Updated `Cargo.lock` (crossbeam, rustls) and the docs tooling npm
+  dependencies for new RUSTSEC / npm advisories.
+
 ## 0.2.3 — 2026-06-23
 
 - Made `Cargo.toml` the single source of truth for releases, eliminating the

@@ -11,6 +11,7 @@
     "/https?:\\/\\/\\S+/g"
   ],
   "words": [
+    "RUSTSEC",
     "allowlist",
     "allowlists",
     "allowlisting",
